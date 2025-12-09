@@ -46,6 +46,8 @@ Kartverket har et en webside hvor man kan manuelt legge inn endringer og så kom
 Automatisk detektere ruter med feil. Diskutere med kartverket om mer effektive måter å rapportere "feil i bulk".
 Lage et mellomlag over turrutebasen hvor enten manuelt eller automatisk fiksede ruter gjøres tilgjengelig for resten av verktøyet.
 
+Også legge til muligheter for å redigere rutene direkte i verktøyet? Lære fra opplastede GPXer eller fra traktor og sti databasen?
+
 ## Rutestatus, Dagbok for rutene, Issue tracker
 
 ### Problem
@@ -64,10 +66,21 @@ I tillegg har man en "issue tracker" slik at når man får klager eller meldinge
 
 ### Problem
 
+Idag finnes det en skiltdatabase som brukes mye for skilt i marka og litt for skilt i fjellet. Skiltdatabasen er noe tung å bruke, og de fleste OKer håndterer skilt manuelt.
+Nå når skilt må bestilles med fast pil og kilometeravstand så er det en mer involvert jobb.
 
+### Løsning
+
+Alle ruter har skilt ved endepunktene og ved kryss. Skiltsteder og skilt kan derfor genereres automatisk. Selvsagt vil det være noen unntak. Man må også manuelt legge til skiltretning og status på skiltet. Eventuelt sjekke kvalitet med AI.
 
 ## Kartlag for egne GPX filer
 
+Laste opp sine egne GPX filer for å verifisere at rutene i turrutebasen matcher de faktiske rutene. Særlig nyttig ved omlegginger.
+
 ## Kartlag for bilder
 
+Kunne laste opp sine egne bilder og gjøre disse tilgjengelig for alle brukerne av verktøyet. Praktisk for planlegging av dugnader etc.
+
 ## Kartlag for kulturminner
+
+Gi advarsler ved dugnad om områder hvor de ikke må ta stein etc.
