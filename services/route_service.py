@@ -122,8 +122,38 @@ def calculate_offsets(conn, route_geom, intersections, total_length):
     """Calculate offset from start for each intersection."""
     results = []
 
+    # Check if route_geom is MultiLineString and convert to single LineString if needed
+    # ST_LineLocatePoint requires a LineString, not MultiLineString
+    check_route_type_query = """
+        SELECT ST_GeometryType(%s::geometry) as geom_type;
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(check_route_type_query, (route_geom,))
+        route_type = cur.fetchone()[0]
+
+    # If route is MultiLineString, we need to handle it differently
+    # For MultiLineString, we'll use ST_LineMerge to try to merge, or use the first line
+    if route_type == 'ST_MultiLineString':
+        merge_query = """
+            SELECT ST_LineMerge(%s::geometry)::geometry as merged_geom,
+                   ST_GeometryType(ST_LineMerge(%s::geometry)::geometry) as merged_type;
+        """
+        with conn.cursor() as cur:
+            cur.execute(merge_query, (route_geom, route_geom))
+            merge_result = cur.fetchone()
+            if merge_result and merge_result[1] == 'ST_LineString':
+                route_geom = merge_result[0]  # Use merged LineString
+            else:
+                # If merge failed, use first line of MultiLineString
+                first_line_query = "SELECT ST_GeometryN(%s::geometry, 1)::geometry as first_line;"
+                cur.execute(first_line_query, (route_geom,))
+                first_line_result = cur.fetchone()
+                if first_line_result:
+                    route_geom = first_line_result[0]
+
     for intersection in intersections:
-        # Handle both LineString and MultiLineString
+        # Handle both LineString and MultiLineString for intersection
         # For MultiLineString, get the start point of the first line
         query = """
             SELECT ST_LineLocatePoint(
@@ -169,6 +199,54 @@ def calculate_offsets(conn, route_geom, intersections, total_length):
     # Sort by offset
     results.sort(key=lambda x: x['offset_meters'])
     return results
+
+
+def search_routes(rutenummer_prefix=None, rutenavn_search=None, organization=None, limit=100):
+    """Search for routes by various criteria."""
+    conn = get_db_connection()
+
+    try:
+        query = f"""
+            SELECT DISTINCT
+                fi.rutenummer,
+                fi.rutenavn,
+                fi.vedlikeholdsansvarlig,
+                COUNT(DISTINCT f.objid) as segment_count
+            FROM {ROUTE_SCHEMA}.fotruteinfo fi
+            JOIN {ROUTE_SCHEMA}.fotrute f ON f.objid = fi.fotrute_fk
+            WHERE 1=1
+        """
+
+        params = []
+
+        if rutenummer_prefix:
+            query += " AND fi.rutenummer ILIKE %s"
+            params.append(f"{rutenummer_prefix}%")
+
+        if rutenavn_search:
+            query += " AND fi.rutenavn ILIKE %s"
+            params.append(f"%{rutenavn_search}%")
+
+        if organization:
+            query += " AND fi.vedlikeholdsansvarlig ILIKE %s"
+            params.append(f"%{organization}%")
+
+        query += " GROUP BY fi.rutenummer, fi.rutenavn, fi.vedlikeholdsansvarlig"
+        query += " ORDER BY fi.rutenummer"
+        query += f" LIMIT %s"
+        params.append(limit)
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            return cur.fetchall()
+
+    finally:
+        conn.close()
+
+
+def get_route_list(limit=1000):
+    """Get list of all routes with basic metadata."""
+    return search_routes(limit=limit)
 
 
 def get_route_data(rutenummer):

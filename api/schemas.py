@@ -37,3 +37,17 @@ class ErrorResponse(BaseModel):
     error: str
     detail: Optional[str] = None
 
+
+class RouteListItem(BaseModel):
+    """Route list item for search results."""
+    rutenummer: str
+    rutenavn: str
+    vedlikeholdsansvarlig: Optional[str] = None
+    segment_count: int
+
+
+class RouteSearchResponse(BaseModel):
+    """Route search response."""
+    routes: List[RouteListItem]
+    total: int
+

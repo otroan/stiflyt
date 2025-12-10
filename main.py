@@ -1,5 +1,9 @@
 """FastAPI application main entry point."""
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pathlib import Path
 from api.routes import router
 
 app = FastAPI(
@@ -8,17 +12,29 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify exact origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(router, prefix="/api/v1", tags=["routes"])
 
+# Serve frontend static files
+frontend_path = Path(__file__).parent / "frontend"
+if frontend_path.exists():
+    app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
 
-@app.get("/")
-async def root():
-    """Root endpoint."""
-    return {
-        "message": "Stiflyt Route API",
-        "version": "0.1.0",
-        "docs": "/docs"
-    }
+    @app.get("/")
+    async def serve_frontend():
+        """Serve frontend index.html."""
+        index_path = frontend_path / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
+        return {"message": "Stiflyt Route API", "version": "0.1.0", "docs": "/docs"}
 
 
 @app.get("/health")

@@ -48,22 +48,66 @@ USE_UNIX_SOCKET=false
 DATABASE_URL=postgresql://user:password@localhost:5432/stiflyt
 ```
 
-### 3. Run the API Server
+### 3. Run the Services
 
-Start the FastAPI server:
+**Using Makefile (recommended):**
 
 ```bash
-# Set database user if using Unix socket
-export DB_USER=your_username
+# Start backend (Terminal 1)
+make backend
 
-# Start the server
+# Start frontend (Terminal 2)
+make frontend
+```
+
+**Or manually:**
+
+```bash
+# Backend (serves frontend automatically)
+export DB_USER=your_username
+source venv/bin/activate
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# Frontend is available at http://localhost:8000/
+# API is available at http://localhost:8000/api/v1/routes/{rutenummer}
+
+# Alternative: Run frontend separately (in another terminal)
+cd frontend
+python3 -m http.server 8080
+# Then configure backend URL in frontend (click ⚙️ button)
+```
+
+**Makefile commands:**
+- `make help` - Show all available commands
+- `make backend` - Start FastAPI backend server (default port 8000)
+- `make frontend` - Start frontend HTTP server (default port 8080)
+- `make install` - Install dependencies
+- `make install-dev` - Install with dev dependencies
+- `make test` - Run tests
+- `make lint` - Run linter
+- `make format` - Format code
+- `make db-test` - Test database connection
+- `make api-test` - Test API endpoint
+
+**Customize ports and DB user:**
+```bash
+# Custom backend port
+make backend BACKEND_PORT=9000
+
+# Custom frontend port
+make frontend FRONTEND_PORT=9000
+
+# Custom database user
+make backend DB_USER=myuser
 ```
 
 The API will be available at:
 - API: http://localhost:8000/api/v1/routes/{rutenummer}
 - Interactive docs: http://localhost:8000/docs
 - OpenAPI schema: http://localhost:8000/openapi.json
+
+The frontend will be available at:
+- Frontend: http://localhost:8080
 
 **Example API request:**
 ```bash
@@ -75,7 +119,18 @@ curl http://localhost:8000/api/v1/routes/bre10
 - `metadata`: Route metadata (name, organization, length, etc.)
 - `matrikkelenhet_vector`: 1D vector of matrikkelenhet and bruksnavn along the route
 
-### 4. Query turrutebasen
+**Note:** CORS is enabled for all origins in development. In production, configure specific allowed origins.
+
+**Frontend Features:**
+- Interactive map with colored route segments by property
+- Property table with detailed information
+- Timeline view showing properties in order
+- Circular markers at property boundaries
+- Clickable popups with property details
+
+See `frontend/README.md` for more details.
+
+### 5. Query turrutebasen
 
 Run the query script to inspect the turrutebasen table:
 
@@ -96,6 +151,9 @@ This will show:
 - `DESIGN.md` - System design
 - `TASKS.md` - Task breakdown and implementation plan
 - `PROBLEM.md` - Original problem description
+- `api/` - FastAPI routes and schemas
+- `services/` - Business logic and database services
+- `frontend/` - Leaflet-based web frontend
 - `scripts/` - Utility scripts
 
 ## Development Status

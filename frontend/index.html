@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stiflyt Route Viewer</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .search-container {
+            position: relative;
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .search-results {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+            margin-top: 0.25rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: none;
+        }
+
+        .search-results.active {
+            display: block;
+        }
+
+        .search-result-item {
+            padding: 0.75rem;
+            cursor: pointer;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .search-result-item:hover {
+            background: #f8f9fa;
+        }
+
+        .search-result-item:last-child {
+            border-bottom: none;
+        }
+
+        .search-result-item strong {
+            color: #2c3e50;
+        }
+
+        .search-result-item small {
+            color: #6c757d;
+            display: block;
+            margin-top: 0.25rem;
+        }
+
+        input[type="text"] {
+            padding: 0.5rem 1rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+            width: 200px;
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #2980b9;
+        }
+
+        button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+        }
+
+        .main-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 400px;
+            background: #f8f9fa;
+            border-right: 1px solid #dee2e6;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 1rem;
+            background: #e9ecef;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .sidebar-tabs {
+            display: flex;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 0.75rem;
+            background: #f8f9fa;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+
+        .tab.active {
+            background: white;
+            border-bottom: 2px solid #3498db;
+            font-weight: 600;
+        }
+
+        .tab-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+        }
+
+        .tab-pane {
+            display: none;
+        }
+
+        .tab-pane.active {
+            display: block;
+        }
+
+        .route-info {
+            margin-bottom: 1.5rem;
+        }
+
+        .route-info h3 {
+            margin-bottom: 0.5rem;
+            color: #2c3e50;
+        }
+
+        .info-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #6c757d;
+        }
+
+        .property-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        .property-table th {
+            background: #e9ecef;
+            padding: 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .property-table td {
+            padding: 0.75rem;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .property-table tr:hover {
+            background: #f8f9fa;
+            cursor: pointer;
+        }
+
+        .property-table tr.highlighted {
+            background: #fff3cd;
+        }
+
+        .property-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 0.5rem;
+            border: 2px solid #333;
+        }
+
+        .map-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            z-index: 1000;
+            display: none;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 4px;
+            margin: 1rem;
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: white;
+            padding: 1rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            z-index: 1000;
+            max-width: 250px;
+        }
+
+        .legend h4 {
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 0.25rem;
+            font-size: 0.85rem;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+            margin-right: 0.5rem;
+            border: 1px solid #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🗺️ Stiflyt Route Viewer</h1>
+        <div class="controls">
+            <div class="search-container">
+                <input type="text" id="searchInput" placeholder="Søk etter rute (f.eks. bre, skjåk, DNT)" style="width: 250px;">
+                <button id="searchBtn">Søk</button>
+                <div class="search-results" id="searchResults"></div>
+            </div>
+            <input type="text" id="routeInput" placeholder="Rutenummer (f.eks. bre10)" value="bre10">
+            <button id="loadRoute">Last rute</button>
+            <button id="configBtn" title="Backend konfigurasjon" style="padding: 0.5rem; background: #95a5a6; font-size: 0.9rem;">⚙️</button>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2 id="routeName">Velg en rute</h2>
+            </div>
+            <div class="sidebar-tabs">
+                <button class="tab active" data-tab="info">Info</button>
+                <button class="tab" data-tab="properties">Eiendommer</button>
+                <button class="tab" data-tab="timeline">Tidslinje</button>
+            </div>
+            <div class="tab-content">
+                <div id="infoTab" class="tab-pane active">
+                    <div class="route-info">
+                        <h3>Ruteinformasjon</h3>
+                        <div id="routeInfo"></div>
+                    </div>
+                </div>
+                <div id="propertiesTab" class="tab-pane">
+                    <h3>Eiendommer langs ruten</h3>
+                    <table class="property-table">
+                        <thead>
+                            <tr>
+                                <th>Fra</th>
+                                <th>Til</th>
+                                <th>Matrikkelenhet</th>
+                                <th>Bruksnavn</th>
+                                <th>Lengde</th>
+                            </tr>
+                        </thead>
+                        <tbody id="propertiesTableBody"></tbody>
+                    </table>
+                </div>
+                <div id="timelineTab" class="tab-pane">
+                    <h3>Eiendommer i rekkefølge</h3>
+                    <div id="timelineContent"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="map-container">
+            <div id="map"></div>
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <div>Laster rute...</div>
+            </div>
+            <div class="legend" id="legend" style="display: none;">
+                <h4>Eiendommer</h4>
+                <div id="legendContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Configuration Modal -->
+    <div class="config-modal" id="configModal">
+        <div class="config-content">
+            <h3>Backend Konfigurasjon</h3>
+            <label for="backendUrlInput">Backend URL:</label>
+            <input type="text" id="backendUrlInput" placeholder="http://localhost:8000" value="">
+            <p style="font-size: 0.85rem; color: #6c757d; margin-bottom: 1rem;">
+                Nåværende: <strong id="currentBackendUrl"></strong>
+            </p>
+            <button onclick="saveBackendConfig()">Lagre</button>
+            <button onclick="closeConfigModal()" style="background: #95a5a6;">Avbryt</button>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([61.5, 8.5], 7);
+
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Configuration
+        // Use relative paths - works when frontend and backend are on same domain/port
+        // Can be overridden with window.BACKEND_URL or localStorage 'backend_url'
+        const BACKEND_URL = window.BACKEND_URL ||
+                           localStorage.getItem('backend_url') ||
+                           ''; // Empty string = relative path
+
+        // State
+        let currentRouteData = null;
+        let routeLayer = null;
+        let propertyLayers = [];
+        let markers = [];
+
+        // Color palette for properties
+        const colors = [
+            '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+            '#1abc9c', '#e67e22', '#34495e', '#16a085', '#27ae60',
+            '#2980b9', '#8e44ad', '#c0392b', '#d35400', '#7f8c8d'
+        ];
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+
+                tab.classList.add('active');
+                const tabName = tab.dataset.tab;
+                document.getElementById(`${tabName}Tab`).classList.add('active');
+            });
+        });
+
+        // Load route function
+        async function loadRoute(rutenummer) {
+            const loading = document.getElementById('loading');
+            loading.classList.add('active');
+
+            try {
+                const url = BACKEND_URL ? `${BACKEND_URL}/api/v1/routes/${rutenummer}` : `/api/v1/routes/${rutenummer}`;
+                console.log(`Fetching route from: ${url}`);
+                const response = await fetch(url);
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    let errorMessage = `Rute ikke funnet: ${response.statusText}`;
+                    try {
+                        const errorJson = JSON.parse(errorText);
+                        errorMessage = errorJson.detail || errorMessage;
+                    } catch (e) {
+                        // Not JSON, use status text
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                const data = await response.json();
+                currentRouteData = data;
+
+                // Clear previous layers
+                if (routeLayer) {
+                    map.removeLayer(routeLayer);
+                }
+                propertyLayers.forEach(layer => map.removeLayer(layer));
+                markers.forEach(marker => map.removeLayer(marker));
+                propertyLayers = [];
+                markers = [];
+
+                // Display route
+                displayRoute(data);
+                displayRouteInfo(data);
+                displayProperties(data);
+                displayTimeline(data);
+
+                // Update route name
+                document.getElementById('routeName').textContent =
+                    `${data.metadata.rutenummer} - ${data.metadata.rutenavn}`;
+
+            } catch (error) {
+                let errorMessage = `Feil ved lasting av rute: ${error.message}`;
+
+                // Check for network errors
+                if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                    const backendUrl = BACKEND_URL || window.location.origin;
+                    errorMessage = `Kunne ikke koble til backend på ${backendUrl}. Sjekk at backend kjører og at URL er korrekt.`;
+                }
+
+                alert(errorMessage);
+                console.error('Route loading error:', error);
+
+                // Show error in UI
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'error';
+                errorDiv.textContent = errorMessage;
+                document.querySelector('.tab-content').prepend(errorDiv);
+
+                // Remove error after 5 seconds
+                setTimeout(() => errorDiv.remove(), 5000);
+            } finally {
+                loading.classList.remove('active');
+            }
+        }
+
+        // Display route on map
+        function displayRoute(data) {
+            const geometry = data.geometry;
+
+            if (geometry && geometry.coordinates) {
+                try {
+                    // Use Leaflet's GeoJSON support to handle both LineString and MultiLineString
+                    const geoJsonLayer = L.geoJSON(geometry, {
+                        style: {
+                            color: '#2c3e50',
+                            weight: 4,
+                            opacity: 0.8
+                        }
+                    }).addTo(map);
+
+                    routeLayer = geoJsonLayer;
+
+                    // Fit map to route bounds
+                    map.fitBounds(geoJsonLayer.getBounds(), { padding: [50, 50] });
+
+                    // Extract coordinates for property splitting
+                    // For MultiLineString, we need to flatten all coordinates
+                    let latlngs = [];
+                    if (geometry.type === 'LineString') {
+                        latlngs = geometry.coordinates.map(coord => [coord[1], coord[0]]);
+                    } else if (geometry.type === 'MultiLineString') {
+                        geometry.coordinates.forEach(line => {
+                            if (Array.isArray(line)) {
+                                line.forEach(coord => {
+                                    if (coord && coord.length >= 2 && coord[0] != null && coord[1] != null) {
+                                        latlngs.push([coord[1], coord[0]]);
+                                    }
+                                });
+                            }
+                        });
+                    }
+
+                    // Split route by properties and add markers
+                    if (latlngs.length > 0) {
+                        splitRouteByProperties(data, latlngs);
+                    }
+                } catch (error) {
+                    console.error('Error displaying route:', error, geometry);
+                    alert(`Kunne ikke vise rute: ${error.message}`);
+                }
+            }
+        }
+
+        // Split route by properties and add markers
+        function splitRouteByProperties(data, routeCoords) {
+            const properties = data.matrikkelenhet_vector;
+            if (properties.length === 0) return;
+
+            // Group consecutive properties
+            const propertyGroups = [];
+            let currentGroup = {
+                matrikkelenhet: properties[0].matrikkelenhet,
+                bruksnavn: properties[0].bruksnavn,
+                startOffset: properties[0].offset_meters,
+                endOffset: properties[0].offset_meters + properties[0].length_meters,
+                color: getColorForProperty(properties[0].matrikkelenhet)
+            };
+
+            for (let i = 1; i < properties.length; i++) {
+                const prop = properties[i];
+                const gap = prop.offset_meters - (currentGroup.endOffset);
+
+                // If gap is small (< 10m), merge with current group
+                if (gap < 10 && prop.matrikkelenhet === currentGroup.matrikkelenhet) {
+                    currentGroup.endOffset = prop.offset_meters + prop.length_meters;
+                } else {
+                    propertyGroups.push(currentGroup);
+                    currentGroup = {
+                        matrikkelenhet: prop.matrikkelenhet,
+                        bruksnavn: prop.bruksnavn,
+                        startOffset: prop.offset_meters,
+                        endOffset: prop.offset_meters + prop.length_meters,
+                        color: getColorForProperty(prop.matrikkelenhet)
+                    };
+                }
+            }
+            propertyGroups.push(currentGroup);
+
+            // Calculate total route length
+            const totalLength = data.metadata.total_length_meters;
+
+            // Draw segments and add markers
+            propertyGroups.forEach((group, index) => {
+                const startFraction = group.startOffset / totalLength;
+                const endFraction = group.endOffset / totalLength;
+
+                const startIdx = Math.floor(startFraction * routeCoords.length);
+                const endIdx = Math.ceil(endFraction * routeCoords.length);
+
+                const segmentCoords = routeCoords.slice(startIdx, endIdx + 1);
+
+                if (segmentCoords.length > 1) {
+                    // Draw colored segment
+                    const segment = L.polyline(segmentCoords, {
+                        color: group.color,
+                        weight: 6,
+                        opacity: 0.8
+                    }).addTo(map);
+
+                    segment.bindPopup(`
+                        <strong>${group.matrikkelenhet}</strong><br>
+                        ${group.bruksnavn || 'Ingen navn'}<br>
+                        ${(group.endOffset - group.startOffset).toFixed(0)} m
+                    `);
+
+                    propertyLayers.push(segment);
+
+                    // Add circular marker at start of property (except first)
+                    if (index > 0 && segmentCoords.length > 0) {
+                        const marker = L.circleMarker(segmentCoords[0], {
+                            radius: 8,
+                            fillColor: group.color,
+                            color: '#fff',
+                            weight: 2,
+                            fillOpacity: 1
+                        }).addTo(map);
+
+                        marker.bindPopup(`
+                            <strong>Start: ${group.matrikkelenhet}</strong><br>
+                            ${group.bruksnavn || 'Ingen navn'}<br>
+                            ${(group.startOffset / 1000).toFixed(2)} km
+                        `);
+
+                        markers.push(marker);
+                    }
+                }
+            });
+
+            // Update legend
+            updateLegend(propertyGroups);
+        }
+
+        // Get color for property
+        function getColorForProperty(matrikkelenhet) {
+            // Simple hash function for consistent colors
+            let hash = 0;
+            for (let i = 0; i < matrikkelenhet.length; i++) {
+                hash = matrikkelenhet.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            return colors[Math.abs(hash) % colors.length];
+        }
+
+        // Update legend
+        function updateLegend(propertyGroups) {
+            const legend = document.getElementById('legend');
+            const legendContent = document.getElementById('legendContent');
+
+            // Get unique properties
+            const uniqueProps = {};
+            propertyGroups.forEach(group => {
+                if (!uniqueProps[group.matrikkelenhet]) {
+                    uniqueProps[group.matrikkelenhet] = {
+                        color: group.color,
+                        bruksnavn: group.bruksnavn
+                    };
+                }
+            });
+
+            legendContent.innerHTML = Object.entries(uniqueProps)
+                .map(([matrikkel, info]) => `
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: ${info.color}"></div>
+                        <div>
+                            <strong>${matrikkel}</strong><br>
+                            <small>${info.bruksnavn || 'Ingen navn'}</small>
+                        </div>
+                    </div>
+                `).join('');
+
+            legend.style.display = 'block';
+        }
+
+        // Display properties table
+        function displayProperties(data) {
+            const tbody = document.getElementById('propertiesTableBody');
+            const properties = data.matrikkelenhet_vector;
+
+            // Group consecutive properties
+            const grouped = [];
+            let current = { ...properties[0], endOffset: properties[0].offset_meters + properties[0].length_meters };
+
+            for (let i = 1; i < properties.length; i++) {
+                const prop = properties[i];
+                if (prop.matrikkelenhet === current.matrikkelenhet &&
+                    prop.offset_meters - current.endOffset < 10) {
+                    current.length_meters += prop.length_meters;
+                    current.endOffset = prop.offset_meters + prop.length_meters;
+                } else {
+                    grouped.push(current);
+                    current = { ...prop, endOffset: prop.offset_meters + prop.length_meters };
+                }
+            }
+            grouped.push(current);
+
+            tbody.innerHTML = grouped.map(prop => {
+                const color = getColorForProperty(prop.matrikkelenhet);
+                return `
+                    <tr onclick="highlightProperty('${prop.matrikkelenhet}')">
+                        <td>${(prop.offset_km).toFixed(2)} km</td>
+                        <td>${((prop.offset_km + prop.length_km)).toFixed(2)} km</td>
+                        <td>
+                            <span class="property-color" style="background-color: ${color}"></span>
+                            ${prop.matrikkelenhet}
+                        </td>
+                        <td>${prop.bruksnavn || '-'}</td>
+                        <td>${prop.length_meters.toFixed(0)} m</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // Display timeline
+        function displayTimeline(data) {
+            const content = document.getElementById('timelineContent');
+            const properties = data.matrikkelenhet_vector;
+
+            content.innerHTML = properties.map((prop, index) => {
+                const color = getColorForProperty(prop.matrikkelenhet);
+                return `
+                    <div style="
+                        border-left: 4px solid ${color};
+                        padding: 0.75rem;
+                        margin-bottom: 0.5rem;
+                        background: white;
+                        border-radius: 4px;
+                        cursor: pointer;
+                    " onclick="highlightProperty('${prop.matrikkelenhet}')">
+                        <strong>${prop.matrikkelenhet}</strong>
+                        ${prop.bruksnavn ? `<br><em>${prop.bruksnavn}</em>` : ''}
+                        <br><small>${prop.offset_km.toFixed(2)} - ${(prop.offset_km + prop.length_km).toFixed(2)} km (${prop.length_meters.toFixed(0)} m)</small>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Display route info
+        function displayRouteInfo(data) {
+            const info = document.getElementById('routeInfo');
+            const meta = data.metadata;
+
+            info.innerHTML = `
+                <div class="info-item">
+                    <span class="info-label">Rutenummer:</span>
+                    <span>${meta.rutenummer}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Rutenavn:</span>
+                    <span>${meta.rutenavn}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Vedlikeholdsansvarlig:</span>
+                    <span>${meta.vedlikeholdsansvarlig || 'Ukjent'}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Total lengde:</span>
+                    <span>${meta.total_length_km.toFixed(2)} km (${meta.total_length_meters.toFixed(0)} m)</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Antall segmenter:</span>
+                    <span>${meta.segment_count}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Antall eiendommer:</span>
+                    <span>${data.matrikkelenhet_vector.length}</span>
+                </div>
+            `;
+        }
+
+        // Highlight property on map
+        function highlightProperty(matrikkelenhet) {
+            // Remove previous highlights
+            document.querySelectorAll('.property-table tr').forEach(tr => {
+                tr.classList.remove('highlighted');
+            });
+
+            // Highlight in table
+            document.querySelectorAll('.property-table tr').forEach(tr => {
+                if (tr.textContent.includes(matrikkelenhet)) {
+                    tr.classList.add('highlighted');
+                    tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            });
+
+            // Highlight on map (flash the segment)
+            propertyLayers.forEach(layer => {
+                if (layer._popup && layer._popup._content.includes(matrikkelenhet)) {
+                    layer.openPopup();
+                    layer.setStyle({ weight: 8 });
+                    setTimeout(() => layer.setStyle({ weight: 6 }), 2000);
+                }
+            });
+        }
+
+        // Configuration functions
+        function openConfigModal() {
+            document.getElementById('configModal').classList.add('active');
+            const currentUrl = BACKEND_URL || '(relativ path - samme domene)';
+            document.getElementById('backendUrlInput').value = BACKEND_URL || '';
+            document.getElementById('currentBackendUrl').textContent = currentUrl;
+        }
+
+        function closeConfigModal() {
+            document.getElementById('configModal').classList.remove('active');
+        }
+
+        function saveBackendConfig() {
+            const newUrl = document.getElementById('backendUrlInput').value.trim();
+            // Empty string means use relative paths
+            if (newUrl === '') {
+                localStorage.removeItem('backend_url');
+            } else {
+                localStorage.setItem('backend_url', newUrl);
+            }
+            window.location.reload(); // Reload to use new URL
+        }
+
+        // Close modal on outside click
+        document.getElementById('configModal').addEventListener('click', (e) => {
+            if (e.target.id === 'configModal') {
+                closeConfigModal();
+            }
+        });
+
+        // Search routes function
+        async function searchRoutes(query) {
+            if (!query || query.length < 2) {
+                document.getElementById('searchResults').classList.remove('active');
+                return;
+            }
+
+            try {
+                // Try prefix search first
+                const url = BACKEND_URL ? `${BACKEND_URL}/api/v1/routes?prefix=${encodeURIComponent(query)}&limit=20`
+                                        : `/api/v1/routes?prefix=${encodeURIComponent(query)}&limit=20`;
+
+                const response = await fetch(url);
+                if (!response.ok) {
+                    return;
+                }
+
+                const data = await response.json();
+                displaySearchResults(data.routes);
+            } catch (error) {
+                console.error('Search error:', error);
+            }
+        }
+
+        // Display search results
+        function displaySearchResults(routes) {
+            const resultsDiv = document.getElementById('searchResults');
+
+            if (routes.length === 0) {
+                resultsDiv.innerHTML = '<div class="search-result-item">Ingen ruter funnet</div>';
+                resultsDiv.classList.add('active');
+                return;
+            }
+
+            resultsDiv.innerHTML = routes.map(route => `
+                <div class="search-result-item" onclick="selectRoute('${route.rutenummer}')">
+                    <strong>${route.rutenummer}</strong> - ${route.rutenavn || 'Ukjent'}
+                    ${route.vedlikeholdsansvarlig ? `<small>${route.vedlikeholdsansvarlig}</small>` : ''}
+                </div>
+            `).join('');
+
+            resultsDiv.classList.add('active');
+        }
+
+        // Select route from search results
+        function selectRoute(rutenummer) {
+            document.getElementById('routeInput').value = rutenummer;
+            document.getElementById('searchResults').classList.remove('active');
+            document.getElementById('searchInput').value = '';
+            loadRoute(rutenummer);
+        }
+
+        // Close search results when clicking outside
+        document.addEventListener('click', (e) => {
+            const searchContainer = document.querySelector('.search-container');
+            if (!searchContainer.contains(e.target)) {
+                document.getElementById('searchResults').classList.remove('active');
+            }
+        });
+
+        // Event listeners
+        document.getElementById('loadRoute').addEventListener('click', () => {
+            const rutenummer = document.getElementById('routeInput').value.trim();
+            if (rutenummer) {
+                loadRoute(rutenummer);
+            }
+        });
+
+        document.getElementById('searchBtn').addEventListener('click', () => {
+            const query = document.getElementById('searchInput').value.trim();
+            if (query) {
+                searchRoutes(query);
+            }
+        });
+
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+            if (query.length >= 2) {
+                searchRoutes(query);
+            } else {
+                document.getElementById('searchResults').classList.remove('active');
+            }
+        });
+
+        document.getElementById('searchInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const query = e.target.value.trim();
+                if (query) {
+                    searchRoutes(query);
+                }
+            }
+        });
+
+        document.getElementById('configBtn').addEventListener('click', openConfigModal);
+
+        document.getElementById('routeInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                document.getElementById('loadRoute').click();
+            }
+        });
+
+        // Load default route on page load
+        window.addEventListener('load', () => {
+            const backendUrl = BACKEND_URL || '(relativ path)';
+            console.log(`Backend URL: ${backendUrl}`);
+            loadRoute('bre10');
+        });
+    </script>
+</body>
+</html>
+
