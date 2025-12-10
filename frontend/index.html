@@ -405,6 +405,9 @@
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
+    <!-- Constants -->
+    <script src="js/constants.js"></script>
+
     <!-- Common utilities -->
     <script src="js/common.js"></script>
 
@@ -639,7 +642,7 @@
 
                 try {
                     const layerBounds = layer.getBounds();
-                    if (layerBounds && typeof layerBounds.isValid === 'function' && layerBounds.isValid()) {
+                    if (layerBounds && isValidBounds(layerBounds)) {
                         return layerBounds;
                     }
                 } catch (error) {
@@ -670,7 +673,7 @@
             }
 
             // Fit map to all bounds
-            if (hasBounds && bounds.isValid()) {
+            if (hasBounds && isValidBounds(bounds)) {
                 console.log('Fitting map to bounds:', bounds);
                 try {
                     map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
@@ -698,7 +701,7 @@
             try {
                 const geoJsonLayer = L.geoJSON(currentRouteData.geometry);
                 const bounds = geoJsonLayer.getBounds();
-                if (bounds && bounds.isValid()) {
+                if (bounds && isValidBounds(bounds)) {
                     console.log('Fitting map to bounds from geometry:', bounds);
                     map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
                 }

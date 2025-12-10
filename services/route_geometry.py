@@ -2,8 +2,11 @@
 Geometric route reconstruction - finds the actual geographic order of route segments
 by following connections between segments.
 """
+import json
 from psycopg2.extras import RealDictCursor
 from .database import get_db_connection, ROUTE_SCHEMA
+from .route_connections import find_segment_connections
+from .route_service import parse_geojson_string, get_route_segments_with_points, get_segments_by_objids
 
 
 def find_geographic_order(conn, rutenummer):
@@ -13,129 +16,16 @@ def find_geographic_order(conn, rutenummer):
     Returns:
         List of segment objids in geographic order
     """
-    # Hent alle segmenter med start/end punkter
-    query = f"""
-        SELECT
-            f.objid,
-            ST_AsText(ST_Transform(ST_StartPoint(f.senterlinje::geometry), 4326)) as start_point_wkt,
-            ST_AsText(ST_Transform(ST_EndPoint(f.senterlinje::geometry), 4326)) as end_point_wkt,
-            ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
-        FROM {ROUTE_SCHEMA}.fotrute f
-        JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
-        WHERE fi.rutenummer = %s
-        ORDER BY f.objid;
-    """
-
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(query, (rutenummer,))
-        segments = cur.fetchall()
+    # Hent alle segmenter med start/end punkter (bruk delt funksjon)
+    segments = get_route_segments_with_points(conn, rutenummer)
 
     if not segments:
         return []
 
     # Bygg en graf av koblinger mellom segmenter
-    # Bruk direkte SQL for bedre ytelse
-    connections = {}  # segment_objid -> list of (connected_segment_objid, connection_type, distance)
-
-    # Initialiser connections for alle segmenter
-    for seg in segments:
-        connections[seg['objid']] = []
-
-    # Hent alle koblinger direkte fra databasen
+    # Bruk delt modul for å finne koblinger
     segment_objids = [seg['objid'] for seg in segments]
-    placeholders = ','.join(['%s'] * len(segment_objids))
-
-    # Sjekk alle mulige koblingstyper
-    connection_queries = [
-        ('end_to_start', f"""
-            SELECT
-                f1.objid as seg1_objid,
-                f2.objid as seg2_objid,
-                ST_Distance(
-                    ST_Transform(ST_EndPoint(f1.senterlinje::geometry), 25833),
-                    ST_Transform(ST_StartPoint(f2.senterlinje::geometry), 25833)
-                ) as distance
-            FROM {ROUTE_SCHEMA}.fotrute f1
-            CROSS JOIN {ROUTE_SCHEMA}.fotrute f2
-            WHERE f1.objid IN ({placeholders})
-              AND f2.objid IN ({placeholders})
-              AND f1.objid != f2.objid
-              AND ST_Distance(
-                    ST_Transform(ST_EndPoint(f1.senterlinje::geometry), 25833),
-                    ST_Transform(ST_StartPoint(f2.senterlinje::geometry), 25833)
-                  ) <= 1.0
-        """),
-        ('end_to_end', f"""
-            SELECT
-                f1.objid as seg1_objid,
-                f2.objid as seg2_objid,
-                ST_Distance(
-                    ST_Transform(ST_EndPoint(f1.senterlinje::geometry), 25833),
-                    ST_Transform(ST_EndPoint(f2.senterlinje::geometry), 25833)
-                ) as distance
-            FROM {ROUTE_SCHEMA}.fotrute f1
-            CROSS JOIN {ROUTE_SCHEMA}.fotrute f2
-            WHERE f1.objid IN ({placeholders})
-              AND f2.objid IN ({placeholders})
-              AND f1.objid != f2.objid
-              AND ST_Distance(
-                    ST_Transform(ST_EndPoint(f1.senterlinje::geometry), 25833),
-                    ST_Transform(ST_EndPoint(f2.senterlinje::geometry), 25833)
-                  ) <= 1.0
-        """),
-        ('start_to_start', f"""
-            SELECT
-                f1.objid as seg1_objid,
-                f2.objid as seg2_objid,
-                ST_Distance(
-                    ST_Transform(ST_StartPoint(f1.senterlinje::geometry), 25833),
-                    ST_Transform(ST_StartPoint(f2.senterlinje::geometry), 25833)
-                ) as distance
-            FROM {ROUTE_SCHEMA}.fotrute f1
-            CROSS JOIN {ROUTE_SCHEMA}.fotrute f2
-            WHERE f1.objid IN ({placeholders})
-              AND f2.objid IN ({placeholders})
-              AND f1.objid != f2.objid
-              AND ST_Distance(
-                    ST_Transform(ST_StartPoint(f1.senterlinje::geometry), 25833),
-                    ST_Transform(ST_StartPoint(f2.senterlinje::geometry), 25833)
-                  ) <= 1.0
-        """),
-        ('start_to_end', f"""
-            SELECT
-                f1.objid as seg1_objid,
-                f2.objid as seg2_objid,
-                ST_Distance(
-                    ST_Transform(ST_StartPoint(f1.senterlinje::geometry), 25833),
-                    ST_Transform(ST_EndPoint(f2.senterlinje::geometry), 25833)
-                ) as distance
-            FROM {ROUTE_SCHEMA}.fotrute f1
-            CROSS JOIN {ROUTE_SCHEMA}.fotrute f2
-            WHERE f1.objid IN ({placeholders})
-              AND f2.objid IN ({placeholders})
-              AND f1.objid != f2.objid
-              AND ST_Distance(
-                    ST_Transform(ST_StartPoint(f1.senterlinje::geometry), 25833),
-                    ST_Transform(ST_EndPoint(f2.senterlinje::geometry), 25833)
-                  ) <= 1.0
-        """),
-    ]
-
-    for conn_type, query in connection_queries:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, segment_objids + segment_objids)
-            results = cur.fetchall()
-
-            for result in results:
-                seg1_objid = result['seg1_objid']
-                seg2_objid = result['seg2_objid']
-                distance = float(result['distance'])
-
-                connections[seg1_objid].append({
-                    'target': seg2_objid,
-                    'type': conn_type,
-                    'distance': distance
-                })
+    connections = find_segment_connections(conn, segment_objids, ROUTE_SCHEMA)
 
     # Finn startsegmentet (segmentet som ikke har noen som kobler til starten)
     # Dette er segmentet som har en start som ikke er endepunkt for noen annen
@@ -223,89 +113,15 @@ def get_corrected_route_geometry(conn, rutenummer):
             - is_connected: Boolean indicating if all segments form a single connected route
     """
     # Bruk samme metode som find_geographic_order for å finne koblinger
-    # Hent alle segmenter først
-    query = f"""
-        SELECT
-            f.objid,
-            ST_AsText(ST_Transform(ST_StartPoint(f.senterlinje::geometry), 4326)) as start_point_wkt,
-            ST_AsText(ST_Transform(ST_EndPoint(f.senterlinje::geometry), 4326)) as end_point_wkt,
-            ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
-        FROM {ROUTE_SCHEMA}.fotrute f
-        JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
-        WHERE fi.rutenummer = %s
-        ORDER BY f.objid;
-    """
-
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(query, (rutenummer,))
-        segments = cur.fetchall()
+    # Hent alle segmenter først (bruk delt funksjon)
+    segments = get_route_segments_with_points(conn, rutenummer)
 
     if not segments:
         return None
 
-    # Bygg koblinger ved å bruke samme metode som find_geographic_order
+    # Bygg koblinger ved å bruke delt modul
     segment_objids = [seg['objid'] for seg in segments]
-    placeholders = ','.join(['%s'] * len(segment_objids))
-
-    # Hent alle koblinger direkte fra databasen (samme metode som find_geographic_order)
-    connections = {}
-    for seg in segments:
-        connections[seg['objid']] = []
-
-    connection_queries = [
-        ('end_to_start', f"""
-            SELECT f1.objid as seg1_objid, f2.objid as seg2_objid,
-                   ST_Distance(ST_Transform(ST_EndPoint(f1.senterlinje::geometry), 25833),
-                              ST_Transform(ST_StartPoint(f2.senterlinje::geometry), 25833)) as distance
-            FROM {ROUTE_SCHEMA}.fotrute f1 CROSS JOIN {ROUTE_SCHEMA}.fotrute f2
-            WHERE f1.objid IN ({placeholders}) AND f2.objid IN ({placeholders}) AND f1.objid != f2.objid
-              AND ST_Distance(ST_Transform(ST_EndPoint(f1.senterlinje::geometry), 25833),
-                             ST_Transform(ST_StartPoint(f2.senterlinje::geometry), 25833)) <= 1.0
-        """),
-        ('end_to_end', f"""
-            SELECT f1.objid as seg1_objid, f2.objid as seg2_objid,
-                   ST_Distance(ST_Transform(ST_EndPoint(f1.senterlinje::geometry), 25833),
-                              ST_Transform(ST_EndPoint(f2.senterlinje::geometry), 25833)) as distance
-            FROM {ROUTE_SCHEMA}.fotrute f1 CROSS JOIN {ROUTE_SCHEMA}.fotrute f2
-            WHERE f1.objid IN ({placeholders}) AND f2.objid IN ({placeholders}) AND f1.objid != f2.objid
-              AND ST_Distance(ST_Transform(ST_EndPoint(f1.senterlinje::geometry), 25833),
-                             ST_Transform(ST_EndPoint(f2.senterlinje::geometry), 25833)) <= 1.0
-        """),
-        ('start_to_start', f"""
-            SELECT f1.objid as seg1_objid, f2.objid as seg2_objid,
-                   ST_Distance(ST_Transform(ST_StartPoint(f1.senterlinje::geometry), 25833),
-                              ST_Transform(ST_StartPoint(f2.senterlinje::geometry), 25833)) as distance
-            FROM {ROUTE_SCHEMA}.fotrute f1 CROSS JOIN {ROUTE_SCHEMA}.fotrute f2
-            WHERE f1.objid IN ({placeholders}) AND f2.objid IN ({placeholders}) AND f1.objid != f2.objid
-              AND ST_Distance(ST_Transform(ST_StartPoint(f1.senterlinje::geometry), 25833),
-                             ST_Transform(ST_StartPoint(f2.senterlinje::geometry), 25833)) <= 1.0
-        """),
-        ('start_to_end', f"""
-            SELECT f1.objid as seg1_objid, f2.objid as seg2_objid,
-                   ST_Distance(ST_Transform(ST_StartPoint(f1.senterlinje::geometry), 25833),
-                              ST_Transform(ST_EndPoint(f2.senterlinje::geometry), 25833)) as distance
-            FROM {ROUTE_SCHEMA}.fotrute f1 CROSS JOIN {ROUTE_SCHEMA}.fotrute f2
-            WHERE f1.objid IN ({placeholders}) AND f2.objid IN ({placeholders}) AND f1.objid != f2.objid
-              AND ST_Distance(ST_Transform(ST_StartPoint(f1.senterlinje::geometry), 25833),
-                             ST_Transform(ST_EndPoint(f2.senterlinje::geometry), 25833)) <= 1.0
-        """),
-    ]
-
-    for conn_type, query_sql in connection_queries:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query_sql, segment_objids + segment_objids)
-            results = cur.fetchall()
-
-            for result in results:
-                seg1_objid = result['seg1_objid']
-                seg2_objid = result['seg2_objid']
-                distance = float(result['distance'])
-
-                connections[seg1_objid].append({
-                    'target': seg2_objid,
-                    'type': conn_type,
-                    'distance': distance
-                })
+    connections = find_segment_connections(conn, segment_objids, ROUTE_SCHEMA)
 
     # Finn sammenhengende komponenter ved å følge koblingene
     import json
@@ -349,20 +165,8 @@ def get_corrected_route_geometry(conn, rutenummer):
         if component_objids:
             components.append(component_objids)
 
-    # Hent alle segmenter med geometri
-    placeholders = ','.join(['%s'] * len(segment_objids))
-    geom_query = f"""
-        SELECT
-            f.objid,
-            ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326)) as geometry_geojson,
-            ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
-        FROM {ROUTE_SCHEMA}.fotrute f
-        WHERE f.objid IN ({placeholders});
-    """
-
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(geom_query, segment_objids)
-        all_segments_with_geom = cur.fetchall()
+    # Hent alle segmenter med geometri (bruk delt funksjon)
+    all_segments_with_geom = get_segments_by_objids(conn, segment_objids, include_geojson=True)
 
     # Bygg dict for rask oppslag
     segment_dict = {seg['objid']: seg for seg in all_segments_with_geom}
@@ -378,7 +182,7 @@ def get_corrected_route_geometry(conn, rutenummer):
 
         for objid in component_objids:
             seg = segment_dict[objid]
-            geom_json = json.loads(seg['geometry_geojson']) if seg['geometry_geojson'] else None
+            geom_json = parse_geojson_string(seg.get('geometry_geojson'))
             length = float(seg['length_meters']) if seg['length_meters'] else 0.0
 
             all_segments_info.append({
@@ -612,9 +416,15 @@ def get_corrected_route_geometry(conn, rutenummer):
         'dead_end_count': len(dead_end_segments)
     }
 
+    # Build ordered segment objids: single list if connected, list of lists if disconnected
+    if is_connected and components:
+        ordered_segment_objids = components[0]  # Single component = ordered list
+    else:
+        ordered_segment_objids = components  # Multiple components = list of lists
+
     return {
         'rutenummer': rutenummer,
-        'ordered_segment_objids': ordered_objids if is_connected else [comp for comp in components],
+        'ordered_segment_objids': ordered_segment_objids,
         'geometry': combined_geometry,
         'segments_info': all_segments_info,
         'total_length_meters': total_length,

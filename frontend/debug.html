@@ -285,6 +285,9 @@
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
+    <!-- Constants -->
+    <script src="js/constants.js"></script>
+
     <!-- Common utilities -->
     <script src="js/common.js"></script>
 
@@ -428,44 +431,7 @@
             }
         });
 
-        /**
-         * Extract bounds from GeoJSON geometry
-         * @param {Object} geometry - GeoJSON geometry
-         * @returns {L.LatLngBounds|null} Bounds or null
-         */
-        function getBoundsFromGeometry(geometry) {
-            if (!geometry || !geometry.coordinates) {
-                return null;
-            }
-
-            const bounds = L.latLngBounds([]);
-            let hasCoords = false;
-
-            function processCoordinates(coords) {
-                if (Array.isArray(coords)) {
-                    if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') {
-                        // This is a coordinate [lng, lat]
-                        bounds.extend([coords[1], coords[0]]);
-                        hasCoords = true;
-                    } else {
-                        // This is an array of coordinates
-                        coords.forEach(coord => processCoordinates(coord));
-                    }
-                }
-            }
-
-            if (geometry.type === 'LineString') {
-                geometry.coordinates.forEach(coord => processCoordinates(coord));
-            } else if (geometry.type === 'MultiLineString') {
-                geometry.coordinates.forEach(line => {
-                    line.forEach(coord => processCoordinates(coord));
-                });
-            } else if (geometry.type === 'Point') {
-                processCoordinates(geometry.coordinates);
-            }
-
-            return hasCoords ? bounds : null;
-        }
+        // getBoundsFromGeometry is now available from common.js
 
         /**
          * Zoom to route using geometry directly from data
@@ -480,7 +446,7 @@
             // Collect bounds from route geometry
             if (routeData && routeData.geometry) {
                 const routeBounds = getBoundsFromGeometry(routeData.geometry);
-                if (routeBounds && routeBounds.isValid()) {
+                if (routeBounds) {
                     bounds.extend(routeBounds);
                     hasBounds = true;
                     console.log('Added route geometry bounds');
@@ -492,7 +458,7 @@
                 debugData.segments.forEach(segment => {
                     if (segment.geometry) {
                         const segmentBounds = getBoundsFromGeometry(segment.geometry);
-                        if (segmentBounds && segmentBounds.isValid()) {
+                        if (segmentBounds) {
                             bounds.extend(segmentBounds);
                             hasBounds = true;
                         }
@@ -523,12 +489,10 @@
             }
 
             // Fit map to all bounds
-            if (hasBounds && bounds.isValid()) {
+            if (hasBounds && isValidBounds(bounds)) {
                 console.log('Fitting map to bounds:', bounds);
-                try {
-                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
-                } catch (error) {
-                    console.error('Error fitting bounds:', error);
+                if (!fitMapToBounds(map, bounds, { maxZoom: 18 })) {
+                    console.warn('Failed to fit bounds');
                 }
             } else {
                 console.warn('No valid bounds found from geometry data');
@@ -547,77 +511,46 @@
             const bounds = L.latLngBounds([]);
             let hasBounds = false;
 
-            // Helper function to safely get bounds from a layer
-            function tryGetBounds(layer, layerName) {
-                if (!layer) {
-                    return null;
-                }
-
-                if (typeof layer.getBounds !== 'function') {
-                    return null;
-                }
-
-                // Check if it's a layer group with layers
-                if (layer.getLayers && typeof layer.getLayers === 'function') {
-                    const layers = layer.getLayers();
-                    if (layers.length === 0) {
-                        return null;
-                    }
-                }
-
-                try {
-                    const layerBounds = layer.getBounds();
-                    if (layerBounds && typeof layerBounds.isValid === 'function' && layerBounds.isValid()) {
-                        return layerBounds;
-                    }
-                } catch (error) {
-                    console.warn(`Could not get bounds from ${layerName}:`, error);
-                }
-                return null;
-            }
-
             // Collect bounds from route layer
-            const routeBounds = tryGetBounds(routeViewer.routeLayer, 'routeLayer');
+            const routeBounds = getBoundsFromLayer(routeViewer.routeLayer, 'routeLayer');
             if (routeBounds) {
                 bounds.extend(routeBounds);
                 hasBounds = true;
             }
 
             // Collect bounds from route layer group
-            const routeGroupBounds = tryGetBounds(routeViewer.routeLayerGroup, 'routeLayerGroup');
+            const routeGroupBounds = getBoundsFromLayer(routeViewer.routeLayerGroup, 'routeLayerGroup');
             if (routeGroupBounds) {
                 bounds.extend(routeGroupBounds);
                 hasBounds = true;
             }
 
             // Collect bounds from debug layer group
-            const debugBounds = tryGetBounds(debugViewer.debugLayerGroup, 'debugLayerGroup');
+            const debugBounds = getBoundsFromLayer(debugViewer.debugLayerGroup, 'debugLayerGroup');
             if (debugBounds) {
                 bounds.extend(debugBounds);
                 hasBounds = true;
             }
 
             // Collect bounds from connection layer group
-            const connectionBounds = tryGetBounds(debugViewer.connectionLayerGroup, 'connectionLayerGroup');
+            const connectionBounds = getBoundsFromLayer(debugViewer.connectionLayerGroup, 'connectionLayerGroup');
             if (connectionBounds) {
                 bounds.extend(connectionBounds);
                 hasBounds = true;
             }
 
             // Collect bounds from segment layer group
-            const segmentBounds = tryGetBounds(routeViewer.segmentLayerGroup, 'segmentLayerGroup');
+            const segmentBounds = getBoundsFromLayer(routeViewer.segmentLayerGroup, 'segmentLayerGroup');
             if (segmentBounds) {
                 bounds.extend(segmentBounds);
                 hasBounds = true;
             }
 
             // Fit map to all bounds
-            if (hasBounds && bounds.isValid()) {
+            if (hasBounds && isValidBounds(bounds)) {
                 console.log('Fitting map to bounds (fallback):', bounds);
-                try {
-                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
-                } catch (error) {
-                    console.error('Error fitting bounds:', error);
+                if (!fitMapToBounds(map, bounds, { maxZoom: 18 })) {
+                    console.warn('Failed to fit bounds (fallback)');
                 }
             } else {
                 console.warn('No valid bounds found from any layer (fallback)');

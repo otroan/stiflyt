@@ -2,7 +2,17 @@
 import psycopg2
 import json
 from psycopg2.extras import RealDictCursor
-from .database import get_db_connection, ROUTE_SCHEMA, TEIG_SCHEMA
+from .database import get_db_connection, db_connection, ROUTE_SCHEMA, TEIG_SCHEMA, validate_schema_name
+
+
+class RouteNotFoundError(Exception):
+    """Exception raised when a route is not found."""
+    pass
+
+
+class RouteDataError(Exception):
+    """Exception raised when route data cannot be processed."""
+    pass
 
 
 def format_matrikkelenhet(kommunenummer, gardsnummer, bruksnummer, festenummer=None):
@@ -26,7 +36,21 @@ def format_matrikkelenhet(kommunenummer, gardsnummer, bruksnummer, festenummer=N
 
 
 def get_route_segments(conn, rutenummer):
-    """Get all segments for a route."""
+    """
+    Get all segments for a route with basic metadata.
+
+    Args:
+        conn: Database connection
+        rutenummer: Route identifier
+
+    Returns:
+        List of segment dicts with: objid, senterlinje, rutenummer, rutenavn, vedlikeholdsansvarlig
+    """
+    # Validate schema name (should always be valid, but check for safety)
+    # Schema names are constants, but validation provides defense in depth
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
     query = f"""
         SELECT
             f.objid,
@@ -45,88 +69,387 @@ def get_route_segments(conn, rutenummer):
         return cur.fetchall()
 
 
+def get_route_segments_with_geometry(conn, rutenummer, include_geojson=True):
+    """
+    Get route segments with geometry converted to GeoJSON and length.
+
+    All user inputs are parameterized. Schema names are validated constants.
+
+    Args:
+        conn: Database connection
+        rutenummer: Route identifier
+        include_geojson: If True, include geometry as GeoJSON string (default: True)
+
+    Returns:
+        List of segment dicts with: objid, senterlinje, length_meters, geometry_geojson (if include_geojson=True)
+    """
+    # Validate schema name (defense in depth)
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    if include_geojson:
+        query = f"""
+            SELECT
+                f.objid,
+                f.senterlinje,
+                ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters,
+                ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326)) as geometry_geojson
+            FROM {ROUTE_SCHEMA}.fotrute f
+            JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+            WHERE fi.rutenummer = %s
+            ORDER BY f.objid;
+        """
+    else:
+        query = f"""
+            SELECT
+                f.objid,
+                f.senterlinje,
+                ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
+            FROM {ROUTE_SCHEMA}.fotrute f
+            JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+            WHERE fi.rutenummer = %s
+            ORDER BY f.objid;
+        """
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(query, (rutenummer,))
+        return cur.fetchall()
+
+
+def get_route_segments_with_points(conn, rutenummer):
+    """
+    Get route segments with start/end points as WKT and length.
+    Useful for connection analysis.
+
+    All user inputs are parameterized. Schema names are validated constants.
+
+    Args:
+        conn: Database connection
+        rutenummer: Route identifier
+
+    Returns:
+        List of segment dicts with: objid, start_point_wkt, end_point_wkt, length_meters
+    """
+    # Validate schema name (defense in depth)
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    query = f"""
+        SELECT
+            f.objid,
+            ST_AsText(ST_Transform(ST_StartPoint(f.senterlinje::geometry), 4326)) as start_point_wkt,
+            ST_AsText(ST_Transform(ST_EndPoint(f.senterlinje::geometry), 4326)) as end_point_wkt,
+            ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
+        FROM {ROUTE_SCHEMA}.fotrute f
+        JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+        WHERE fi.rutenummer = %s
+        ORDER BY f.objid;
+    """
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(query, (rutenummer,))
+        return cur.fetchall()
+
+
+def get_segments_by_objids(conn, segment_objids, include_geojson=True):
+    """
+    Get segments by their objids with geometry and length.
+
+    Args:
+        conn: Database connection
+        segment_objids: List of segment objids
+        include_geojson: If True, include geometry as GeoJSON string (default: True)
+
+    Returns:
+        List of segment dicts with: objid, geometry_geojson (if include_geojson=True), length_meters
+    """
+    if not segment_objids:
+        return []
+
+    # Validate segment_objids are integers (prevent injection)
+    validated_objids = []
+    for objid in segment_objids:
+        try:
+            objid_int = int(objid)
+            if objid_int > 0:
+                validated_objids.append(objid_int)
+            else:
+                raise ValueError(f"Invalid segment objid: {objid} (must be positive)")
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid segment objid: {objid} (must be an integer)")
+
+    if not validated_objids:
+        return []
+
+    placeholders = ','.join(['%s'] * len(validated_objids))
+
+    # Validate schema name (defense in depth)
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    if include_geojson:
+        query = f"""
+            SELECT
+                f.objid,
+                ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326)) as geometry_geojson,
+                ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
+            FROM {ROUTE_SCHEMA}.fotrute f
+            WHERE f.objid IN ({placeholders});
+        """
+    else:
+        query = f"""
+            SELECT
+                f.objid,
+                ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
+            FROM {ROUTE_SCHEMA}.fotrute f
+            WHERE f.objid IN ({placeholders});
+        """
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        # Use validated_objids (all values are parameterized, safe from injection)
+        cur.execute(query, validated_objids)
+        return cur.fetchall()
+
+
 def combine_route_geometry(conn, segments):
-    """Combine route segments into a single linestring."""
+    """
+    Combine route segments into a single geometry (LineString or MultiLineString).
+
+    Handles edge cases:
+    - Empty segment list
+    - Segments that cannot be merged (returns MultiLineString)
+    - NULL geometries in segments
+    - Single segment (returns as-is)
+    """
     if not segments:
         return None
 
-    # Collect all geometries
-    query = f"""
-        SELECT ST_LineMerge(ST_Collect(senterlinje::geometry))::geometry as combined_geom
-        FROM {ROUTE_SCHEMA}.fotrute
-        WHERE objid = ANY(%s);
-    """
+    # Validate schema name (defense in depth)
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
 
     segment_ids = [seg['objid'] for seg in segments]
+    if not segment_ids:
+        return None
+
+    # Collect all geometries and attempt to merge
+    # ST_LineMerge will return MultiLineString if segments cannot be merged
+    query = f"""
+        SELECT
+            ST_LineMerge(ST_Collect(senterlinje::geometry))::geometry as combined_geom,
+            ST_GeometryType(ST_LineMerge(ST_Collect(senterlinje::geometry))::geometry) as geom_type
+        FROM {ROUTE_SCHEMA}.fotrute
+        WHERE objid = ANY(%s)
+          AND senterlinje IS NOT NULL;
+    """
 
     with conn.cursor() as cur:
         cur.execute(query, (segment_ids,))
         result = cur.fetchone()
-        return result[0] if result else None
+
+        if not result or not result[0]:
+            # No valid geometries found
+            return None
+
+        combined_geom = result[0]
+        geom_type = result[1] if len(result) > 1 else None
+
+        # Validate geometry type
+        if geom_type and geom_type not in ('ST_LineString', 'ST_MultiLineString'):
+            # Unexpected geometry type - log warning but return geometry anyway
+            # This handles edge cases like Point, Polygon, etc.
+            return combined_geom
+
+        return combined_geom
 
 
 def get_route_length(conn, route_geom):
-    """Get route length in meters.
+    """
+    Get route length in meters.
 
     Uses geography (spherical) calculation for accurate distance measurements.
     Handles both LineString and MultiLineString geometries.
     For MultiLineString, sums the length of all constituent lines.
+
+    Edge cases handled:
+    - NULL or empty geometries
+    - Invalid geometry types
+    - MultiLineString with NULL constituent geometries
+    - Empty MultiLineString (no geometries)
     """
+    if route_geom is None:
+        return 0.0
+
     # Check geometry type and calculate length accordingly
     check_type_query = """
-        SELECT ST_GeometryType(%s::geometry) as geom_type;
+        SELECT ST_GeometryType(%s::geometry) as geom_type,
+               ST_IsEmpty(%s::geometry) as is_empty;
     """
 
     with conn.cursor() as cur:
-        cur.execute(check_type_query, (route_geom,))
-        geom_type = cur.fetchone()[0]
+        cur.execute(check_type_query, (route_geom, route_geom))
+        result = cur.fetchone()
+
+        if not result:
+            return 0.0
+
+        geom_type = result[0]
+        is_empty = result[1] if len(result) > 1 else False
+
+        if is_empty:
+            return 0.0
 
         if geom_type == 'ST_MultiLineString':
-            # For MultiLineString, use loop instead of generate_series in SUM (PostgreSQL doesn't allow set-returning functions in aggregates)
-            # First get number of geometries
-            num_query = "SELECT ST_NumGeometries(%s::geometry) as num;"
-            cur.execute(num_query, (route_geom,))
-            num_geoms = cur.fetchone()[0]
+            # For MultiLineString, get number of geometries and validate
+            num_query = """
+                SELECT ST_NumGeometries(%s::geometry) as num,
+                       ST_IsEmpty(%s::geometry) as is_empty;
+            """
+            cur.execute(num_query, (route_geom, route_geom))
+            num_result = cur.fetchone()
 
-            # Sum lengths using loop
+            if not num_result:
+                return 0.0
+
+            num_geoms = num_result[0]
+            is_empty = num_result[1] if len(num_result) > 1 else False
+
+            if num_geoms is None or num_geoms < 1 or is_empty:
+                return 0.0
+
+            # Sum lengths using loop - handle NULL geometries gracefully
             total_length = 0.0
             for i in range(1, num_geoms + 1):
-                length_query = "SELECT ST_Length(ST_Transform(ST_GeometryN(%s::geometry, %s), 4326)::geography) as length;"
-                cur.execute(length_query, (route_geom, i))
-                length = cur.fetchone()[0]
-                if length:
-                    total_length += length
+                length_query = """
+                    SELECT ST_Length(
+                        ST_Transform(
+                            ST_GeometryN(%s::geometry, %s),
+                            4326
+                        )::geography
+                    ) as length
+                    WHERE ST_GeometryN(%s::geometry, %s) IS NOT NULL;
+                """
+                cur.execute(length_query, (route_geom, i, route_geom, i))
+                length_result = cur.fetchone()
+                if length_result and length_result[0] is not None:
+                    total_length += float(length_result[0])
 
             return total_length
-        else:
+        elif geom_type == 'ST_LineString':
             # For LineString, use geography for accurate spherical distance calculation
             # Transform to WGS84 (4326) first, then cast to geography
             length_query = """
                 SELECT ST_Length(ST_Transform(%s::geometry, 4326)::geography) as length_meters;
             """
             cur.execute(length_query, (route_geom,))
-
-        result = cur.fetchone()
-        return result[0] if result else 0.0
+            result = cur.fetchone()
+            return float(result[0]) if result and result[0] is not None else 0.0
+        else:
+            # Unexpected geometry type - try to calculate length anyway
+            # This handles edge cases like Point, Polygon, etc.
+            length_query = """
+                SELECT ST_Length(ST_Transform(%s::geometry, 4326)::geography) as length_meters;
+            """
+            cur.execute(length_query, (route_geom,))
+            result = cur.fetchone()
+            return float(result[0]) if result and result[0] is not None else 0.0
 
 
 def geometry_to_geojson(conn, geom):
-    """Convert PostGIS geometry to GeoJSON."""
-    query = """
-        SELECT ST_AsGeoJSON(ST_Transform(%s::geometry, 4326)) as geojson;
+    """
+    Convert PostGIS geometry to GeoJSON.
+
+    Handles edge cases:
+    - NULL geometries
+    - Empty geometries
+    - Invalid geometry types
+    - MultiLineString with empty constituent geometries
+
+    Args:
+        conn: Database connection
+        geom: PostGIS geometry object
+
+    Returns:
+        dict: GeoJSON geometry object, or None if conversion fails
+    """
+    if geom is None:
+        return None
+
+    # Check if geometry is empty before conversion
+    check_query = """
+        SELECT ST_IsEmpty(%s::geometry) as is_empty,
+               ST_GeometryType(%s::geometry) as geom_type;
     """
 
     with conn.cursor() as cur:
+        cur.execute(check_query, (geom, geom))
+        check_result = cur.fetchone()
+
+        if not check_result:
+            return None
+
+        is_empty = check_result[0] if len(check_result) > 0 else True
+        geom_type = check_result[1] if len(check_result) > 1 else None
+
+        if is_empty:
+            # Return appropriate empty geometry based on type
+            if geom_type == 'ST_MultiLineString':
+                return {'type': 'MultiLineString', 'coordinates': []}
+            elif geom_type == 'ST_LineString':
+                return {'type': 'LineString', 'coordinates': []}
+            else:
+                return None
+
+        # Convert to GeoJSON
+        query = """
+            SELECT ST_AsGeoJSON(ST_Transform(%s::geometry, 4326)) as geojson;
+        """
         cur.execute(query, (geom,))
         result = cur.fetchone()
+
         if result and result[0]:
             import json
-            return json.loads(result[0])
+            try:
+                geojson_dict = json.loads(result[0])
+                # Validate GeoJSON structure
+                if isinstance(geojson_dict, dict) and 'type' in geojson_dict:
+                    return geojson_dict
+                return None
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return None
+
+
+def parse_geojson_string(geojson_str):
+    """
+    Parse a GeoJSON string from SQL query results.
+    Helper function to avoid duplicate json.loads() calls.
+
+    Args:
+        geojson_str: GeoJSON string from database (or None)
+
+    Returns:
+        dict: Parsed GeoJSON object, or None if input is None/empty
+    """
+    if not geojson_str:
+        return None
+    import json
+    try:
+        return json.loads(geojson_str)
+    except (json.JSONDecodeError, TypeError):
         return None
 
 
 def find_matrikkelenhet_intersections(conn, route_geom):
-    """Find all intersections between route and teig polygons."""
+    """
+    Find all intersections between route and teig polygons.
+
+    All schema names are validated constants. Route geometry is parameterized.
+    """
+    # Validate schema names (should always be valid, but check for safety)
+    if not validate_schema_name(TEIG_SCHEMA):
+        raise ValueError(f"Invalid TEIG_SCHEMA: {TEIG_SCHEMA}")
+
     query = f"""
         SELECT
             t.matrikkelnummertekst,
@@ -153,7 +476,28 @@ def find_matrikkelenhet_intersections(conn, route_geom):
 
 
 def calculate_offsets(conn, route_geom, intersections, total_length):
-    """Calculate offset from start for each intersection."""
+    """
+    Calculate offset from start for each intersection.
+
+    Args:
+        conn: Database connection
+        route_geom: Route geometry
+        intersections: List of intersection data
+        total_length: Total length of route in meters
+
+    Returns:
+        list: List of offset dictionaries
+
+    Raises:
+        ValueError: If total_length is zero or negative
+    """
+    # Validate total_length to prevent division by zero or invalid calculations
+    if total_length is None or total_length <= 0:
+        # If route has zero or negative length, offsets cannot be calculated meaningfully
+        # Return empty list rather than raising error, as this might be a valid edge case
+        # (e.g., route with no length due to data issues)
+        return []
+
     results = []
 
     # Check if route_geom is MultiLineString and convert to single LineString if needed
@@ -169,22 +513,46 @@ def calculate_offsets(conn, route_geom, intersections, total_length):
     # If route is MultiLineString, we need to handle it differently
     # For MultiLineString, we'll use ST_LineMerge to try to merge, or use the first line
     if route_type == 'ST_MultiLineString':
-        merge_query = """
-            SELECT ST_LineMerge(%s::geometry)::geometry as merged_geom,
-                   ST_GeometryType(ST_LineMerge(%s::geometry)::geometry) as merged_type;
+        # Check if MultiLineString is empty
+        check_empty_query = """
+            SELECT ST_IsEmpty(%s::geometry) as is_empty,
+                   ST_NumGeometries(%s::geometry) as num_geoms;
         """
         with conn.cursor() as cur:
-            cur.execute(merge_query, (route_geom, route_geom))
+            cur.execute(check_empty_query, (route_geom, route_geom))
+            empty_result = cur.fetchone()
+
+            if not empty_result or empty_result[0] or (empty_result[1] if len(empty_result) > 1 else 0) < 1:
+                # Empty MultiLineString - cannot calculate offsets
+                return results
+
+            # Attempt to merge MultiLineString
+            merge_query = """
+                SELECT ST_LineMerge(%s::geometry)::geometry as merged_geom,
+                       ST_GeometryType(ST_LineMerge(%s::geometry)::geometry) as merged_type,
+                       ST_IsEmpty(ST_LineMerge(%s::geometry)::geometry) as merged_empty;
+            """
+            cur.execute(merge_query, (route_geom, route_geom, route_geom))
             merge_result = cur.fetchone()
-            if merge_result and merge_result[1] == 'ST_LineString':
-                route_geom = merge_result[0]  # Use merged LineString
+
+            if merge_result and merge_result[1] == 'ST_LineString' and not (merge_result[2] if len(merge_result) > 2 else False):
+                # Successfully merged to LineString
+                route_geom = merge_result[0]
             else:
-                # If merge failed, use first line of MultiLineString
-                first_line_query = "SELECT ST_GeometryN(%s::geometry, 1)::geometry as first_line;"
-                cur.execute(first_line_query, (route_geom,))
+                # Merge failed or still MultiLineString - use first non-empty line
+                first_line_query = """
+                    SELECT ST_GeometryN(%s::geometry, 1)::geometry as first_line
+                    WHERE ST_NumGeometries(%s::geometry) >= 1
+                      AND ST_GeometryN(%s::geometry, 1) IS NOT NULL
+                      AND NOT ST_IsEmpty(ST_GeometryN(%s::geometry, 1)::geometry);
+                """
+                cur.execute(first_line_query, (route_geom, route_geom, route_geom, route_geom))
                 first_line_result = cur.fetchone()
-                if first_line_result:
+                if first_line_result and first_line_result[0]:
                     route_geom = first_line_result[0]
+                else:
+                    # No valid first line - cannot calculate offsets
+                    return results
 
     for intersection in intersections:
         # Handle both LineString and MultiLineString for intersection
@@ -223,6 +591,10 @@ def calculate_offsets(conn, route_geom, intersections, total_length):
         intersection_geom = intersection['intersection_geom']
         intersection_geojson = geometry_to_geojson(conn, intersection_geom)
 
+        # Handle potential None or zero length_meters
+        length_meters = intersection.get('length_meters') or 0.0
+        length_km = length_meters / 1000.0 if length_meters else 0.0
+
         results.append({
             'matrikkelenhet': formatted_matrikkel or intersection['matrikkelnummertekst'],
             'bruksnavn': intersection.get('bruksnavn'),
@@ -230,8 +602,8 @@ def calculate_offsets(conn, route_geom, intersections, total_length):
             'kommunenavn': intersection['kommunenavn'],
             'offset_meters': offset_meters,
             'offset_km': offset_km,
-            'length_meters': intersection['length_meters'],
-            'length_km': intersection['length_meters'] / 1000.0,
+            'length_meters': length_meters,
+            'length_km': length_km,
             'geometry': intersection_geojson
         })
 
@@ -241,10 +613,22 @@ def calculate_offsets(conn, route_geom, intersections, total_length):
 
 
 def search_routes(rutenummer_prefix=None, rutenavn_search=None, organization=None, limit=100):
-    """Search for routes by various criteria."""
-    conn = get_db_connection()
+    """
+    Search for routes by various criteria.
 
-    try:
+    All user inputs are parameterized to prevent SQL injection.
+    Schema names are validated constants.
+    """
+    # Validate limit to prevent injection via integer overflow
+    if not isinstance(limit, int) or limit < 1 or limit > 10000:
+        raise ValueError(f"Invalid limit: {limit}. Must be between 1 and 10000.")
+
+    # Validate schema name (should always be valid, but check for safety)
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    with db_connection() as conn:
+        # Schema name is a validated constant, safe to use in f-string
         query = f"""
             SELECT DISTINCT
                 fi.rutenummer,
@@ -258,6 +642,7 @@ def search_routes(rutenummer_prefix=None, rutenavn_search=None, organization=Non
 
         params = []
 
+        # All user inputs are parameterized (safe from SQL injection)
         if rutenummer_prefix:
             query += " AND fi.rutenummer ILIKE %s"
             params.append(f"{rutenummer_prefix}%")
@@ -272,7 +657,8 @@ def search_routes(rutenummer_prefix=None, rutenavn_search=None, organization=Non
 
         query += " GROUP BY fi.rutenummer, fi.rutenavn, fi.vedlikeholdsansvarlig"
         query += " ORDER BY fi.rutenummer"
-        query += f" LIMIT %s"
+        # LIMIT value is parameterized (safe)
+        query += " LIMIT %s"
         params.append(limit)
 
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -291,9 +677,6 @@ def search_routes(rutenummer_prefix=None, rutenavn_search=None, organization=Non
 
             return unique_results
 
-    finally:
-        conn.close()
-
 
 def get_route_list(limit=1000):
     """Get list of all routes with basic metadata."""
@@ -305,19 +688,25 @@ def get_route_data(rutenummer, use_corrected_geometry=True):
     Get complete route data including geometry, metadata, and matrikkelenhet vector.
 
     Args:
+        rutenummer: Route identifier
         use_corrected_geometry: If True, use corrected geographic order instead of database order.
                                 If segments cannot be connected, they are shown as separate components.
-    """
-    conn = get_db_connection()
 
-    try:
+    Returns:
+        dict: Route data with geometry, metadata, and matrikkelenhet vector
+
+    Raises:
+        RouteNotFoundError: If the route is not found or has no segments
+        RouteDataError: If route data cannot be processed (e.g., geometry issues)
+    """
+    with db_connection() as conn:
         if use_corrected_geometry:
             # Use corrected geographic geometry
             from .route_geometry import get_corrected_route_geometry
 
             corrected = get_corrected_route_geometry(conn, rutenummer)
             if not corrected:
-                return None
+                raise RouteNotFoundError(f"Route '{rutenummer}' not found or has no valid geometry")
 
             # Use corrected geometry
             route_geom_geojson = corrected['geometry']
@@ -331,12 +720,15 @@ def get_route_data(rutenummer, use_corrected_geometry=True):
             """
             with conn.cursor() as cur:
                 cur.execute(geom_wkt_query, (json.dumps(route_geom_geojson),))
-                route_geom = cur.fetchone()[0]
+                result = cur.fetchone()
+                if not result or not result[0]:
+                    raise RouteDataError(f"Failed to convert geometry for route '{rutenummer}'")
+                route_geom = result[0]
 
             # Get metadata from first segment
             segments = get_route_segments(conn, rutenummer)
             if not segments:
-                return None
+                raise RouteNotFoundError(f"Route '{rutenummer}' has no segments")
 
             metadata = {
                 'rutenummer': segments[0]['rutenummer'],
@@ -366,12 +758,12 @@ def get_route_data(rutenummer, use_corrected_geometry=True):
             # Original implementation using database order
             segments = get_route_segments(conn, rutenummer)
             if not segments:
-                return None
+                raise RouteNotFoundError(f"Route '{rutenummer}' not found or has no segments")
 
             # Combine geometry
             route_geom = combine_route_geometry(conn, segments)
             if not route_geom:
-                return None
+                raise RouteDataError(f"Failed to combine geometry for route '{rutenummer}'")
 
             # Get route length
             total_length = get_route_length(conn, route_geom)
@@ -379,6 +771,8 @@ def get_route_data(rutenummer, use_corrected_geometry=True):
 
             # Convert geometry to GeoJSON
             geometry_geojson = geometry_to_geojson(conn, route_geom)
+            if not geometry_geojson:
+                raise RouteDataError(f"Failed to convert geometry to GeoJSON for route '{rutenummer}'")
 
             # Get metadata
             metadata = {
@@ -402,56 +796,54 @@ def get_route_data(rutenummer, use_corrected_geometry=True):
                 'matrikkelenhet_vector': matrikkelenhet_vector
             }
 
-    finally:
-        conn.close()
-
 
 def get_route_segments_data(rutenummer):
-    """Get individual segments for a route with geometry and length."""
-    conn = get_db_connection()
+    """
+    Get individual segments for a route with geometry and length.
+    Uses shared segment fetching function.
 
-    try:
-        # Get route segments with geometry and length
-        # Use geography for accurate distance calculation (not Web Mercator which distorts at high latitudes)
-        query = f"""
-            SELECT
-                f.objid,
-                f.senterlinje,
-                fi.rutenummer,
-                fi.rutenavn,
-                ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
-            FROM {ROUTE_SCHEMA}.fotrute f
-            JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
-            WHERE fi.rutenummer = %s
-            ORDER BY f.objid;
-        """
+    Args:
+        rutenummer: Route identifier
 
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, (rutenummer,))
-            segments = cur.fetchall()
+    Returns:
+        dict: Route segments data with rutenummer, rutenavn, and segments list
+
+    Raises:
+        RouteNotFoundError: If the route is not found or has no segments
+    """
+    with db_connection() as conn:
+        # Get route segments with geometry (using shared function)
+        segments = get_route_segments_with_geometry(conn, rutenummer, include_geojson=True)
 
         if not segments:
-            return None
+            raise RouteNotFoundError(f"Route '{rutenummer}' not found or has no segments")
+
+        # Get route metadata (rutenummer, rutenavn) from first segment
+        # We need to fetch this separately since get_route_segments_with_geometry doesn't include it
+        basic_segments = get_route_segments(conn, rutenummer)
+        if not basic_segments:
+            raise RouteNotFoundError(f"Route '{rutenummer}' not found or has no segments")
 
         # Convert each segment geometry to GeoJSON
         segments_data = []
         for seg in segments:
-            geom_geojson = geometry_to_geojson(conn, seg['senterlinje'])
-            if geom_geojson:
+            geom_json = parse_geojson_string(seg.get('geometry_geojson'))
+            if geom_json:
+                # Handle potential None or zero length_meters
+                length_meters = seg.get('length_meters') or 0.0
+                length_km = length_meters / 1000.0 if length_meters else 0.0
+
                 segments_data.append({
                     'objid': seg['objid'],
-                    'geometry': geom_geojson,
-                    'length_meters': seg['length_meters'],
-                    'length_km': seg['length_meters'] / 1000.0
+                    'geometry': geom_json,
+                    'length_meters': length_meters,
+                    'length_km': length_km
                 })
 
         return {
-            'rutenummer': segments[0]['rutenummer'],
-            'rutenavn': segments[0]['rutenavn'],
+            'rutenummer': basic_segments[0]['rutenummer'],
+            'rutenavn': basic_segments[0]['rutenavn'],
             'segments': segments_data,
             'total_segments': len(segments_data)
         }
-
-    finally:
-        conn.close()
 

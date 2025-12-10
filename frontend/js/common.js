@@ -134,6 +134,51 @@ function displayRouteGeometry(map, geometry, style = {}) {
 }
 
 /**
+ * Create a GeoJSON layer with popup and add to a layer group
+ * Common helper function to reduce duplication
+ * @param {Object} geometry - GeoJSON geometry object
+ * @param {Object} options - Configuration options
+ * @param {Object} options.style - Leaflet style options (color, weight, opacity)
+ * @param {string} options.popupContent - HTML content for popup (optional)
+ * @param {L.LayerGroup} options.layerGroup - Layer group to add the layer to (optional)
+ * @param {string} options.layerName - Name for error messages (optional)
+ * @returns {L.GeoJSON|null} GeoJSON layer or null if creation failed
+ */
+function createGeoJSONLayer(geometry, options = {}) {
+    if (!geometry || !geometry.coordinates) {
+        return null;
+    }
+
+    const {
+        style = {},
+        popupContent = null,
+        layerGroup = null,
+        layerName = 'layer'
+    } = options;
+
+    try {
+        const geoJsonLayer = L.geoJSON(geometry, {
+            style: style
+        });
+
+        // Add popup if content provided
+        if (popupContent) {
+            geoJsonLayer.bindPopup(popupContent);
+        }
+
+        // Add to layer group if provided
+        if (layerGroup) {
+            geoJsonLayer.addTo(layerGroup);
+        }
+
+        return geoJsonLayer;
+    } catch (error) {
+        console.error(`Error creating GeoJSON layer for ${layerName}:`, error);
+        return null;
+    }
+}
+
+/**
  * Get color for a property based on its matrikkelenhet
  * @param {string} matrikkelenhet - Property identifier
  * @param {Array} colors - Color palette
@@ -141,11 +186,7 @@ function displayRouteGeometry(map, geometry, style = {}) {
  */
 function getColorForProperty(matrikkelenhet, colors = null) {
     if (!colors) {
-        colors = [
-            '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
-            '#1abc9c', '#e67e22', '#34495e', '#16a085', '#27ae60',
-            '#2980b9', '#8e44ad', '#c0392b', '#d35400', '#7f8c8d'
-        ];
+        colors = PROPERTY_COLORS; // Use shared constant
     }
 
     // Simple hash function to get consistent color for same matrikkelenhet
@@ -154,6 +195,196 @@ function getColorForProperty(matrikkelenhet, colors = null) {
         hash = matrikkelenhet.charCodeAt(i) + ((hash << 5) - hash);
     }
     return colors[Math.abs(hash) % colors.length];
+}
+
+/**
+ * Safely get bounds from a Leaflet layer
+ * @param {L.Layer} layer - Leaflet layer (GeoJSON, LayerGroup, etc.)
+ * @param {string} layerName - Name of layer for error messages (optional)
+ * @returns {L.LatLngBounds|null} Bounds if valid, null otherwise
+ */
+function getBoundsFromLayer(layer, layerName = 'layer') {
+    if (!layer) {
+        return null;
+    }
+
+    if (typeof layer.getBounds !== 'function') {
+        return null;
+    }
+
+    // Check if it's a layer group with layers
+    if (layer.getLayers && typeof layer.getLayers === 'function') {
+        const layers = layer.getLayers();
+        if (layers.length === 0) {
+            return null;
+        }
+    }
+
+    try {
+        const bounds = layer.getBounds();
+        if (bounds && isValidBounds(bounds)) {
+            return bounds;
+        }
+    } catch (error) {
+        console.warn(`Could not get bounds from ${layerName}:`, error);
+    }
+    return null;
+}
+
+/**
+ * Check if bounds are valid
+ * Validates Leaflet bounds by checking if they have valid coordinates
+ * @param {L.LatLngBounds} bounds - Leaflet bounds object
+ * @returns {boolean} True if bounds are valid
+ */
+function isValidBounds(bounds) {
+    if (!bounds) {
+        return false;
+    }
+
+    try {
+        // First, try Leaflet's built-in isValid() method if available
+        // Leaflet LatLngBounds has isValid() method in most versions
+        if (typeof bounds.isValid === 'function') {
+            try {
+                const isValid = bounds.isValid();
+                // If Leaflet says it's valid, trust it (but we could add additional checks)
+                return isValid;
+            } catch (e) {
+                // If isValid() throws an error, fall through to manual validation
+                console.warn('Leaflet bounds.isValid() threw an error, using manual validation:', e);
+            }
+        }
+
+        // Manual validation as fallback (for older Leaflet versions or edge cases)
+        // Check if bounds has the required methods
+        if (typeof bounds.getSouthWest !== 'function' || typeof bounds.getNorthEast !== 'function') {
+            return false;
+        }
+
+        // Get the corner points
+        const sw = bounds.getSouthWest();
+        const ne = bounds.getNorthEast();
+
+        // Check if corner points are valid
+        if (!sw || !ne) {
+            return false;
+        }
+
+        // Check if coordinates are valid numbers
+        if (typeof sw.lat !== 'number' || typeof sw.lng !== 'number' ||
+            typeof ne.lat !== 'number' || typeof ne.lng !== 'number') {
+            return false;
+        }
+
+        // Check if coordinates are within valid ranges
+        if (isNaN(sw.lat) || isNaN(sw.lng) || isNaN(ne.lat) || isNaN(ne.lng)) {
+            return false;
+        }
+
+        // Check if bounds are logically valid (south < north, etc.)
+        // Note: For wrapped bounds, west might be > east, so we don't check that
+        if (sw.lat > ne.lat) {
+            return false;
+        }
+
+        // Manual validation passed
+        return true;
+    } catch (e) {
+        // If any error occurs during validation, bounds are invalid
+        return false;
+    }
+}
+
+/**
+ * Safely fit map to bounds with error handling
+ * @param {L.Map} map - Leaflet map instance
+ * @param {L.LatLngBounds} bounds - Bounds to fit
+ * @param {Object} options - Options for fitBounds (padding, maxZoom, etc.)
+ * @returns {boolean} True if successfully fitted, false otherwise
+ */
+function fitMapToBounds(map, bounds, options = {}) {
+    if (!map || !bounds) {
+        return false;
+    }
+
+    if (!isValidBounds(bounds)) {
+        return false;
+    }
+
+    try {
+        const defaultOptions = { padding: [50, 50] };
+        map.fitBounds(bounds, { ...defaultOptions, ...options });
+        return true;
+    } catch (error) {
+        console.warn('Could not fit bounds to map:', error);
+        return false;
+    }
+}
+
+/**
+ * Combine multiple bounds into a single bounds object
+ * @param {Array<L.LatLngBounds>} boundsArray - Array of bounds to combine
+ * @returns {L.LatLngBounds|null} Combined bounds, or null if no valid bounds
+ */
+function combineBounds(boundsArray) {
+    if (!boundsArray || boundsArray.length === 0) {
+        return null;
+    }
+
+    const validBounds = boundsArray.filter(b => isValidBounds(b));
+    if (validBounds.length === 0) {
+        return null;
+    }
+
+    const combined = L.latLngBounds([]);
+    validBounds.forEach(bounds => {
+        combined.extend(bounds.getSouthWest());
+        combined.extend(bounds.getNorthEast());
+    });
+
+    return isValidBounds(combined) ? combined : null;
+}
+
+/**
+ * Get bounds from GeoJSON geometry
+ * @param {Object} geometry - GeoJSON geometry object
+ * @returns {L.LatLngBounds|null} Bounds if valid, null otherwise
+ */
+function getBoundsFromGeometry(geometry) {
+    if (!geometry || !geometry.coordinates) {
+        return null;
+    }
+
+    try {
+        const bounds = L.latLngBounds([]);
+        let hasCoords = false;
+
+        const processCoordinates = (coords) => {
+            if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
+                // MultiLineString or Polygon
+                coords.forEach(coordArray => processCoordinates(coordArray));
+            } else if (Array.isArray(coords[0]) && typeof coords[0][0] === 'number') {
+                // LineString or Polygon ring
+                coords.forEach(coord => {
+                    if (coord.length >= 2) {
+                        bounds.extend([coord[1], coord[0]]); // [lat, lng]
+                        hasCoords = true;
+                    }
+                });
+            } else if (coords.length >= 2 && typeof coords[0] === 'number') {
+                // Point
+                bounds.extend([coords[1], coords[0]]); // [lat, lng]
+                hasCoords = true;
+            }
+        };
+
+        processCoordinates(geometry.coordinates);
+        return hasCoords && isValidBounds(bounds) ? bounds : null;
+    } catch (error) {
+        console.warn('Could not get bounds from geometry:', error);
+        return null;
+    }
 }
 
 // Export for use in modules
@@ -167,7 +398,13 @@ if (typeof module !== 'undefined' && module.exports) {
         loadRouteSegmentsData,
         loadRouteDebugData,
         displayRouteGeometry,
-        getColorForProperty
+        createGeoJSONLayer,
+        getColorForProperty,
+        getBoundsFromLayer,
+        isValidBounds,
+        fitMapToBounds,
+        combineBounds,
+        getBoundsFromGeometry
     };
 }
 

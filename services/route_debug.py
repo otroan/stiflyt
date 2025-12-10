@@ -1,7 +1,10 @@
 """Debugging utilities for route data quality issues."""
 import psycopg2
+import json
 from psycopg2.extras import RealDictCursor
-from .database import get_db_connection, ROUTE_SCHEMA
+from .database import get_db_connection, db_connection, ROUTE_SCHEMA
+from .route_connections import find_segment_connections, find_sequential_connections
+from .route_service import parse_geojson_string, get_route_segments_with_geometry
 
 
 def analyze_route_segments(conn, rutenummer):
@@ -62,113 +65,61 @@ def analyze_route_segments(conn, rutenummer):
         segments_info.append(seg_info)
 
     # Sjekk koblinger mellom segmenter
-    # Fokuser på faktiske koblinger og sekvensiell rekkefølge
+    # Bruk delt modul for å finne koblinger
     connection_info = []
-    import json
 
-    # Først: Sjekk sekvensiell rekkefølge og faktiske koblinger mellom naboer
-    for i in range(len(segments) - 1):
-        seg1 = segments[i]
-        seg2 = segments[i + 1]
-
-        # Sjekk normal kobling (end_to_start)
-        distance_query = """
-            SELECT
-                ST_Distance(%s::geometry, %s::geometry) as distance,
-                ST_AsGeoJSON(ST_Transform(%s::geometry, 4326)) as end_point_geojson,
-                ST_AsGeoJSON(ST_Transform(%s::geometry, 4326)) as start_point_geojson;
-        """
-
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(distance_query, (seg1['end_point'], seg2['start_point'],
-                                        seg1['end_point'], seg2['start_point']))
-            result = cur.fetchone()
-            distance = result['distance']
-            end_point_geojson = result['end_point_geojson']
-            start_point_geojson = result['start_point_geojson']
-
-        connection_info.append({
-            'segment1_objid': seg1['objid'],
-            'segment2_objid': seg2['objid'],
-            'distance_meters': float(distance),
-            'end_point': json.loads(end_point_geojson) if end_point_geojson else None,
-            'start_point': json.loads(start_point_geojson) if start_point_geojson else None,
-            'connection_type': 'sequential',
-            'is_connected': distance <= 1.0
-        })
-
-    # Deretter: Finn faktiske koblinger mellom ikke-sekvensielle segmenter
-    # (kun hvis de faktisk er koblet sammen, dvs. distance <= 1.0)
-    for i in range(len(segments)):
-        seg1 = segments[i]
-
-        # Hent start- og endepunkt for seg1
-        seg1_points_query = """
+    # Først: Sjekk sekvensiell rekkefølge (bruk delt funksjon)
+    # Vi trenger segmenter med end_point for sequential check
+    segments_with_points = []
+    for seg in segments:
+        # Hent start og end points
+        points_query = """
             SELECT
                 ST_StartPoint(%s::geometry) as start_point,
-                ST_EndPoint(%s::geometry) as end_point,
-                ST_AsGeoJSON(ST_Transform(ST_StartPoint(%s::geometry), 4326)) as start_point_geojson,
-                ST_AsGeoJSON(ST_Transform(ST_EndPoint(%s::geometry), 4326)) as end_point_geojson;
+                ST_EndPoint(%s::geometry) as end_point;
         """
-
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(seg1_points_query, (seg1['senterlinje'], seg1['senterlinje'],
-                                           seg1['senterlinje'], seg1['senterlinje']))
-            seg1_points = cur.fetchone()
-            seg1_start = seg1_points['start_point']
-            seg1_end = seg1_points['end_point']
-            seg1_start_geojson = seg1_points['start_point_geojson']
-            seg1_end_geojson = seg1_points['end_point_geojson']
+            cur.execute(points_query, (seg['senterlinje'], seg['senterlinje']))
+            points = cur.fetchone()
+            seg_with_points = seg.copy()
+            seg_with_points['start_point'] = points['start_point']
+            seg_with_points['end_point'] = points['end_point']
+            segments_with_points.append(seg_with_points)
 
-        # Sjekk kun faktiske koblinger til andre segmenter (ikke naboer, de er allerede sjekket)
-        for j in range(len(segments)):
-            if i == j or abs(i - j) == 1:  # Skip seg selv og naboer
+    # Finn sekvensielle koblinger med GeoJSON (for visualisering)
+    sequential_connections = find_sequential_connections(conn, segments_with_points, include_geo_json=True)
+    connection_info.extend(sequential_connections)
+
+    # Deretter: Finn faktiske koblinger mellom ikke-sekvensielle segmenter
+    # Bruk delt modul for effektiv SQL-basert søk
+    segment_objids = [seg['objid'] for seg in segments]
+    all_connections = find_segment_connections(conn, segment_objids, ROUTE_SCHEMA)
+
+    # Konverter til connection_info format og filtrer ut sekvensielle
+    for seg1_objid, conn_list in all_connections.items():
+        for conn in conn_list:
+            seg2_objid = conn['target']
+            conn_type = conn['type']
+            distance = conn['distance']
+
+            # Finn indekser for å sjekke om de er naboer
+            seg1_idx = next((i for i, s in enumerate(segments) if s['objid'] == seg1_objid), None)
+            seg2_idx = next((i for i, s in enumerate(segments) if s['objid'] == seg2_objid), None)
+
+            # Skip sekvensielle koblinger (de er allerede lagt til)
+            if seg1_idx is not None and seg2_idx is not None and abs(seg1_idx - seg2_idx) == 1:
                 continue
 
-            seg2 = segments[j]
-
-            # Hent start- og endepunkt for seg2
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(seg1_points_query, (seg2['senterlinje'], seg2['senterlinje'],
-                                               seg2['senterlinje'], seg2['senterlinje']))
-                seg2_points = cur.fetchone()
-                seg2_start = seg2_points['start_point']
-                seg2_end = seg2_points['end_point']
-                seg2_start_geojson = seg2_points['start_point_geojson']
-                seg2_end_geojson = seg2_points['end_point_geojson']
-
-            # Sjekk alle mulige koblinger mellom seg1 og seg2
-            distance_query = "SELECT ST_Distance(%s::geometry, %s::geometry) as distance;"
-
-            connections_to_check = [
-                (seg1_end, seg2_start, seg1_end_geojson, seg2_start_geojson, 'end_to_start'),
-                (seg1_end, seg2_end, seg1_end_geojson, seg2_end_geojson, 'end_to_end'),
-                (seg1_start, seg2_start, seg1_start_geojson, seg2_start_geojson, 'start_to_start'),
-                (seg1_start, seg2_end, seg1_start_geojson, seg2_end_geojson, 'start_to_end'),
-            ]
-
-            for point1, point2, geojson1, geojson2, connection_type in connections_to_check:
-                with conn.cursor() as cur:
-                    cur.execute(distance_query, (point1, point2))
-                    distance = cur.fetchone()[0]
-
-                # Kun lagre faktiske koblinger (distance <= 1.0)
-                if distance <= 1.0:
-                    # Sjekk om denne koblingen allerede finnes
-                    exists = any(c['segment1_objid'] == seg1['objid'] and
-                                c['segment2_objid'] == seg2['objid'] and
-                                c.get('connection_type') == connection_type
-                                for c in connection_info)
-                    if not exists:
-                        connection_info.append({
-                            'segment1_objid': seg1['objid'],
-                            'segment2_objid': seg2['objid'],
-                            'distance_meters': float(distance),
-                            'point1': json.loads(geojson1) if geojson1 else None,
-                            'point2': json.loads(geojson2) if geojson2 else None,
-                            'connection_type': connection_type,
-                            'is_connected': True
-                        })
+            # Hent GeoJSON points for visualisering (kun hvis nødvendig)
+            # For ikke-sekvensielle koblinger, vi kan hoppe over GeoJSON for ytelse
+            # Men hvis det trengs, kan vi hente det her
+            connection_info.append({
+                'segment1_objid': seg1_objid,
+                'segment2_objid': seg2_objid,
+                'distance_meters': distance,
+                'connection_type': conn_type,
+                'is_connected': True
+            })
 
     # Legg til issues for sekvensielle koblinger som ikke er koblet
     for conn in connection_info:
@@ -246,25 +197,9 @@ def analyze_route_segments(conn, rutenummer):
 
 def get_route_debug_info(rutenummer):
     """Henter komplett debugging-informasjon for en rute."""
-    conn = get_db_connection()
-
-    try:
-        # Hent segmenter med geometri
-        query = f"""
-            SELECT
-                f.objid,
-                f.senterlinje,
-                ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters,
-                ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326)) as geometry_geojson
-            FROM {ROUTE_SCHEMA}.fotrute f
-            JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
-            WHERE fi.rutenummer = %s
-            ORDER BY f.objid;
-        """
-
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, (rutenummer,))
-            segments = cur.fetchall()
+    with db_connection() as conn:
+        # Hent segmenter med geometri (bruk delt funksjon)
+        segments = get_route_segments_with_geometry(conn, rutenummer, include_geojson=True)
 
         if not segments:
             return {
@@ -279,8 +214,7 @@ def get_route_debug_info(rutenummer):
         # Konverter geometrier til GeoJSON
         segments_with_geom = []
         for seg in segments:
-            import json
-            geom_json = json.loads(seg['geometry_geojson']) if seg['geometry_geojson'] else None
+            geom_json = parse_geojson_string(seg['geometry_geojson'])
 
             # Finn issues for dette segmentet
             seg_issues = []
@@ -303,6 +237,4 @@ def get_route_debug_info(rutenummer):
             'analysis': analysis,
             'connections': analysis.get('connections', [])  # Inkluder koblingsinformasjon
         }
-    finally:
-        conn.close()
 

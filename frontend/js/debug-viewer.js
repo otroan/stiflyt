@@ -12,15 +12,35 @@ class DebugViewer {
 
     /**
      * Clear all debug layers from the map
+     * Properly disposes of layers and removes event listeners to prevent memory leaks
      */
     clear() {
+        // Close any open popups before removing layers
+        this.map.closePopup();
+
         if (this.debugLayerGroup) {
+            // Clear all layers in the group first
+            this.debugLayerGroup.eachLayer(layer => {
+                if (layer.closePopup) {
+                    layer.closePopup();
+                }
+                layer.off();
+            });
+            this.debugLayerGroup.clearLayers();
             this.layerControl.removeLayer(this.debugLayerGroup);
             this.map.removeLayer(this.debugLayerGroup);
             this.debugLayerGroup = null;
         }
 
         if (this.connectionLayerGroup) {
+            // Clear all layers in the group first (includes polylines and markers)
+            this.connectionLayerGroup.eachLayer(layer => {
+                if (layer.closePopup) {
+                    layer.closePopup();
+                }
+                layer.off();
+            });
+            this.connectionLayerGroup.clearLayers();
             this.layerControl.removeLayer(this.connectionLayerGroup);
             this.map.removeLayer(this.connectionLayerGroup);
             this.connectionLayerGroup = null;
@@ -64,57 +84,56 @@ class DebugViewer {
             const issues = segment.issues || [];
 
             if (geometry && geometry.coordinates) {
-                try {
-                    // Determine color based on issues
-                    let color = '#95a5a6'; // Default gray
-                    let weight = 4;
-                    let opacity = 0.7;
+                // Determine color based on issues
+                let color = '#95a5a6'; // Default gray
+                let weight = 4;
+                let opacity = 0.7;
 
-                    const hasError = issues.some(i => i.severity === 'ERROR');
-                    const hasWarning = issues.some(i => i.severity === 'WARNING');
+                const hasError = issues.some(i => i.severity === 'ERROR');
+                const hasWarning = issues.some(i => i.severity === 'WARNING');
 
-                    if (hasError) {
-                        color = '#e74c3c'; // Red
-                        weight = 6;
-                        opacity = 0.9;
-                    } else if (hasWarning) {
-                        color = '#f39c12'; // Orange
-                        weight = 5;
-                        opacity = 0.8;
-                    }
+                if (hasError) {
+                    color = '#e74c3c'; // Red
+                    weight = 6;
+                    opacity = 0.9;
+                } else if (hasWarning) {
+                    color = '#f39c12'; // Orange
+                    weight = 5;
+                    opacity = 0.8;
+                }
 
-                    const geoJsonLayer = L.geoJSON(geometry, {
-                        style: {
-                            color: color,
-                            weight: weight,
-                            opacity: opacity
+                // Build popup content with issues
+                let popupContent = `<strong>Segment ${segment.objid}</strong><br>`;
+                popupContent += `Lengde: ${segment.length_km.toFixed(2)} km<br><br>`;
+
+                if (issues.length > 0) {
+                    popupContent += `<strong>Problemer:</strong><br>`;
+                    issues.forEach(issue => {
+                        const icon = issue.severity === 'ERROR' ? '🔴' : issue.severity === 'WARNING' ? '⚠️' : 'ℹ️';
+                        popupContent += `${icon} ${issue.message}<br>`;
+                        if (issue.distance_meters) {
+                            popupContent += `&nbsp;&nbsp;Avstand: ${issue.distance_meters.toFixed(2)} m<br>`;
+                        }
+                        if (issue.overlap_length_meters) {
+                            popupContent += `&nbsp;&nbsp;Overlapp: ${issue.overlap_length_meters.toFixed(2)} m<br>`;
                         }
                     });
+                } else {
+                    popupContent += '✓ Ingen problemer';
+                }
 
-                    // Build popup content with issues
-                    let popupContent = `<strong>Segment ${segment.objid}</strong><br>`;
-                    popupContent += `Lengde: ${segment.length_km.toFixed(2)} km<br><br>`;
-
-                    if (issues.length > 0) {
-                        popupContent += `<strong>Problemer:</strong><br>`;
-                        issues.forEach(issue => {
-                            const icon = issue.severity === 'ERROR' ? '🔴' : issue.severity === 'WARNING' ? '⚠️' : 'ℹ️';
-                            popupContent += `${icon} ${issue.message}<br>`;
-                            if (issue.distance_meters) {
-                                popupContent += `&nbsp;&nbsp;Avstand: ${issue.distance_meters.toFixed(2)} m<br>`;
-                            }
-                            if (issue.overlap_length_meters) {
-                                popupContent += `&nbsp;&nbsp;Overlapp: ${issue.overlap_length_meters.toFixed(2)} m<br>`;
-                            }
-                        });
-                    } else {
-                        popupContent += '✓ Ingen problemer';
-                    }
-
-                    geoJsonLayer.bindPopup(popupContent);
-                    geoJsonLayer.addTo(this.debugLayerGroup);
-                } catch (error) {
-                    console.error(`Error displaying debug segment ${segment.objid}:`, error);
+                const geoJsonLayer = createGeoJSONLayer(geometry, {
+                    style: {
+                        color: color,
+                        weight: weight,
+                        opacity: opacity
+                    },
+                    popupContent: popupContent,
+                    layerGroup: this.debugLayerGroup,
+                    layerName: `debug-segment-${segment.objid}`
+                });
+                if (!geoJsonLayer) {
+                    console.error(`Error displaying debug segment ${segment.objid}`);
                 }
             }
         });

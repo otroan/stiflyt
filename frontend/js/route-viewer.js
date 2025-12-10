@@ -17,26 +17,44 @@ class RouteViewer {
         this.showSegments = options.showSegments === true; // Default to false, must be explicitly enabled
         this.showComponents = options.showComponents === true; // Default to false, must be explicitly enabled
 
-        // Color palette for properties
-        this.colors = [
-            '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
-            '#1abc9c', '#e67e22', '#34495e', '#16a085', '#27ae60',
-            '#2980b9', '#8e44ad', '#c0392b', '#d35400', '#7f8c8d'
-        ];
+        // Color palette for properties (from constants)
+        this.colors = PROPERTY_COLORS;
+
+        // Track loading state to prevent race conditions
+        this._currentLoadId = null;
+        this._isLoading = false;
     }
 
     /**
      * Clear all route-related layers from the map
+     * Properly disposes of layers and removes event listeners to prevent memory leaks
      */
     clear() {
+        // Close any open popups before removing layers
+        this.map.closePopup();
+
         // Remove route layer
         if (this.routeLayer) {
+            // Clear any popups on the layer
+            if (this.routeLayer.closePopup) {
+                this.routeLayer.closePopup();
+            }
+            // Remove all event listeners and remove from map
+            this.routeLayer.off();
             this.map.removeLayer(this.routeLayer);
             this.routeLayer = null;
         }
 
         // Remove route layer group (for disconnected components)
         if (this.routeLayerGroup) {
+            // Clear all layers in the group first
+            this.routeLayerGroup.eachLayer(layer => {
+                if (layer.closePopup) {
+                    layer.closePopup();
+                }
+                layer.off();
+            });
+            this.routeLayerGroup.clearLayers();
             this.layerControl.removeLayer(this.routeLayerGroup);
             this.map.removeLayer(this.routeLayerGroup);
             this.routeLayerGroup = null;
@@ -44,11 +62,23 @@ class RouteViewer {
 
         // Remove property layers
         this.propertyLayers.forEach(layer => {
+            if (layer.closePopup) {
+                layer.closePopup();
+            }
+            layer.off();
             this.map.removeLayer(layer);
         });
         this.propertyLayers = [];
 
         if (this.propertyLayerGroup) {
+            // Clear all layers in the group first
+            this.propertyLayerGroup.eachLayer(layer => {
+                if (layer.closePopup) {
+                    layer.closePopup();
+                }
+                layer.off();
+            });
+            this.propertyLayerGroup.clearLayers();
             this.layerControl.removeLayer(this.propertyLayerGroup);
             this.map.removeLayer(this.propertyLayerGroup);
             this.propertyLayerGroup = null;
@@ -56,6 +86,14 @@ class RouteViewer {
 
         // Remove segment layer
         if (this.segmentLayerGroup) {
+            // Clear all layers in the group first
+            this.segmentLayerGroup.eachLayer(layer => {
+                if (layer.closePopup) {
+                    layer.closePopup();
+                }
+                layer.off();
+            });
+            this.segmentLayerGroup.clearLayers();
             this.layerControl.removeLayer(this.segmentLayerGroup);
             this.map.removeLayer(this.segmentLayerGroup);
             this.segmentLayerGroup = null;
@@ -63,6 +101,10 @@ class RouteViewer {
 
         // Remove markers
         this.markers.forEach(marker => {
+            if (marker.closePopup) {
+                marker.closePopup();
+            }
+            marker.off();
             this.map.removeLayer(marker);
         });
         this.markers = [];
@@ -81,12 +123,25 @@ class RouteViewer {
             throw new Error('Vennligst skriv inn et rutenummer');
         }
 
+        // Generate unique load ID for this request
+        const loadId = Date.now() + Math.random();
+        this._currentLoadId = loadId;
+        this._isLoading = true;
+
         try {
-            // Clear previous route
+            // Clear previous route synchronously before starting async operations
+            // This ensures clean state before new data loads
             this.clear();
 
             // Load route data
             const data = await loadRouteData(rutenummer);
+
+            // Check if this load was cancelled by a newer load request
+            if (this._currentLoadId !== loadId) {
+                console.log('RouteViewer.loadRoute: Load cancelled by newer request');
+                return null;
+            }
+
             this.currentRouteData = data;
 
             // Display route geometry
@@ -96,53 +151,105 @@ class RouteViewer {
                     // Multiple disconnected components - display each separately
                     this.routeLayerGroup = L.layerGroup();
 
-                    // Use different colors for each component
-                    const colors = ['#3498db', '#e74c3c', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#e67e22', '#34495e'];
+                    // Use different colors for each component (from constants)
+                    const colors = COMPONENT_COLORS;
 
                     data.components.forEach((component, index) => {
-                        // Build geometry for this component
-                        const componentSegments = data.matrikkelenhet_vector
-                            ? data.matrikkelenhet_vector.filter(item =>
-                                component.includes(item.segment_objid || -1)
-                            )
-                            : [];
+                        // Extract geometry for this component from the MultiLineString
+                        // The MultiLineString coordinates array contains one LineString per component
+                        let componentGeometry = null;
 
-                        // For now, display the full geometry and let Leaflet handle MultiLineString
-                        // Each component will be a separate part of the MultiLineString
+                        if (data.geometry && data.geometry.type === 'MultiLineString' && data.geometry.coordinates) {
+                            // Extract the LineString(s) for this component
+                            // Each component corresponds to one or more LineStrings in the MultiLineString
+                            // We need to map component index to the correct LineString(s)
+
+                            // For now, if components are in order, use index to get the corresponding LineString
+                            // This assumes the backend returns components in the same order as MultiLineString coordinates
+                            if (index < data.geometry.coordinates.length) {
+                                const componentCoords = data.geometry.coordinates[index];
+                                if (componentCoords && componentCoords.length > 0) {
+                                    componentGeometry = {
+                                        type: 'LineString',
+                                        coordinates: componentCoords
+                                    };
+                                }
+                            }
+                        }
+
+                        // Fallback: if we can't extract from MultiLineString, try building from matrikkelenhet_vector
+                        if (!componentGeometry && data.matrikkelenhet_vector) {
+                            const componentSegments = data.matrikkelenhet_vector.filter(item =>
+                                component.includes(item.segment_objid || -1)
+                            );
+
+                            const componentGeometries = componentSegments
+                                .filter(item => item.geometry && item.geometry.coordinates)
+                                .map(item => item.geometry);
+
+                            if (componentGeometries.length > 0) {
+                                if (componentGeometries.length === 1) {
+                                    componentGeometry = componentGeometries[0];
+                                } else {
+                                    // Combine multiple geometries
+                                    const allCoordinates = componentGeometries
+                                        .map(geom => {
+                                            if (geom.type === 'LineString') {
+                                                return [geom.coordinates];
+                                            } else if (geom.type === 'MultiLineString') {
+                                                return geom.coordinates;
+                                            }
+                                            return null;
+                                        })
+                                        .filter(coords => coords !== null)
+                                        .flat();
+
+                                    if (allCoordinates.length > 0) {
+                                        componentGeometry = {
+                                            type: 'MultiLineString',
+                                            coordinates: allCoordinates
+                                        };
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!componentGeometry) {
+                            console.warn(`Component ${index + 1} has no valid geometry`);
+                            return; // Skip this component
+                        }
+
                         const componentColor = colors[index % colors.length];
 
-                        // Create a layer for this component
-                        const componentLayer = L.geoJSON(data.geometry, {
+                        // Create a layer for this component with filtered geometry
+                        const popupContent = `
+                            <strong>Komponent ${index + 1}</strong><br>
+                            Segmenter: ${component.length}<br>
+                            ${data.metadata?.component_count ? `Totalt ${data.metadata.component_count} komponenter` : ''}
+                        `;
+                        const componentLayer = createGeoJSONLayer(componentGeometry, {
                             style: {
                                 color: componentColor,
                                 weight: 4,
                                 opacity: 0.8
-                            }
+                            },
+                            popupContent: popupContent,
+                            layerGroup: this.routeLayerGroup,
+                            layerName: `component-${index + 1}`
                         });
-
-                        // Add popup showing component info
-                        componentLayer.bindPopup(`
-                            <strong>Komponent ${index + 1}</strong><br>
-                            Segmenter: ${component.length}<br>
-                            ${data.metadata?.component_count ? `Totalt ${data.metadata.component_count} komponenter` : ''}
-                        `);
-
-                        componentLayer.addTo(this.routeLayerGroup);
+                        if (!componentLayer) {
+                            console.warn(`Failed to create layer for component ${index + 1}`);
+                        }
                     });
 
                     this.routeLayerGroup.addTo(this.map);
                     this.layerControl.addOverlay(this.routeLayerGroup, `Rute (${data.components.length} komponenter)`);
 
                     // Fit map to all components (only if autoZoom is enabled)
-                    if (this.autoZoom && this.routeLayerGroup.getLayers().length > 0 &&
-                        typeof this.routeLayerGroup.getBounds === 'function') {
-                        try {
-                            const bounds = this.routeLayerGroup.getBounds();
-                            if (bounds && bounds.isValid && bounds.isValid()) {
-                                this.map.fitBounds(bounds, { padding: [50, 50] });
-                            }
-                        } catch (error) {
-                            console.warn('Could not fit bounds to routeLayerGroup:', error);
+                    if (this.autoZoom && this.routeLayerGroup.getLayers().length > 0) {
+                        const bounds = getBoundsFromLayer(this.routeLayerGroup, 'routeLayerGroup');
+                        if (bounds) {
+                            fitMapToBounds(this.map, bounds);
                         }
                     }
                 } else {
@@ -150,14 +257,10 @@ class RouteViewer {
                     this.routeLayer = displayRouteGeometry(this.map, data.geometry);
 
                     // Fit map to route bounds (only if autoZoom is enabled)
-                    if (this.autoZoom && this.routeLayer && typeof this.routeLayer.getBounds === 'function') {
-                        try {
-                            const bounds = this.routeLayer.getBounds();
-                            if (bounds && bounds.isValid && bounds.isValid()) {
-                                this.map.fitBounds(bounds, { padding: [50, 50] });
-                            }
-                        } catch (error) {
-                            console.warn('Could not fit bounds to routeLayer:', error);
+                    if (this.autoZoom && this.routeLayer) {
+                        const bounds = getBoundsFromLayer(this.routeLayer, 'routeLayer');
+                        if (bounds) {
+                            fitMapToBounds(this.map, bounds);
                         }
                     }
                 }
@@ -178,10 +281,26 @@ class RouteViewer {
                 }
             }
 
+            // Final check before returning - ensure this load wasn't cancelled
+            if (this._currentLoadId !== loadId) {
+                console.log('RouteViewer.loadRoute: Load cancelled before completion');
+                // Clean up any layers that were added
+                this.clear();
+                return null;
+            }
+
+            this._isLoading = false;
             return data;
         } catch (error) {
-            console.error('Error loading route:', error);
-            throw error;
+            // Only throw error if this is still the current load
+            if (this._currentLoadId === loadId) {
+                this._isLoading = false;
+                console.error('Error loading route:', error);
+                throw error;
+            } else {
+                console.log('RouteViewer.loadRoute: Error in cancelled load, ignoring');
+                return null;
+            }
         }
     }
 
@@ -190,12 +309,27 @@ class RouteViewer {
      * @param {string} rutenummer - Route identifier
      */
     async loadRouteSegments(rutenummer) {
+        // Store current load ID to check if cancelled
+        const loadId = this._currentLoadId;
+
         try {
             const segmentsData = await loadRouteSegmentsData(rutenummer);
+
+            // Check if load was cancelled
+            if (this._currentLoadId !== loadId) {
+                console.log('RouteViewer.loadRouteSegments: Load cancelled');
+                return;
+            }
+
             this.displaySegments(segmentsData);
         } catch (error) {
-            console.error('Error loading segments:', error);
-            throw error;
+            // Only log error if this is still the current load
+            if (this._currentLoadId === loadId) {
+                console.error('Error loading segments:', error);
+                throw error;
+            } else {
+                console.log('RouteViewer.loadRouteSegments: Error in cancelled load, ignoring');
+            }
         }
     }
 
@@ -218,37 +352,30 @@ class RouteViewer {
         // Create a new layer group for segments
         this.segmentLayerGroup = L.layerGroup();
 
-        // Generate colors for segments
-        const segmentColors = [
-            '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
-            '#1abc9c', '#e67e22', '#34495e', '#16a085', '#27ae60',
-            '#2980b9', '#8e44ad', '#c0392b', '#d35400', '#7f8c8d',
-            '#e91e63', '#00bcd4', '#4caf50', '#ff9800', '#673ab7'
-        ];
+        // Generate colors for segments (from constants)
+        const segmentColors = SEGMENT_COLORS;
 
         segments.forEach((segment, index) => {
             const color = segmentColors[index % segmentColors.length];
             const geometry = segment.geometry;
 
             if (geometry && geometry.coordinates) {
-                try {
-                    const geoJsonLayer = L.geoJSON(geometry, {
-                        style: {
-                            color: color,
-                            weight: 5,
-                            opacity: 0.9
-                        }
-                    });
-
-                    // Add popup with segment info
-                    geoJsonLayer.bindPopup(`
-                        <strong>Segment ${segment.objid}</strong><br>
-                        Lengde: ${segment.length_km.toFixed(2)} km (${segment.length_meters.toFixed(0)} m)
-                    `);
-
-                    geoJsonLayer.addTo(this.segmentLayerGroup);
-                } catch (error) {
-                    console.error(`Error displaying segment ${segment.objid}:`, error);
+                const popupContent = `
+                    <strong>Segment ${segment.objid}</strong><br>
+                    Lengde: ${segment.length_km.toFixed(2)} km (${segment.length_meters.toFixed(0)} m)
+                `;
+                const geoJsonLayer = createGeoJSONLayer(geometry, {
+                    style: {
+                        color: color,
+                        weight: 5,
+                        opacity: 0.9
+                    },
+                    popupContent: popupContent,
+                    layerGroup: this.segmentLayerGroup,
+                    layerName: `segment-${segment.objid}`
+                });
+                if (!geoJsonLayer) {
+                    console.error(`Error displaying segment ${segment.objid}`);
                 }
             }
         });
@@ -261,28 +388,18 @@ class RouteViewer {
 
         // Fit map to both route and segments if route layer exists (only if autoZoom is enabled)
         if (this.autoZoom && this.segmentLayerGroup.getLayers().length > 0) {
-            try {
-                if (this.routeLayer && typeof this.routeLayer.getBounds === 'function') {
-                    const routeBounds = this.routeLayer.getBounds();
-                    const segmentBounds = this.segmentLayerGroup.getBounds();
-                    if (routeBounds && routeBounds.isValid && routeBounds.isValid() &&
-                        segmentBounds && segmentBounds.isValid && segmentBounds.isValid()) {
-                        const allBounds = L.latLngBounds([
-                            routeBounds.getSouthWest(),
-                            routeBounds.getNorthEast(),
-                            segmentBounds.getSouthWest(),
-                            segmentBounds.getNorthEast()
-                        ]);
-                        this.map.fitBounds(allBounds, { padding: [50, 50] });
-                    }
-                } else if (typeof this.segmentLayerGroup.getBounds === 'function') {
-                    const segmentBounds = this.segmentLayerGroup.getBounds();
-                    if (segmentBounds && segmentBounds.isValid && segmentBounds.isValid()) {
-                        this.map.fitBounds(segmentBounds, { padding: [50, 50] });
-                    }
+            const routeBounds = getBoundsFromLayer(this.routeLayer, 'routeLayer');
+            const segmentBounds = getBoundsFromLayer(this.segmentLayerGroup, 'segmentLayerGroup');
+
+            if (routeBounds && segmentBounds) {
+                // Combine both bounds
+                const allBounds = combineBounds([routeBounds, segmentBounds]);
+                if (allBounds) {
+                    fitMapToBounds(this.map, allBounds);
                 }
-            } catch (error) {
-                console.warn('Could not fit bounds to segments:', error);
+            } else if (segmentBounds) {
+                // Only segments available
+                fitMapToBounds(this.map, segmentBounds);
             }
         }
     }
@@ -306,17 +423,32 @@ class RouteViewer {
 
         // Group consecutive properties with same matrikkelenhet
         const propertyGroups = [];
+        const firstProp = properties[0];
+
+        // Defensive checks for first property (even though we checked array length above)
+        if (!firstProp || firstProp.matrikkelenhet === undefined || firstProp.offset_meters === undefined) {
+            console.warn('displayMatrikkelenhetLayer: First property is missing required fields');
+            return;
+        }
+
         let currentGroup = {
-            matrikkelenhet: properties[0].matrikkelenhet,
-            bruksnavn: properties[0].bruksnavn,
-            geometries: properties[0].geometry ? [properties[0].geometry] : [],
-            startOffset: properties[0].offset_meters,
-            endOffset: properties[0].offset_meters + properties[0].length_meters,
-            color: getColorForProperty(properties[0].matrikkelenhet, this.colors)
+            matrikkelenhet: firstProp.matrikkelenhet,
+            bruksnavn: firstProp.bruksnavn || null,
+            geometries: firstProp.geometry ? [firstProp.geometry] : [],
+            startOffset: firstProp.offset_meters,
+            endOffset: firstProp.offset_meters + (firstProp.length_meters || 0),
+            color: getColorForProperty(firstProp.matrikkelenhet, this.colors)
         };
 
         for (let i = 1; i < properties.length; i++) {
             const prop = properties[i];
+
+            // Skip invalid properties
+            if (!prop || prop.offset_meters === undefined || prop.matrikkelenhet === undefined) {
+                console.warn(`displayMatrikkelenhetLayer: Skipping invalid property at index ${i}`);
+                continue;
+            }
+
             const gap = prop.offset_meters - currentGroup.endOffset;
 
             if (gap < 10 && prop.matrikkelenhet === currentGroup.matrikkelenhet) {
@@ -324,16 +456,16 @@ class RouteViewer {
                 if (prop.geometry) {
                     currentGroup.geometries.push(prop.geometry);
                 }
-                currentGroup.endOffset = prop.offset_meters + prop.length_meters;
+                currentGroup.endOffset = prop.offset_meters + (prop.length_meters || 0);
             } else {
                 // Start new group
                 propertyGroups.push(currentGroup);
                 currentGroup = {
                     matrikkelenhet: prop.matrikkelenhet,
-                    bruksnavn: prop.bruksnavn,
+                    bruksnavn: prop.bruksnavn || null,
                     geometries: prop.geometry ? [prop.geometry] : [],
                     startOffset: prop.offset_meters,
-                    endOffset: prop.offset_meters + prop.length_meters,
+                    endOffset: prop.offset_meters + (prop.length_meters || 0),
                     color: getColorForProperty(prop.matrikkelenhet, this.colors)
                 };
             }
@@ -349,21 +481,24 @@ class RouteViewer {
             // Create GeoJSON layer for each geometry (or combine if multiple)
             group.geometries.forEach((geom) => {
                 if (geom && geom.coordinates) {
-                    const geoJsonLayer = L.geoJSON(geom, {
+                    const popupContent = `
+                        <strong>${group.matrikkelenhet}</strong><br>
+                        ${group.bruksnavn || ''}<br>
+                        ${(group.endOffset - group.startOffset).toFixed(0)} m
+                    `;
+                    const geoJsonLayer = createGeoJSONLayer(geom, {
                         style: {
                             color: group.color,
                             weight: 4,
                             opacity: 0.6
-                        }
+                        },
+                        popupContent: popupContent,
+                        layerGroup: this.propertyLayerGroup,
+                        layerName: `property-${group.matrikkelenhet}`
                     });
-
-                    geoJsonLayer.bindPopup(`
-                        <strong>${group.matrikkelenhet}</strong><br>
-                        ${group.bruksnavn || ''}<br>
-                        ${(group.endOffset - group.startOffset).toFixed(0)} m
-                    `);
-
-                    geoJsonLayer.addTo(this.propertyLayerGroup);
+                    if (!geoJsonLayer) {
+                        console.warn(`Failed to create layer for property ${group.matrikkelenhet}`);
+                    }
                 }
             });
         });
