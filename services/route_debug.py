@@ -8,7 +8,7 @@ from .route_service import parse_geojson_string, get_route_segments_with_geometr
 
 
 def analyze_route_segments(conn, rutenummer):
-    """Analyserer segmenter for en rute og identifiserer problemer."""
+    """Analyze segments for a route and identify problems."""
     issues = []
     segments_info = []
 
@@ -37,7 +37,7 @@ def analyze_route_segments(conn, rutenummer):
             'connections': []
         }
 
-    # Analyser hvert segment
+    # Analyze each segment
     for i, seg in enumerate(segments):
         seg_info = {
             'objid': seg['objid'],
@@ -46,7 +46,7 @@ def analyze_route_segments(conn, rutenummer):
             'issues': []
         }
 
-        # Sjekk for null-lengde
+        # Check for zero length
         if seg['length_meters'] == 0:
             seg_info['issues'].append({
                 'type': 'ZERO_LENGTH',
@@ -54,7 +54,7 @@ def analyze_route_segments(conn, rutenummer):
                 'message': 'Segment har lengde 0'
             })
 
-        # Sjekk for veldig få punkter
+        # Check for very few points
         if seg['num_points'] < 2:
             seg_info['issues'].append({
                 'type': 'INSUFFICIENT_POINTS',
@@ -64,15 +64,15 @@ def analyze_route_segments(conn, rutenummer):
 
         segments_info.append(seg_info)
 
-    # Sjekk koblinger mellom segmenter
-    # Bruk delt modul for å finne koblinger
+    # Check connections between segments
+    # Use shared module to find connections
     connection_info = []
 
-    # Først: Sjekk sekvensiell rekkefølge (bruk delt funksjon)
-    # Vi trenger segmenter med end_point for sequential check
+    # First: Check sequential order (use shared function)
+    # We need segments with end_point for sequential check
     segments_with_points = []
     for seg in segments:
-        # Hent start og end points
+        # Get start and end points
         points_query = """
             SELECT
                 ST_StartPoint(%s::geometry) as start_point,
@@ -86,33 +86,33 @@ def analyze_route_segments(conn, rutenummer):
             seg_with_points['end_point'] = points['end_point']
             segments_with_points.append(seg_with_points)
 
-    # Finn sekvensielle koblinger med GeoJSON (for visualisering)
+    # Find sequential connections with GeoJSON (for visualization)
     sequential_connections = find_sequential_connections(conn, segments_with_points, include_geo_json=True)
     connection_info.extend(sequential_connections)
 
-    # Deretter: Finn faktiske koblinger mellom ikke-sekvensielle segmenter
-    # Bruk delt modul for effektiv SQL-basert søk
+    # Then: Find actual connections between non-sequential segments
+    # Use shared module for efficient SQL-based search
     segment_objids = [seg['objid'] for seg in segments]
     all_connections = find_segment_connections(conn, segment_objids, ROUTE_SCHEMA)
 
-    # Konverter til connection_info format og filtrer ut sekvensielle
+    # Convert to connection_info format and filter out sequential ones
     for seg1_objid, conn_list in all_connections.items():
         for conn in conn_list:
             seg2_objid = conn['target']
             conn_type = conn['type']
             distance = conn['distance']
 
-            # Finn indekser for å sjekke om de er naboer
+            # Find indices to check if they are neighbors
             seg1_idx = next((i for i, s in enumerate(segments) if s['objid'] == seg1_objid), None)
             seg2_idx = next((i for i, s in enumerate(segments) if s['objid'] == seg2_objid), None)
 
-            # Skip sekvensielle koblinger (de er allerede lagt til)
+            # Skip sequential connections (they are already added)
             if seg1_idx is not None and seg2_idx is not None and abs(seg1_idx - seg2_idx) == 1:
                 continue
 
-            # Hent GeoJSON points for visualisering (kun hvis nødvendig)
-            # For ikke-sekvensielle koblinger, vi kan hoppe over GeoJSON for ytelse
-            # Men hvis det trengs, kan vi hente det her
+            # Get GeoJSON points for visualization (only if necessary)
+            # For non-sequential connections, we can skip GeoJSON for performance
+            # But if needed, we can fetch it here
             connection_info.append({
                 'segment1_objid': seg1_objid,
                 'segment2_objid': seg2_objid,
@@ -121,15 +121,15 @@ def analyze_route_segments(conn, rutenummer):
                 'is_connected': True
             })
 
-    # Legg til issues for sekvensielle koblinger som ikke er koblet
+    # Add issues for sequential connections that are not connected
     for conn in connection_info:
         if conn['connection_type'] == 'sequential' and not conn['is_connected']:
-            # Finn segment-indeks for å legge til issue
+            # Find segment index to add issue
             for i, seg in enumerate(segments):
                 if seg['objid'] == conn['segment1_objid']:
                     issues.append({
                         'type': 'DISCONNECTED_SEGMENTS_SEQUENTIAL',
-                        'severity': 'INFO',  # INFO siden rekkefølge kan være feil
+                        'severity': 'INFO',  # INFO since order may be wrong
                         'message': f'Sekvensielle segmenter {conn["segment1_objid"]} og {conn["segment2_objid"]} er ikke koblet sammen',
                         'distance_meters': conn['distance_meters'],
                         'segment1_objid': conn['segment1_objid'],
@@ -144,13 +144,13 @@ def analyze_route_segments(conn, rutenummer):
                     })
                     break
 
-    # Sjekk for overlapp mellom segmenter
+    # Check for overlap between segments
     for i in range(len(segments)):
         for j in range(i + 1, len(segments)):
             seg1 = segments[i]
             seg2 = segments[j]
 
-            # Sjekk om segmentene overlapper
+            # Check if segments overlap
             overlap_query = """
                 SELECT
                     ST_Length(ST_Transform(ST_Intersection(%s::geometry, %s::geometry), 4326)::geography) as overlap_length,
@@ -167,7 +167,7 @@ def analyze_route_segments(conn, rutenummer):
 
                     if result and result[1]:  # intersects
                         overlap_length = result[0] if result[0] else 0
-                        if overlap_length > 10:  # Mer enn 10 meter overlapp
+                        if overlap_length > 10:  # More than 10 meters overlap
                             issues.append({
                                 'type': 'OVERLAPPING_SEGMENTS',
                                 'severity': 'WARNING',
@@ -185,20 +185,20 @@ def analyze_route_segments(conn, rutenummer):
                                 'other_segment_objid': seg2['objid']
                             })
             except Exception as e:
-                # Ignorer feil ved overlap-sjekk
+                # Ignore errors in overlap check
                 pass
 
     return {
         'segments': segments_info,
         'issues': issues,
-        'connections': connection_info  # Legg til koblingsinformasjon
+        'connections': connection_info  # Include connection information
     }
 
 
 def get_route_debug_info(rutenummer):
-    """Henter komplett debugging-informasjon for en rute."""
+    """Get complete debugging information for a route."""
     with db_connection() as conn:
-        # Hent segmenter med geometri (bruk delt funksjon)
+        # Get segments with geometry (use shared function)
         segments = get_route_segments_with_geometry(conn, rutenummer, include_geojson=True)
 
         if not segments:
@@ -208,15 +208,15 @@ def get_route_debug_info(rutenummer):
                 'analysis': {'segments': [], 'issues': []}
             }
 
-        # Analyser segmenter
+        # Analyze segments
         analysis = analyze_route_segments(conn, rutenummer)
 
-        # Konverter geometrier til GeoJSON
+        # Convert geometries to GeoJSON
         segments_with_geom = []
         for seg in segments:
             geom_json = parse_geojson_string(seg['geometry_geojson'])
 
-            # Finn issues for dette segmentet
+            # Find issues for this segment
             seg_issues = []
             for seg_info in analysis['segments']:
                 if seg_info['objid'] == seg['objid']:
@@ -235,6 +235,6 @@ def get_route_debug_info(rutenummer):
             'rutenummer': rutenummer,
             'segments': segments_with_geom,
             'analysis': analysis,
-            'connections': analysis.get('connections', [])  # Inkluder koblingsinformasjon
+            'connections': analysis.get('connections', [])  # Include connection information
         }
 

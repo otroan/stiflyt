@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Validerer alle rutene i databasen og genererer en feilrapport.
+Validate all routes in the database and generate an error report.
 
-Eksempel:
+Example:
     python scripts/validate_routes.py
     python scripts/validate_routes.py --route bre5
     python scripts/validate_routes.py --output report.json
@@ -23,19 +23,19 @@ from psycopg2.extras import RealDictCursor
 
 
 def validate_route_length(conn, route_geom):
-    """Validerer at lengde kan beregnes korrekt."""
+    """Validate that length can be calculated correctly."""
     errors = []
     warnings = []
 
     try:
-        # Sjekk geometritype
+        # Check geometry type
         check_type_query = "SELECT ST_GeometryType(%s::geometry) as geom_type;"
         with conn.cursor() as cur:
             cur.execute(check_type_query, (route_geom,))
             geom_type = cur.fetchone()[0]
 
         if geom_type == 'ST_MultiLineString':
-            # Prøv feilende metode først (for å fange feilen)
+            # Try failing method first (to catch the error)
             try:
                 length_query = """
                     SELECT SUM(ST_Length(ST_Transform(ST_GeometryN(%s::geometry, generate_series(1, ST_NumGeometries(%s::geometry))), 4326)::geography)) as length_meters;
@@ -44,17 +44,17 @@ def validate_route_length(conn, route_geom):
                     cur.execute(length_query, (route_geom, route_geom))
                     length = cur.fetchone()[0]
             except Exception as e:
-                # Fanger alle typer feil, inkludert SyntaxError og InternalError
+                # Catch all types of errors, including SyntaxError and InternalError
                 error_type = type(e).__name__
                 error_msg = str(e)
-                # Sjekk om det er generate_series-feilen
+                # Check if it's the generate_series error
                 if 'generate_series' in error_msg or 'set-returning function' in error_msg:
                     errors.append({
                         'category': 'SQL_SYNTAX_ERROR',
-                        'message': error_msg.split('\n')[0],  # Første linje av feilen
+                        'message': error_msg.split('\n')[0],  # First line of the error
                         'error_type': error_type,
                         'operation': 'get_route_length_multilinestring',
-                        'suggestion': 'Bruk LATERAL JOIN eller loop i stedet for generate_series i SUM. Se validate_routes.py for eksempel.'
+                        'suggestion': 'Use LATERAL JOIN or loop instead of generate_series in SUM. See validate_routes.py for example.'
                     })
                 else:
                     errors.append({
@@ -64,9 +64,9 @@ def validate_route_length(conn, route_geom):
                         'operation': 'get_route_length_multilinestring'
                     })
 
-                # Prøv alternativ metode med ny transaksjon
+                # Try alternative method with new transaction
                 try:
-                    # Rollback først hvis transaksjon er avbrutt
+                    # Rollback first if transaction is aborted
                     conn.rollback()
 
                     with conn.cursor() as cur:
@@ -82,14 +82,14 @@ def validate_route_length(conn, route_geom):
 
                         warnings.append({
                             'category': 'WORKAROUND_APPLIED',
-                            'message': f'Brukte loop-metode i stedet for generate_series. Lengde: {total:.2f} m ({total/1000:.2f} km)',
+                            'message': f'Used loop method instead of generate_series. Length: {total:.2f} m ({total/1000:.2f} km)',
                             'length_meters': total,
                             'length_km': total / 1000.0
                         })
                 except Exception as e2:
                     errors.append({
                         'category': 'LENGTH_CALCULATION_FAILED',
-                        'message': f'Både generate_series og loop-metode feilet: {str(e2)}',
+                        'message': f'Both generate_series and loop method failed: {str(e2)}',
                         'operation': 'get_route_length_multilinestring'
                     })
         else:
@@ -116,7 +116,7 @@ def validate_route_length(conn, route_geom):
 
 
 def validate_route_geometry(conn, segments):
-    """Validerer at geometri kan kombineres."""
+    """Validate that geometry can be combined."""
     errors = []
     warnings = []
 
@@ -125,12 +125,12 @@ def validate_route_geometry(conn, segments):
         if not route_geom:
             errors.append({
                 'category': 'GEOMETRY_COMBINE_FAILED',
-                'message': 'Kunne ikke kombinere segmenter til en geometri',
+                'message': 'Could not combine segments into a geometry',
                 'operation': 'combine_route_geometry'
             })
             return None, errors, warnings
 
-        # Sjekk om geometri er gyldig
+        # Check if geometry is valid
         with conn.cursor() as cur:
             cur.execute('SELECT ST_IsValid(%s::geometry) as is_valid', (route_geom,))
             is_valid = cur.fetchone()[0]
@@ -138,18 +138,18 @@ def validate_route_geometry(conn, segments):
             if not is_valid:
                 errors.append({
                     'category': 'INVALID_GEOMETRY',
-                    'message': 'Kombinert geometri er ikke gyldig',
+                    'message': 'Combined geometry is not valid',
                     'operation': 'ST_IsValid'
                 })
 
-            # Sjekk om geometri er enkel (ingen self-intersections)
+            # Check if geometry is simple (no self-intersections)
             cur.execute('SELECT ST_IsSimple(%s::geometry) as is_simple', (route_geom,))
             is_simple = cur.fetchone()[0]
 
             if not is_simple:
                 warnings.append({
                     'category': 'NON_SIMPLE_GEOMETRY',
-                    'message': 'Geometri har self-intersections eller er ikke enkel',
+                    'message': 'Geometry has self-intersections or is not simple',
                     'operation': 'ST_IsSimple'
                 })
 
@@ -164,7 +164,7 @@ def validate_route_geometry(conn, segments):
 
 
 def validate_segments(conn, rutenummer):
-    """Validerer segmenter for en rute."""
+    """Validate segments for a route."""
     errors = []
     warnings = []
 
@@ -173,12 +173,12 @@ def validate_segments(conn, rutenummer):
         if not segments:
             errors.append({
                 'category': 'NO_SEGMENTS',
-                'message': 'Ingen segmenter funnet for rute',
+                'message': 'No segments found for route',
                 'operation': 'get_route_segments'
             })
             return segments, errors, warnings
 
-        # Sjekk segmentlengder
+        # Check segment lengths
         segment_lengths = []
         for seg in segments:
             try:
@@ -191,13 +191,13 @@ def validate_segments(conn, rutenummer):
                     if length == 0:
                         warnings.append({
                             'category': 'ZERO_LENGTH_SEGMENT',
-                            'message': f'Segment {seg["objid"]} har lengde 0',
+                            'message': f'Segment {seg["objid"]} has length 0',
                             'segment_objid': seg['objid']
                         })
             except Exception as e:
                 warnings.append({
                     'category': 'SEGMENT_LENGTH_ERROR',
-                    'message': f'Kunne ikke beregne lengde for segment {seg["objid"]}: {str(e)}',
+                    'message': f'Could not calculate length for segment {seg["objid"]}: {str(e)}',
                     'segment_objid': seg['objid']
                 })
 
@@ -212,7 +212,7 @@ def validate_segments(conn, rutenummer):
 
 
 def validate_route(rutenummer):
-    """Validerer en enkelt rute."""
+    """Validate a single route."""
     conn = get_db_connection()
 
     all_errors = []
@@ -225,7 +225,7 @@ def validate_route(rutenummer):
     }
 
     try:
-        # Valider segmenter
+        # Validate segments
         segments, seg_errors, seg_warnings = validate_segments(conn, rutenummer)
         all_errors.extend(seg_errors)
         all_warnings.extend(seg_warnings)
@@ -255,12 +255,12 @@ def validate_route(rutenummer):
             }
 
         if route_geom:
-            # Sjekk geometritype
+            # Check geometry type
             with conn.cursor() as cur:
                 cur.execute('SELECT ST_GeometryType(%s::geometry) as geom_type', (route_geom,))
                 validation_info['geometry_type'] = cur.fetchone()[0]
 
-            # Valider lengdeberegning
+            # Validate length calculation
             length_errors, length_warnings = validate_route_length(conn, route_geom)
             all_errors.extend(length_errors)
             all_warnings.extend(length_warnings)
@@ -268,7 +268,7 @@ def validate_route(rutenummer):
             if length_errors:
                 validation_info['can_process'] = False
 
-        # Bestem status
+        # Determine status
         if all_errors:
             status = 'ERROR'
         elif all_warnings:
@@ -287,7 +287,7 @@ def validate_route(rutenummer):
 
 
 def get_all_routes():
-    """Henter alle rutene fra databasen."""
+    """Get all routes from the database."""
     conn = get_db_connection()
     try:
         query = f"""
@@ -323,26 +323,26 @@ def generate_report(results, output_file=None):
     if output_file:
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
-        print(f"Rapport lagret til {output_file}")
+        print(f"Report saved to {output_file}")
     else:
         print(json.dumps(report, indent=2, ensure_ascii=False))
 
     # Print summary
     print("\n" + "="*60)
-    print("VALIDERINGS SAMMENDRAG")
+    print("VALIDATION SUMMARY")
     print("="*60)
-    print(f"Totalt antall ruter: {total}")
+    print(f"Total number of routes: {total}")
     print(f"  ✓ OK: {ok} ({ok/total*100:.1f}%)")
-    print(f"  ⚠ ADVARSEL: {warnings} ({warnings/total*100:.1f}%)")
-    print(f"  ✗ FEIL: {errors} ({errors/total*100:.1f}%)")
+    print(f"  ⚠ WARNING: {warnings} ({warnings/total*100:.1f}%)")
+    print(f"  ✗ ERROR: {errors} ({errors/total*100:.1f}%)")
     print("="*60)
 
-    # List feilende ruter
+    # List failing routes
     if errors > 0:
-        print("\nRuter med feil:")
+        print("\nRoutes with errors:")
         for r in results:
             if r['status'] == 'ERROR':
-                print(f"  - {r['rutenummer']}: {len(r['errors'])} feil")
+                print(f"  - {r['rutenummer']}: {len(r['errors'])} errors")
                 for err in r['errors']:
                     print(f"    • {err['category']}: {err['message'][:80]}")
 
@@ -350,20 +350,20 @@ def generate_report(results, output_file=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Validerer rutene i databasen')
-    parser.add_argument('--route', help='Valider kun en spesifikk rute (f.eks. bre5)')
+    parser = argparse.ArgumentParser(description='Validate routes in the database')
+    parser.add_argument('--route', help='Validate only a specific route (e.g. bre5)')
     parser.add_argument('--output', help='Output fil for rapport (JSON)')
     parser.add_argument('--format', choices=['json', 'markdown'], default='json', help='Rapportformat')
 
     args = parser.parse_args()
 
     if args.route:
-        # Valider kun en rute
-        print(f"Validerer rute: {args.route}")
+        # Validate only one route
+        print(f"Validating route: {args.route}")
         result = validate_route(args.route)
 
         if args.output:
-            # Lagre til fil
+            # Save to file
             report = {
                 'validation_date': datetime.now().isoformat(),
                 'summary': {
@@ -376,25 +376,25 @@ def main():
             }
             with open(args.output, 'w', encoding='utf-8') as f:
                 json.dump(report, f, indent=2, ensure_ascii=False)
-            print(f"\nRapport lagret til {args.output}")
+            print(f"\nReport saved to {args.output}")
         else:
             print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
-        # Valider alle ruter
-        print("Henter alle ruter...")
+        # Validate all routes
+        print("Getting all routes...")
         routes = get_all_routes()
-        print(f"Fant {len(routes)} ruter. Starter validering...\n")
+        print(f"Found {len(routes)} routes. Starting validation...\n")
 
         results = []
         for i, rutenummer in enumerate(routes, 1):
-            print(f"[{i}/{len(routes)}] Validerer {rutenummer}...", end=' ')
+            print(f"[{i}/{len(routes)}] Validating {rutenummer}...", end=' ')
             result = validate_route(rutenummer)
             results.append(result)
 
             if result['status'] == 'ERROR':
-                print(f"✗ FEIL ({len(result['errors'])} feil)")
+                print(f"✗ ERROR ({len(result['errors'])} errors)")
             elif result['status'] == 'WARNING':
-                print(f"⚠ ADVARSEL ({len(result['warnings'])} advarsler)")
+                print(f"⚠ WARNING ({len(result['warnings'])} warnings)")
             else:
                 print("✓ OK")
 

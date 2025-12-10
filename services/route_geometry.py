@@ -11,24 +11,24 @@ from .route_service import parse_geojson_string, get_route_segments_with_points,
 
 def find_geographic_order(conn, rutenummer):
     """
-    Finner den faktiske geografiske rekkefølgen av segmenter ved å følge koblingene.
+    Find the actual geographic order of segments by following connections.
 
     Returns:
         List of segment objids in geographic order
     """
-    # Hent alle segmenter med start/end punkter (bruk delt funksjon)
+    # Get all segments with start/end points (use shared function)
     segments = get_route_segments_with_points(conn, rutenummer)
 
     if not segments:
         return []
 
-    # Bygg en graf av koblinger mellom segmenter
-    # Bruk delt modul for å finne koblinger
+    # Build a graph of connections between segments
+    # Use shared module to find connections
     segment_objids = [seg['objid'] for seg in segments]
     connections = find_segment_connections(conn, segment_objids, ROUTE_SCHEMA)
 
-    # Finn startsegmentet (segmentet som ikke har noen som kobler til starten)
-    # Dette er segmentet som har en start som ikke er endepunkt for noen annen
+    # Find the start segment (the segment that has no connection to its start)
+    # This is the segment that has a start point that is not an endpoint for any other segment
     all_end_points = set()
     for seg in segments:
         all_end_points.add(seg['end_point_wkt'])
@@ -36,8 +36,8 @@ def find_geographic_order(conn, rutenummer):
     start_segment = None
     for seg in segments:
         if seg['start_point_wkt'] not in all_end_points:
-            # Dette kan være startsegmentet, men sjekk også om det har en normal end_to_start kobling
-            # Preferer segmenter med end_to_start koblinger
+            # This could be the start segment, but also check if it has a normal end_to_start connection
+            # Prefer segments with end_to_start connections
             has_end_to_start = any(
                 conn['type'] == 'end_to_start'
                 for conn in connections.get(seg['objid'], [])
@@ -47,11 +47,11 @@ def find_geographic_order(conn, rutenummer):
                 if has_end_to_start:
                     break
 
-    # Hvis vi ikke fant et klart startsegment, bruk det første
+    # If we didn't find a clear start segment, use the first one
     if start_segment is None:
         start_segment = segments[0]
 
-    # Følg koblingene for å bygge den geografiske rekkefølgen
+    # Follow connections to build the geographic order
     ordered_segments = []
     visited = set()
     current_segment_objid = start_segment['objid']
@@ -59,16 +59,16 @@ def find_geographic_order(conn, rutenummer):
     while current_segment_objid and current_segment_objid not in visited:
         visited.add(current_segment_objid)
 
-        # Finn segmentet
+        # Find the segment
         current_segment = next(s for s in segments if s['objid'] == current_segment_objid)
         ordered_segments.append(current_segment['objid'])
 
-        # Finn neste segment ved å følge den beste koblingen
-        # Prioriterer koblingstyper i denne rekkefølgen:
-        # 1. end_to_start (normal kobling: slutt → start) - BEST
-        # 2. start_to_end (start → slutt) - neste segment må reverseres
-        # 3. end_to_end (slutt → slutt) - neste segment må reverseres
-        # 4. start_to_start (start → start) - begge må reverseres
+        # Find next segment by following the best connection
+        # Prioritize connection types in this order:
+        # 1. end_to_start (normal connection: end → start) - BEST
+        # 2. start_to_end (start → end) - next segment must be reversed
+        # 3. end_to_end (end → end) - next segment must be reversed
+        # 4. start_to_start (start → start) - both must be reversed
         next_segment = None
         best_connection = None
         connection_priority = {'end_to_start': 1, 'start_to_end': 2, 'end_to_end': 3, 'start_to_start': 4}
@@ -84,14 +84,14 @@ def find_geographic_order(conn, rutenummer):
                 best_connection = conn
             else:
                 best_priority = connection_priority.get(best_connection['type'], 99)
-                # Preferer høyere prioritet (lavere tall), eller hvis samme prioritet, kortest avstand
+                # Prefer higher priority (lower number), or if same priority, shortest distance
                 if conn_priority < best_priority or (conn_priority == best_priority and conn['distance'] < best_connection['distance']):
                     next_segment = conn['target']
                     best_connection = conn
 
         current_segment_objid = next_segment
 
-    # Legg til eventuelle segmenter som ikke ble besøkt (isolert eller løse ender)
+    # Add any segments that were not visited (isolated or loose ends)
     for seg in segments:
         if seg['objid'] not in visited:
             ordered_segments.append(seg['objid'])
@@ -101,8 +101,8 @@ def find_geographic_order(conn, rutenummer):
 
 def get_corrected_route_geometry(conn, rutenummer):
     """
-    Returnerer en korrigert geografisk representasjon av ruten.
-    Hvis segmenter ikke kan kobles sammen, returneres de som separate komponenter.
+    Return a corrected geographic representation of the route.
+    If segments cannot be connected, they are returned as separate components.
 
     Returns:
         dict with:
@@ -112,18 +112,18 @@ def get_corrected_route_geometry(conn, rutenummer):
             - components: List of separate route components if segments cannot be connected
             - is_connected: Boolean indicating if all segments form a single connected route
     """
-    # Bruk samme metode som find_geographic_order for å finne koblinger
-    # Hent alle segmenter først (bruk delt funksjon)
+    # Use same method as find_geographic_order to find connections
+    # Get all segments first (use shared function)
     segments = get_route_segments_with_points(conn, rutenummer)
 
     if not segments:
         return None
 
-    # Bygg koblinger ved å bruke delt modul
+    # Build connections using shared module
     segment_objids = [seg['objid'] for seg in segments]
     connections = find_segment_connections(conn, segment_objids, ROUTE_SCHEMA)
 
-    # Finn sammenhengende komponenter ved å følge koblingene
+    # Find connected components by following connections
     import json
     components = []
     visited = set()
@@ -132,16 +132,16 @@ def get_corrected_route_geometry(conn, rutenummer):
         if start_objid in visited:
             continue
 
-        # Bygg en komponent ved å følge koblingene fra dette segmentet
+        # Build a component by following connections from this segment
         component_objids = []
         current_objid = start_objid
 
-        # Følg koblingene for å bygge komponenten
+        # Follow connections to build the component
         while current_objid and current_objid not in visited:
             visited.add(current_objid)
             component_objids.append(current_objid)
 
-            # Finn beste neste segment
+            # Find best next segment
             next_objid = None
             best_conn = None
             connection_priority = {'end_to_start': 1, 'start_to_end': 2, 'end_to_end': 3, 'start_to_start': 4}
@@ -165,10 +165,10 @@ def get_corrected_route_geometry(conn, rutenummer):
         if component_objids:
             components.append(component_objids)
 
-    # Hent alle segmenter med geometri (bruk delt funksjon)
+    # Get all segments with geometry (use shared function)
     all_segments_with_geom = get_segments_by_objids(conn, segment_objids, include_geojson=True)
 
-    # Bygg dict for rask oppslag
+    # Build dict for fast lookup
     segment_dict = {seg['objid']: seg for seg in all_segments_with_geom}
 
     # Bygg geometrier for hver komponent
@@ -199,7 +199,7 @@ def get_corrected_route_geometry(conn, rutenummer):
             if geom_json:
                 component_geoms.append(geom_json)
 
-        # Kombiner komponenten til en LineString eller MultiLineString
+        # Combine component into a LineString or MultiLineString
         if len(component_geoms) == 1:
             component_geometry = component_geoms[0]
         else:
@@ -210,11 +210,11 @@ def get_corrected_route_geometry(conn, rutenummer):
 
         component_geometries.append(component_geometry)
 
-    # Kombiner alle komponenter til en MultiLineString
+    # Combine all components into a MultiLineString
     if len(component_geometries) == 1:
         combined_geometry = component_geometries[0]
     else:
-        # Flere komponenter - kombiner til MultiLineString
+        # Multiple components - combine into MultiLineString
         all_coords = []
         for comp_geom in component_geometries:
             if comp_geom['type'] == 'LineString':
@@ -229,15 +229,15 @@ def get_corrected_route_geometry(conn, rutenummer):
 
     is_connected = len(components) == 1
 
-    # Identifiser appendiks-segmenter (segmenter som ikke er koblet til hovedruten)
-    # Dette er typisk segmenter som er isolerte eller kun koblet til andre appendiks-segmenter
-    # Vi regner hovedruten som den største komponenten (mest segmenter eller lengste lengde)
+    # Identify appendix segments (segments not connected to the main route)
+    # These are typically segments that are isolated or only connected to other appendix segments
+    # We consider the main route as the largest component (most segments or longest length)
     appendices = []
     main_component = None
     dead_end_segments = []
 
     if len(components) > 1:
-        # Finn hovedkomponenten (største komponent)
+        # Find main component (largest component)
         component_sizes = []
         for i, comp in enumerate(components):
             comp_length = sum(
@@ -252,12 +252,12 @@ def get_corrected_route_geometry(conn, rutenummer):
                 'length': comp_length
             })
 
-        # Sorter etter størrelse (segmenter først, deretter lengde)
+        # Sort by size (segments first, then length)
         component_sizes.sort(key=lambda x: (x['segment_count'], x['length']), reverse=True)
         main_component = component_sizes[0]['component']
         main_component_index = component_sizes[0]['index']
 
-        # Alle andre komponenter er appendiks
+        # All other components are appendices
         appendices = [
             {
                 'component': comp['component'],
@@ -268,14 +268,14 @@ def get_corrected_route_geometry(conn, rutenummer):
             for comp in component_sizes[1:]
         ]
 
-    # Hvis det ikke er flere komponenter, bruk første komponent som hovedkomponent
+    # If there are no more components, use first component as main component
     if not main_component and len(components) == 1:
         main_component = components[0]
 
-    # Identifiser dead-end segmenter (utstikkere) i hovedkomponenten
-    # Dette er segmenter som kun er koblet på én side og ikke er nødvendige for å koble resten sammen
+    # Identify dead-end segments (spurs) in the main component
+    # These are segments that are only connected on one side and are not necessary to connect the rest together
     if main_component and len(main_component) > 2:
-        # Bygg en graf av koblinger i hovedkomponenten
+        # Build a graph of connections in the main component
         main_component_connections = {}
         for seg_objid in main_component:
             main_component_connections[seg_objid] = []
@@ -283,14 +283,14 @@ def get_corrected_route_geometry(conn, rutenummer):
                 if connection['target'] in main_component:
                     main_component_connections[seg_objid].append(connection['target'])
 
-        # Finn segmenter med kun én kobling (endepunkter)
+        # Find segments with only one connection (endpoints)
         endpoints = [
             seg_objid for seg_objid in main_component
             if len(main_component_connections[seg_objid]) == 1
         ]
 
-        # For hvert endepunkt, sjekk om det er nødvendig for å koble resten sammen
-        # Vi gjør dette ved å fjerne segmentet og se om resten fortsatt er koblet sammen
+        # For each endpoint, check if it is necessary to connect the rest together
+        # We do this by removing the segment and seeing if the rest is still connected
         for endpoint in endpoints:
             # Bygg graf uten dette segmentet
             remaining_segments = [s for s in main_component if s != endpoint]
@@ -299,7 +299,7 @@ def get_corrected_route_geometry(conn, rutenummer):
                 # Kun ett segment igjen, ikke en dead-end
                 continue
 
-            # Sjekk om resten fortsatt er koblet sammen
+            # Check if the rest is still connected
             remaining_connections = {}
             for seg_objid in remaining_segments:
                 remaining_connections[seg_objid] = []
@@ -307,7 +307,7 @@ def get_corrected_route_geometry(conn, rutenummer):
                     if connection['target'] in remaining_segments:
                         remaining_connections[seg_objid].append(connection['target'])
 
-            # Sjekk om resten er sammenhengende ved å følge koblingene fra første segment
+            # Check if the rest is connected by following connections from the first segment
             visited = set()
             stack = [remaining_segments[0]]
 
@@ -320,10 +320,10 @@ def get_corrected_route_geometry(conn, rutenummer):
                     if neighbor not in visited:
                         stack.append(neighbor)
 
-            # Hvis alle segmenter ble besøkt, er resten fortsatt sammenhengende
-            # Dette betyr at endpoint-segmentet er en dead-end (utstikker)
+            # If all segments were visited, the rest is still connected
+            # This means the endpoint segment is a dead-end (spur)
             if len(visited) == len(remaining_segments):
-                # Finn lengde av dette segmentet
+                # Find length of this segment
                 endpoint_length = 0.0
                 if endpoint in segment_dict:
                     endpoint_length = segment_dict[endpoint]['length_meters']
@@ -334,16 +334,16 @@ def get_corrected_route_geometry(conn, rutenummer):
                     'connected_to': main_component_connections[endpoint][0] if main_component_connections[endpoint] else None
                 })
 
-    # Identifiser redundante segmenter (side-grener/løkker) i hovedkomponenten
-    # Dette er segmenter som har flere koblinger, men som ikke er nødvendige for å koble resten sammen
+    # Identify redundant segments (side branches/loops) in the main component
+    # These are segments that have multiple connections, but are not necessary to connect the rest together
     redundant_segments = []
     if main_component and len(main_component) > 3:
         for seg_objid in main_component:
-            # Skip hvis allerede identifisert som dead-end
+            # Skip if already identified as dead-end
             if any(d['segment_objid'] == seg_objid for d in dead_end_segments):
                 continue
 
-            # Sjekk om segmentet er redundant ved å fjerne det og se om resten fortsatt er koblet sammen
+            # Check if segment is redundant by removing it and seeing if the rest is still connected
             remaining_segments = [s for s in main_component if s != seg_objid]
 
             if len(remaining_segments) < 2:
@@ -357,7 +357,7 @@ def get_corrected_route_geometry(conn, rutenummer):
                     if connection['target'] in remaining_segments:
                         remaining_connections[seg].append(connection['target'])
 
-            # Sjekk om resten er sammenhengende
+            # Check if the rest is connected
             visited = set()
             stack = [remaining_segments[0]]
 
@@ -370,7 +370,7 @@ def get_corrected_route_geometry(conn, rutenummer):
                     if neighbor not in visited:
                         stack.append(neighbor)
 
-            # Hvis alle segmenter ble besøkt, er segmentet redundant
+            # If all segments were visited, the segment is redundant
             if len(visited) == len(remaining_segments):
                 seg_length = 0.0
                 if seg_objid in segment_dict:
@@ -388,10 +388,10 @@ def get_corrected_route_geometry(conn, rutenummer):
                     'is_redundant': True
                 })
 
-    # Legg til redundante segmenter i dead_end_segments for enkelhet (de er også "unødvendige")
+    # Add redundant segments to dead_end_segments for simplicity (they are also "unnecessary")
     dead_end_segments.extend(redundant_segments)
 
-    # Bygg rapport
+    # Build report
     report = {
         'has_multiple_components': not is_connected,
         'component_count': len(components),
