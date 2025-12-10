@@ -1,4 +1,4 @@
-.PHONY: help install install-dev backend frontend start stop clean test lint format
+.PHONY: help install install-dev backend frontend start stop clean test lint format perf-test
 
 # Default values
 DB_USER ?= $(shell whoami)
@@ -48,6 +48,11 @@ start: ## Start both backend and frontend (requires two terminals)
 test: ## Run tests
 	. $(VENV)/bin/activate && pytest
 
+perf-test: ## Run performance tests against API
+	@echo "Running performance tests..."
+	@echo "Make sure the backend is running: make backend"
+	. $(VENV)/bin/activate && $(PYTHON) scripts/performance_test.py --url http://localhost:$(BACKEND_PORT)
+
 lint: ## Run linter
 	. $(VENV)/bin/activate && flake8 api services main.py
 
@@ -83,4 +88,8 @@ db-test: ## Test database connection
 api-test: ## Test API endpoint (requires backend to be running)
 	@echo "Testing API endpoint..."
 	@curl -s http://localhost:$(BACKEND_PORT)/api/v1/routes/bre10 | python -m json.tool | head -20
+
+analyze-query: ## Analyze query performance and check indexes
+	@echo "Analyzing query performance..."
+	. $(VENV)/bin/activate && python scripts/analyze_query_performance.py
 

@@ -683,6 +683,130 @@ def get_route_list(limit=1000):
     return search_routes(limit=limit)
 
 
+def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=None, organization=None, limit=100):
+    """
+    Get routes that intersect with a bounding box.
+
+    Args:
+        min_lat: Minimum latitude (south)
+        min_lng: Minimum longitude (west)
+        max_lat: Maximum latitude (north)
+        max_lng: Maximum longitude (east)
+        rutenummer_prefix: Optional filter for route prefix (e.g., 'bre')
+        organization: Optional filter for organization (e.g., 'DNT')
+        limit: Maximum number of results (default: 100, max: 500)
+
+    Returns:
+        List of route dicts with: rutenummer, rutenavn, vedlikeholdsansvarlig, geometry (GeoJSON), segment_count
+
+    Raises:
+        ValueError: If bounding box is invalid or limit is out of range
+    """
+    # Validate bounding box
+    if not all(isinstance(coord, (int, float)) for coord in [min_lat, min_lng, max_lat, max_lng]):
+        raise ValueError("All bounding box coordinates must be numbers")
+
+    if min_lat >= max_lat:
+        raise ValueError(f"min_lat ({min_lat}) must be less than max_lat ({max_lat})")
+
+    if min_lng >= max_lng:
+        raise ValueError(f"min_lng ({min_lng}) must be less than max_lng ({max_lng})")
+
+    # Validate latitude range
+    if not (-90 <= min_lat <= 90) or not (-90 <= max_lat <= 90):
+        raise ValueError("Latitude must be between -90 and 90")
+
+    # Validate longitude range
+    if not (-180 <= min_lng <= 180) or not (-180 <= max_lng <= 180):
+        raise ValueError("Longitude must be between -180 and 180")
+
+    # Validate limit
+    if not isinstance(limit, int) or limit < 1 or limit > 500:
+        raise ValueError(f"Invalid limit: {limit}. Must be between 1 and 500.")
+
+    # Validate schema name
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    with db_connection() as conn:
+        # Create bounding box geometry in WGS84 (4326)
+        # ST_MakeEnvelope(xmin, ymin, xmax, ymax, srid)
+        query = f"""
+            SELECT DISTINCT
+                fi.rutenummer,
+                fi.rutenavn,
+                fi.vedlikeholdsansvarlig,
+                ST_AsGeoJSON(
+                    ST_Simplify(
+                        ST_Transform(
+                            ST_Collect(f.senterlinje::geometry),
+                            4326
+                        ),
+                        0.0005
+                    )
+                ) as geometry,
+                COUNT(DISTINCT f.objid) as segment_count
+            FROM {ROUTE_SCHEMA}.fotrute f
+            JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+            WHERE ST_Intersects(
+                f.senterlinje::geometry,
+                ST_Transform(
+                    ST_MakeEnvelope(%s, %s, %s, %s, 4326),
+                    25833
+                )
+            )
+        """
+
+        params = [min_lng, min_lat, max_lng, max_lat]
+
+        # Add optional filters (all parameterized for safety)
+        if rutenummer_prefix:
+            query += " AND fi.rutenummer ILIKE %s"
+            params.append(f"{rutenummer_prefix}%")
+
+        if organization:
+            query += " AND fi.vedlikeholdsansvarlig ILIKE %s"
+            params.append(f"%{organization}%")
+
+        query += " GROUP BY fi.rutenummer, fi.rutenavn, fi.vedlikeholdsansvarlig"
+        query += " ORDER BY fi.rutenummer"
+        query += " LIMIT %s"
+        params.append(limit)
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            results = cur.fetchall()
+
+            # Parse GeoJSON strings to dicts
+            route_items = []
+            seen_rutenummer = set()
+
+            for row in results:
+                rutenummer = row['rutenummer']
+                if rutenummer in seen_rutenummer:
+                    continue
+                seen_rutenummer.add(rutenummer)
+
+                # Parse geometry GeoJSON string
+                geometry = None
+                if row['geometry']:
+                    try:
+                        geometry = json.loads(row['geometry'])
+                    except (json.JSONDecodeError, TypeError):
+                        # Skip routes with invalid geometry
+                        continue
+
+                route_items.append({
+                    'rutenummer': rutenummer,
+                    'rutenavn': row['rutenavn'],
+                    'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
+                    'geometry': geometry,
+                    'segment_count': row['segment_count']
+                })
+
+            return route_items
+
+
 def get_route_data(rutenummer, use_corrected_geometry=True):
     """
     Get complete route data including geometry, metadata, and matrikkelenhet vector.

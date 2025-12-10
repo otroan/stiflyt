@@ -3,8 +3,8 @@ import traceback
 from functools import wraps
 from fastapi import APIRouter, HTTPException, Query, Path
 from typing import Optional, Callable, Any
-from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse
-from services.route_service import get_route_data, search_routes, get_route_list, get_route_segments_data, RouteNotFoundError, RouteDataError
+from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem
+from services.route_service import get_route_data, search_routes, get_route_list, get_route_segments_data, get_routes_in_bbox, RouteNotFoundError, RouteDataError
 from services.route_debug import get_route_debug_info
 from services.route_geometry import get_corrected_route_geometry
 from services.database import get_db_connection
@@ -116,6 +116,74 @@ async def search_routes_endpoint(
         routes=route_items,
         total=len(route_items)
     )
+
+
+@router.get("/routes/bbox", response_model=BboxRouteResponse)
+async def get_routes_in_bbox_endpoint(
+    min_lat: float = Query(..., description="Minimum latitude (south boundary)", ge=-90, le=90),
+    min_lng: float = Query(..., description="Minimum longitude (west boundary)", ge=-180, le=180),
+    max_lat: float = Query(..., description="Maximum latitude (north boundary)", ge=-90, le=90),
+    max_lng: float = Query(..., description="Maximum longitude (east boundary)", ge=-180, le=180),
+    prefix: Optional[str] = Query(None, description="Filter routes by rutenummer prefix (e.g., 'bre')"),
+    organization: Optional[str] = Query(None, description="Filter routes by organization (e.g., 'DNT')"),
+    limit: int = Query(100, ge=1, le=500, description="Maximum number of results")
+):
+    """
+    Get routes that intersect with a bounding box.
+
+    Returns routes with simplified geometry that intersect the specified bounding box.
+    Useful for displaying all routes visible in the current map view.
+
+    Examples:
+    - /api/v1/routes/bbox?min_lat=59.0&min_lng=10.0&max_lat=60.0&max_lng=11.0
+    - /api/v1/routes/bbox?min_lat=59.0&min_lng=10.0&max_lat=60.0&max_lng=11.0&prefix=bre
+    - /api/v1/routes/bbox?min_lat=59.0&min_lng=10.0&max_lat=60.0&max_lng=11.0&organization=DNT
+    """
+    try:
+        routes = get_routes_in_bbox(
+            min_lat=min_lat,
+            min_lng=min_lng,
+            max_lat=max_lat,
+            max_lng=max_lng,
+            rutenummer_prefix=prefix,
+            organization=organization,
+            limit=limit
+        )
+
+        route_items = [
+            BboxRouteItem(
+                rutenummer=r['rutenummer'],
+                rutenavn=r.get('rutenavn'),  # Handle None values
+                vedlikeholdsansvarlig=r.get('vedlikeholdsansvarlig'),
+                geometry=r['geometry'],
+                segment_count=r['segment_count']
+            )
+            for r in routes
+            if r.get('geometry')  # Only include routes with valid geometry
+        ]
+
+        return BboxRouteResponse(
+            routes=route_items,
+            total=len(route_items),
+            bbox={
+                'min_lat': min_lat,
+                'min_lng': min_lng,
+                'max_lat': max_lat,
+                'max_lng': max_lng
+            }
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        print(f"Error getting routes in bounding box: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting routes in bounding box: {str(e)}"
+        )
 
 
 @router.get("/routes/{rutenummer}", response_model=RouteResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})

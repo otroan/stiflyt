@@ -55,6 +55,22 @@ class RouteSearchResponse(BaseModel):
     total: int
 
 
+class BboxRouteItem(BaseModel):
+    """Route item in bounding box response."""
+    rutenummer: str
+    rutenavn: Optional[str] = None
+    vedlikeholdsansvarlig: Optional[str] = None
+    geometry: Dict[str, Any]  # GeoJSON geometry
+    segment_count: int
+
+
+class BboxRouteResponse(BaseModel):
+    """Bounding box route response."""
+    routes: List[BboxRouteItem]
+    total: int
+    bbox: Dict[str, float]  # min_lat, min_lng, max_lat, max_lng
+
+
 class RouteSegment(BaseModel):
     """Individual route segment."""
     objid: int

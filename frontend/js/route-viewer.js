@@ -17,12 +17,23 @@ class RouteViewer {
         this.showSegments = options.showSegments === true; // Default to false, must be explicitly enabled
         this.showComponents = options.showComponents === true; // Default to false, must be explicitly enabled
 
+        // Bounding box route layers
+        this.bboxRouteLayerGroup = null;
+        this.bboxRoutes = new Map(); // Map of rutenummer -> layer for quick lookup
+
         // Color palette for properties (from constants)
         this.colors = PROPERTY_COLORS;
 
         // Track loading state to prevent race conditions
         this._currentLoadId = null;
         this._isLoading = false;
+
+        // Debounce timer for bounding box queries
+        this._bboxQueryTimer = null;
+        this._bboxQueryDelay = 800; // 800ms delay for better performance
+
+        // Flag to prevent bbox reloading when a specific route is being loaded
+        this._loadingSpecificRoute = false;
     }
 
     /**
@@ -109,7 +120,193 @@ class RouteViewer {
         });
         this.markers = [];
 
+        // Don't clear bounding box routes here - they should remain visible
+        // Only clear the specific route's bbox layer if it exists
+        if (this.currentRouteData && this.currentRouteData.metadata) {
+            const currentRutenummer = this.currentRouteData.metadata.rutenummer;
+            if (this.bboxRoutes.has(currentRutenummer)) {
+                const bboxLayer = this.bboxRoutes.get(currentRutenummer);
+                if (bboxLayer && this.bboxRouteLayerGroup) {
+                    this.bboxRouteLayerGroup.removeLayer(bboxLayer);
+                    this.bboxRoutes.delete(currentRutenummer);
+                }
+            }
+        }
+
         this.currentRouteData = null;
+    }
+
+    /**
+     * Clear bounding box route layers
+     */
+    clearBboxRoutes() {
+        if (this.bboxRouteLayerGroup) {
+            this.bboxRouteLayerGroup.eachLayer(layer => {
+                if (layer.closePopup) {
+                    layer.closePopup();
+                }
+                layer.off();
+            });
+            this.bboxRouteLayerGroup.clearLayers();
+        }
+        this.bboxRoutes.clear();
+    }
+
+    /**
+     * Load and display routes within the current map bounding box
+     * @param {Object} filters - Optional filters {prefix, organization}
+     */
+    async loadRoutesInBbox(filters = {}) {
+        // Don't reload bbox routes if a specific route is being loaded
+        if (this._loadingSpecificRoute) {
+            console.log('Skipping bbox route reload - specific route is being loaded');
+            return;
+        }
+
+        // Clear any pending queries
+        if (this._bboxQueryTimer) {
+            clearTimeout(this._bboxQueryTimer);
+            this._bboxQueryTimer = null;
+        }
+
+        // Get current map bounds
+        const bounds = this.map.getBounds();
+        const bbox = {
+            min_lat: bounds.getSouth(),
+            min_lng: bounds.getWest(),
+            max_lat: bounds.getNorth(),
+            max_lng: bounds.getEast()
+        };
+
+        try {
+            // Load routes in bounding box
+            const data = await loadRoutesInBbox(bbox, { ...filters, limit: 100 });
+
+            // Get currently loaded route rutenummer to exclude it from bbox routes
+            const currentRutenummer = this.currentRouteData?.metadata?.rutenummer;
+
+            // Clear previous bounding box routes (but keep the layer group)
+            this.clearBboxRoutes();
+
+            // Create layer group if it doesn't exist
+            if (!this.bboxRouteLayerGroup) {
+                this.bboxRouteLayerGroup = L.layerGroup().addTo(this.map);
+                this.layerControl.addOverlay(this.bboxRouteLayerGroup, 'Ruter i visning');
+            }
+
+            // Batch create layers for better performance
+            // Use requestAnimationFrame to avoid blocking UI
+            const routesToAdd = data.routes.filter(route => {
+                if (!route.geometry) {
+                    return false; // Skip routes without geometry
+                }
+                // Skip the currently loaded route - it's already displayed with full details
+                if (route.rutenummer === currentRutenummer) {
+                    return false;
+                }
+                return true;
+            });
+
+            // Create layers in batches to avoid blocking
+            const batchSize = 20;
+            let batchIndex = 0;
+
+            const processBatch = () => {
+                const endIndex = Math.min(batchIndex + batchSize, routesToAdd.length);
+
+                for (let i = batchIndex; i < endIndex; i++) {
+                    const route = routesToAdd[i];
+
+                    // Create GeoJSON layer for this route with optimized styling
+                    const routeLayer = createGeoJSONLayer(route.geometry, {
+                        color: '#6c757d', // Light gray for overview routes
+                        weight: 2,
+                        opacity: 0.6,
+                        fillOpacity: 0
+                    });
+
+                    // Set lower z-index so selected routes appear on top
+                    if (routeLayer.setZIndex) {
+                        routeLayer.setZIndex(100); // Lower z-index for bbox routes
+                    }
+
+                    // Add click handler to load full route details
+                    // Use the global loadRoute function from index.html to ensure UI updates
+                    routeLayer.on('click', () => {
+                        console.log(`Loading full route details for: ${route.rutenummer}`);
+                        // Use global loadRoute function if available, otherwise fall back to this.loadRoute
+                        if (typeof window !== 'undefined' && window.loadRoute) {
+                            window.loadRoute(route.rutenummer);
+                        } else {
+                            // Fallback to direct call if global function not available
+                            this.loadRoute(route.rutenummer);
+                        }
+                    });
+
+                    // Add popup with route info (lazy - only create when needed)
+                    const popupContent = `
+                        <div style="min-width: 200px;">
+                            <strong>${route.rutenummer}</strong><br>
+                            ${route.rutenavn || 'Ingen navn'}<br>
+                            <small>
+                                ${route.vedlikeholdsansvarlig || 'Ukjent organisasjon'}<br>
+                                ${route.segment_count} segment(er)
+                            </small><br>
+                            <em style="font-size: 0.85em; color: #6c757d;">Klikk for å laste full rute</em>
+                        </div>
+                    `;
+                    routeLayer.bindPopup(popupContent);
+
+                    // Simplified hover effect (only weight change, no opacity)
+                    routeLayer.on('mouseover', function() {
+                        this.setStyle({ weight: 3 });
+                    });
+                    routeLayer.on('mouseout', function() {
+                        this.setStyle({ weight: 2 });
+                    });
+
+                    // Add to layer group and store reference
+                    routeLayer.addTo(this.bboxRouteLayerGroup);
+                    this.bboxRoutes.set(route.rutenummer, routeLayer);
+                }
+
+                batchIndex = endIndex;
+
+                // Process next batch if there are more routes
+                if (batchIndex < routesToAdd.length) {
+                    requestAnimationFrame(processBatch);
+                }
+            };
+
+            // Start processing batches
+            if (routesToAdd.length > 0) {
+                processBatch();
+            }
+
+            console.log(`Loaded ${data.routes.length} routes in bounding box`);
+
+        } catch (error) {
+            console.error('Error loading routes in bounding box:', error);
+            // Don't show alert for bbox queries to avoid spam
+        }
+    }
+
+    /**
+     * Debounced version of loadRoutesInBbox
+     * Waits for map to stop moving before querying
+     * @param {Object} filters - Optional filters {prefix, organization}
+     */
+    loadRoutesInBboxDebounced(filters = {}) {
+        // Clear existing timer
+        if (this._bboxQueryTimer) {
+            clearTimeout(this._bboxQueryTimer);
+        }
+
+        // Set new timer
+        this._bboxQueryTimer = setTimeout(() => {
+            this.loadRoutesInBbox(filters);
+            this._bboxQueryTimer = null;
+        }, this._bboxQueryDelay);
     }
 
     /**
@@ -127,11 +324,21 @@ class RouteViewer {
         const loadId = Date.now() + Math.random();
         this._currentLoadId = loadId;
         this._isLoading = true;
+        this._loadingSpecificRoute = true; // Prevent bbox routes from reloading
 
         try {
             // Clear previous route synchronously before starting async operations
             // This ensures clean state before new data loads
             this.clear();
+
+            // Remove this route from bbox routes if it exists
+            if (this.bboxRoutes.has(rutenummer)) {
+                const bboxLayer = this.bboxRoutes.get(rutenummer);
+                if (bboxLayer && this.bboxRouteLayerGroup) {
+                    this.bboxRouteLayerGroup.removeLayer(bboxLayer);
+                    this.bboxRoutes.delete(rutenummer);
+                }
+            }
 
             // Load route data
             const data = await loadRouteData(rutenummer);
@@ -245,6 +452,16 @@ class RouteViewer {
                     this.routeLayerGroup.addTo(this.map);
                     this.layerControl.addOverlay(this.routeLayerGroup, `Rute (${data.components.length} komponenter)`);
 
+                    // Ensure selected route components appear on top of bbox routes
+                    this.routeLayerGroup.eachLayer(layer => {
+                        if (layer.bringToFront) {
+                            layer.bringToFront();
+                        }
+                        if (layer.setZIndex) {
+                            layer.setZIndex(1000); // Higher than bbox routes (100)
+                        }
+                    });
+
                     // Fit map to all components (only if autoZoom is enabled)
                     if (this.autoZoom && this.routeLayerGroup.getLayers().length > 0) {
                         const bounds = getBoundsFromLayer(this.routeLayerGroup, 'routeLayerGroup');
@@ -255,6 +472,28 @@ class RouteViewer {
                 } else {
                     // Single connected route
                     this.routeLayer = displayRouteGeometry(this.map, data.geometry);
+
+                    // Ensure selected route appears on top of bbox routes
+                    if (this.routeLayer) {
+                        if (this.routeLayer.bringToFront) {
+                            this.routeLayer.bringToFront();
+                        }
+                        // Set higher z-index for selected route
+                        if (this.routeLayer.setZIndex) {
+                            this.routeLayer.setZIndex(1000); // Higher than bbox routes (100)
+                        }
+                        // Also ensure all sub-layers have high z-index
+                        if (this.routeLayer.eachLayer) {
+                            this.routeLayer.eachLayer(layer => {
+                                if (layer.bringToFront) {
+                                    layer.bringToFront();
+                                }
+                                if (layer.setZIndex) {
+                                    layer.setZIndex(1000);
+                                }
+                            });
+                        }
+                    }
 
                     // Fit map to route bounds (only if autoZoom is enabled)
                     if (this.autoZoom && this.routeLayer) {
@@ -286,21 +525,33 @@ class RouteViewer {
                 console.log('RouteViewer.loadRoute: Load cancelled before completion');
                 // Clean up any layers that were added
                 this.clear();
+                this._loadingSpecificRoute = false; // Re-enable bbox loading
                 return null;
             }
 
             this._isLoading = false;
+
+            // Re-enable bbox loading after a delay to allow zoom to complete
+            // But keep the flag set for a bit longer to prevent immediate reload
+            setTimeout(() => {
+                this._loadingSpecificRoute = false;
+            }, 2000); // 2 second delay to allow map to finish zooming
+
             return data;
         } catch (error) {
             // Only throw error if this is still the current load
             if (this._currentLoadId === loadId) {
                 this._isLoading = false;
+                this._loadingSpecificRoute = false; // Re-enable bbox loading on error
                 console.error('Error loading route:', error);
                 throw error;
             } else {
                 console.log('RouteViewer.loadRoute: Error in cancelled load, ignoring');
+                this._loadingSpecificRoute = false; // Re-enable bbox loading
                 return null;
             }
+        } finally {
+            this._isLoading = false;
         }
     }
 
@@ -509,6 +760,17 @@ class RouteViewer {
         if (layerCount > 0) {
             this.propertyLayerGroup.addTo(this.map);
             this.layerControl.addOverlay(this.propertyLayerGroup, 'Grunneiere');
+
+            // Ensure property layers appear on top of bbox routes
+            this.propertyLayerGroup.eachLayer(layer => {
+                if (layer.bringToFront) {
+                    layer.bringToFront();
+                }
+                if (layer.setZIndex) {
+                    layer.setZIndex(1000); // Higher than bbox routes (100)
+                }
+            });
+
             console.log('displayMatrikkelenhetLayer: Property layer group added to map and layer control');
         } else {
             console.warn('displayMatrikkelenhetLayer: No property segments created');

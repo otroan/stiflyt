@@ -112,6 +112,48 @@ async function loadRouteDebugData(rutenummer) {
 }
 
 /**
+ * Load routes within a bounding box
+ * @param {Object} bbox - Bounding box {min_lat, min_lng, max_lat, max_lng}
+ * @param {Object} filters - Optional filters {prefix, organization, limit}
+ * @returns {Promise<Object>} Routes data with geometry
+ */
+async function loadRoutesInBbox(bbox, filters = {}) {
+    const { min_lat, min_lng, max_lat, max_lng } = bbox;
+    const { prefix, organization, limit = 100 } = filters;
+
+    // Build query string
+    const params = new URLSearchParams({
+        min_lat: min_lat.toString(),
+        min_lng: min_lng.toString(),
+        max_lat: max_lat.toString(),
+        max_lng: max_lng.toString(),
+        limit: limit.toString()
+    });
+
+    if (prefix) {
+        params.append('prefix', prefix);
+    }
+
+    if (organization) {
+        params.append('organization', organization);
+    }
+
+    const response = await apiRequest(`/api/v1/routes/bbox?${params.toString()}`);
+    if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = `Failed to load routes: ${response.statusText}`;
+        try {
+            const errorJson = JSON.parse(errorText);
+            errorMessage = errorJson.detail || errorMessage;
+        } catch (e) {
+            // Ignore JSON parse errors
+        }
+        throw new Error(errorMessage);
+    }
+    return response.json();
+}
+
+/**
  * Display a route geometry on the map
  * @param {L.Map} map - Leaflet map instance
  * @param {Object} geometry - GeoJSON geometry
@@ -130,6 +172,12 @@ function displayRouteGeometry(map, geometry, style = {}) {
     });
 
     geoJsonLayer.addTo(map);
+
+    // Ensure route appears on top
+    if (geoJsonLayer.bringToFront) {
+        geoJsonLayer.bringToFront();
+    }
+
     return geoJsonLayer;
 }
 
@@ -397,6 +445,7 @@ if (typeof module !== 'undefined' && module.exports) {
         loadRouteData,
         loadRouteSegmentsData,
         loadRouteDebugData,
+        loadRoutesInBbox,
         displayRouteGeometry,
         createGeoJSONLayer,
         getColorForProperty,

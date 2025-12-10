@@ -479,14 +479,22 @@
                 const routeData = await routeViewer.loadRoute(rutenummer);
                 currentRouteData = routeData;
 
+                // Update route name first
+                const routeNameEl = document.getElementById('routeName');
+                if (routeNameEl) {
+                    routeNameEl.textContent = `${routeData.metadata.rutenummer} - ${routeData.metadata.rutenavn}`;
+                }
+
                 // Display route info and properties in UI
                 displayRouteInfo(routeData);
                 displayProperties(routeData);
                 displayTimeline(routeData);
 
-                // Update route name
-                document.getElementById('routeName').textContent =
-                    `${routeData.metadata.rutenummer} - ${routeData.metadata.rutenavn}`;
+                // Activate the first tab (route info) to ensure content is visible
+                const firstTab = document.querySelector('.tab[data-tab="info"]');
+                if (firstTab) {
+                    firstTab.click(); // This will trigger tab switching
+                }
 
                 // Zoom to route after a short delay to ensure all layers are rendered
                 setTimeout(() => {
@@ -990,6 +998,42 @@
                 document.getElementById('loadRoute').click();
             }
         });
+
+        // Initialize bounding box route loading with default DNT filter for better performance
+        let bboxFilters = {
+            prefix: null,
+            organization: 'DNT'  // Default to DNT routes only for faster loading
+        };
+
+        // Add event listeners for map move/zoom to load routes in bounding box
+        // But only if not loading a specific route
+        map.on('moveend', () => {
+            if (!routeViewer._loadingSpecificRoute) {
+                routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+            }
+        });
+
+        map.on('zoomend', () => {
+            if (!routeViewer._loadingSpecificRoute) {
+                routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+            }
+        });
+
+        // Load routes in initial view
+        routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+
+        // Optional: Add UI controls for filtering bounding box routes
+        // This could be added to the header controls section
+        function updateBboxFilters(newFilters) {
+            bboxFilters = { ...bboxFilters, ...newFilters };
+            routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+        }
+
+        // Make updateBboxFilters available globally for potential UI controls
+        window.updateBboxFilters = updateBboxFilters;
+
+        // Make loadRoute available globally so bbox route click handlers can use it
+        window.loadRoute = loadRoute;
 
         // Initialize on page load
         window.addEventListener('load', () => {

@@ -234,6 +234,7 @@ def get_corrected_route_geometry(conn, rutenummer):
     # We consider the main route as the largest component (most segments or longest length)
     appendices = []
     main_component = None
+    main_component_index = 0  # Initialize to 0 (first component)
     dead_end_segments = []
 
     if len(components) > 1:
@@ -271,6 +272,7 @@ def get_corrected_route_geometry(conn, rutenummer):
     # If there are no more components, use first component as main component
     if not main_component and len(components) == 1:
         main_component = components[0]
+        main_component_index = 0  # First (and only) component is the main one
 
     # Identify dead-end segments (spurs) in the main component
     # These are segments that are only connected on one side and are not necessary to connect the rest together
