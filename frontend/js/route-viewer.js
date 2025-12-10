@@ -30,7 +30,7 @@ class RouteViewer {
 
         // Debounce timer for bounding box queries
         this._bboxQueryTimer = null;
-        this._bboxQueryDelay = 800; // 800ms delay for better performance
+        this._bboxQueryDelay = 100; // 100ms delay for responsive updates
 
         // Flag to prevent bbox reloading when a specific route is being loaded
         this._loadingSpecificRoute = false;
@@ -169,8 +169,9 @@ class RouteViewer {
             this._bboxQueryTimer = null;
         }
 
-        // Get current map bounds
+        // Get current map bounds and zoom level
         const bounds = this.map.getBounds();
+        const zoom = this.map.getZoom();
         const bbox = {
             min_lat: bounds.getSouth(),
             min_lng: bounds.getWest(),
@@ -179,8 +180,8 @@ class RouteViewer {
         };
 
         try {
-            // Load routes in bounding box
-            const data = await loadRoutesInBbox(bbox, { ...filters, limit: 100 });
+            // Load routes in bounding box with zoom level for adaptive simplification
+            const data = await loadRoutesInBbox(bbox, { ...filters, limit: 1000, zoom: zoom });
 
             // Get currently loaded route rutenummer to exclude it from bbox routes
             const currentRutenummer = this.currentRouteData?.metadata?.rutenummer;

@@ -683,7 +683,7 @@ def get_route_list(limit=1000):
     return search_routes(limit=limit)
 
 
-def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=None, organization=None, limit=100):
+def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=None, organization=None, limit=100, zoom_level=None):
     """
     Get routes that intersect with a bounding box.
 
@@ -694,7 +694,8 @@ def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=Non
         max_lng: Maximum longitude (east)
         rutenummer_prefix: Optional filter for route prefix (e.g., 'bre')
         organization: Optional filter for organization (e.g., 'DNT')
-        limit: Maximum number of results (default: 100, max: 500)
+        limit: Maximum number of results (default: 1000, max: 1000)
+        zoom_level: Optional map zoom level for adaptive simplification (higher = more detail)
 
     Returns:
         List of route dicts with: rutenummer, rutenavn, vedlikeholdsansvarlig, geometry (GeoJSON), segment_count
@@ -721,30 +722,67 @@ def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=Non
         raise ValueError("Longitude must be between -180 and 180")
 
     # Validate limit
-    if not isinstance(limit, int) or limit < 1 or limit > 500:
-        raise ValueError(f"Invalid limit: {limit}. Must be between 1 and 500.")
+    if not isinstance(limit, int) or limit < 1 or limit > 1000:
+        raise ValueError(f"Invalid limit: {limit}. Must be between 1 and 1000.")
 
     # Validate schema name
     if not validate_schema_name(ROUTE_SCHEMA):
         raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
 
+    # Adaptive simplification based on zoom level
+    # Higher zoom = less simplification (more detail)
+    # Lower zoom = more simplification (faster loading, smaller data)
+    use_simplification = True
+    if zoom_level is not None:
+        # Zoom levels: 0-7 (country/region) = high simplification
+        #              8-11 (city/area) = medium simplification
+        #              12-13 (street level) = low simplification
+        #              14+ (very high zoom) = no simplification (full detail)
+        if zoom_level >= 14:
+            use_simplification = False  # No simplification - show every detail
+        elif zoom_level >= 12:
+            simplify_tolerance = 0.0001  # Very detailed for street level
+        elif zoom_level >= 8:
+            simplify_tolerance = 0.0003  # Medium detail for city level
+        else:
+            simplify_tolerance = 0.0005  # High simplification for overview
+    else:
+        # Default to medium simplification if zoom not provided
+        simplify_tolerance = 0.0003
+
     with db_connection() as conn:
         # Create bounding box geometry in WGS84 (4326)
         # ST_MakeEnvelope(xmin, ymin, xmax, ymax, srid)
-        query = f"""
-            SELECT DISTINCT
-                fi.rutenummer,
-                fi.rutenavn,
-                fi.vedlikeholdsansvarlig,
+        # Build geometry expression with or without simplification
+        if use_simplification:
+            geometry_expr = f"""
                 ST_AsGeoJSON(
                     ST_Simplify(
                         ST_Transform(
                             ST_Collect(f.senterlinje::geometry),
                             4326
                         ),
-                        0.0005
+                        %s
                     )
-                ) as geometry,
+                ) as geometry
+            """
+        else:
+            # No simplification - show every detail
+            geometry_expr = """
+                ST_AsGeoJSON(
+                    ST_Transform(
+                        ST_Collect(f.senterlinje::geometry),
+                        4326
+                    )
+                ) as geometry
+            """
+
+        query = f"""
+            SELECT DISTINCT
+                fi.rutenummer,
+                fi.rutenavn,
+                fi.vedlikeholdsansvarlig,
+                {geometry_expr},
                 COUNT(DISTINCT f.objid) as segment_count
             FROM {ROUTE_SCHEMA}.fotrute f
             JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
@@ -757,7 +795,11 @@ def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=Non
             )
         """
 
-        params = [min_lng, min_lat, max_lng, max_lat]
+        # Build params list - only include simplify_tolerance if using simplification
+        if use_simplification:
+            params = [simplify_tolerance, min_lng, min_lat, max_lng, max_lat]
+        else:
+            params = [min_lng, min_lat, max_lng, max_lat]
 
         # Add optional filters (all parameterized for safety)
         if rutenummer_prefix:

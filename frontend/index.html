@@ -345,6 +345,7 @@
                 <button id="searchBtn">Søk</button>
                 <div class="search-results" id="searchResults"></div>
             </div>
+            <input type="text" id="routeFilter" placeholder="Filtrer ruter (prefix, f.eks. bre)" style="width: 200px;" title="Filtrer visuelle ruter etter rutenummer (prefix)">
             <input type="text" id="routeInput" placeholder="Rutenummer (f.eks. bre10)" value="">
             <button id="loadRoute">Last rute</button>
         </div>
@@ -1034,6 +1035,28 @@
 
         // Make loadRoute available globally so bbox route click handlers can use it
         window.loadRoute = loadRoute;
+
+        // Route filter input handler (sends prefix to backend)
+        // This must be after routeViewer and bboxFilters are defined
+        const routeFilterInput = document.getElementById('routeFilter');
+        if (routeFilterInput) {
+            // Debounce the filter input to avoid too many API calls
+            let filterTimeout = null;
+            routeFilterInput.addEventListener('input', (e) => {
+                const filter = e.target.value.trim();
+
+                // Clear existing timeout
+                if (filterTimeout) {
+                    clearTimeout(filterTimeout);
+                }
+
+                // Update filter and reload routes after 300ms delay
+                filterTimeout = setTimeout(() => {
+                    bboxFilters.prefix = filter || null;
+                    routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+                }, 300);
+            });
+        }
 
         // Initialize on page load
         window.addEventListener('load', () => {

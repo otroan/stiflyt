@@ -126,7 +126,8 @@ async def get_routes_in_bbox_endpoint(
     max_lng: float = Query(..., description="Maximum longitude (east boundary)", ge=-180, le=180),
     prefix: Optional[str] = Query(None, description="Filter routes by rutenummer prefix (e.g., 'bre')"),
     organization: Optional[str] = Query(None, description="Filter routes by organization (e.g., 'DNT')"),
-    limit: int = Query(100, ge=1, le=500, description="Maximum number of results")
+    limit: int = Query(1000, ge=1, le=1000, description="Maximum number of results"),
+    zoom: Optional[int] = Query(None, description="Map zoom level for adaptive geometry simplification (higher zoom = more detail)")
 ):
     """
     Get routes that intersect with a bounding box.
@@ -147,7 +148,8 @@ async def get_routes_in_bbox_endpoint(
             max_lng=max_lng,
             rutenummer_prefix=prefix,
             organization=organization,
-            limit=limit
+            limit=limit,
+            zoom_level=zoom
         )
 
         route_items = [

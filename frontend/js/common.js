@@ -119,7 +119,7 @@ async function loadRouteDebugData(rutenummer) {
  */
 async function loadRoutesInBbox(bbox, filters = {}) {
     const { min_lat, min_lng, max_lat, max_lng } = bbox;
-    const { prefix, organization, limit = 100 } = filters;
+    const { prefix, organization, limit = 1000, zoom } = filters;
 
     // Build query string
     const params = new URLSearchParams({
@@ -136,6 +136,10 @@ async function loadRoutesInBbox(bbox, filters = {}) {
 
     if (organization) {
         params.append('organization', organization);
+    }
+
+    if (zoom !== undefined) {
+        params.append('zoom', zoom.toString());
     }
 
     const response = await apiRequest(`/api/v1/routes/bbox?${params.toString()}`);
