@@ -334,6 +334,31 @@
             margin-right: 0.5rem;
             border: 1px solid #333;
         }
+
+        /* Box zoom control styling - ensure visibility */
+        .leaflet-zoom-box-icon {
+            background: white !important;
+            border: 2px solid rgba(0,0,0,0.2) !important;
+            border-radius: 4px !important;
+            width: 30px !important;
+            height: 30px !important;
+            line-height: 30px !important;
+            text-align: center !important;
+            font-size: 18px !important;
+            display: block !important;
+            cursor: pointer !important;
+            box-shadow: 0 1px 5px rgba(0,0,0,0.4) !important;
+        }
+
+        .leaflet-zoom-box-icon:hover {
+            background: #f4f4f4 !important;
+        }
+
+        .leaflet-zoom-box-icon.active {
+            background: #3498db !important;
+            color: white !important;
+        }
+
     </style>
 </head>
 <body>
@@ -406,6 +431,10 @@
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
+    <!-- Leaflet ZoomBox Plugin -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-zoombox@0.5.2/L.Control.ZoomBox.css" />
+    <script src="https://unpkg.com/leaflet-zoombox@0.5.2/L.Control.ZoomBox.min.js"></script>
+
     <!-- Constants -->
     <script src="js/constants.js"></script>
 
@@ -422,6 +451,31 @@
         // Create layers control
         const overlayMaps = {};
         const layerControl = L.control.layers(null, overlayMaps).addTo(map);
+
+        // Add box zoom control using Leaflet.ZoomBox plugin
+        if (typeof L.control.zoomBox === 'function') {
+            const zoomBoxControl = L.control.zoomBox({
+                modal: false,
+                title: 'Tegn rektangel for å zoome inn',
+                position: 'topright', // Try topright to see if it's a positioning issue
+                content: '📐' // Add visible icon
+            });
+            zoomBoxControl.addTo(map);
+            console.log('Box zoom control added successfully');
+
+            // Debug: Check if control is in DOM
+            setTimeout(() => {
+                const zoomBoxElement = document.querySelector('.leaflet-zoom-box-icon');
+                const allControls = document.querySelectorAll('.leaflet-control');
+                console.log('All leaflet controls:', allControls.length);
+                console.log('Zoom box element found:', zoomBoxElement);
+                if (zoomBoxElement) {
+                    console.log('Zoom box element styles:', window.getComputedStyle(zoomBoxElement));
+                }
+            }, 200);
+        } else {
+            console.error('Leaflet.ZoomBox plugin not loaded. Check CDN links.');
+        }
 
         // Initialize route viewer
         // Segments and components layers are disabled by default - only enabled in debug view
