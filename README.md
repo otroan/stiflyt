@@ -48,7 +48,34 @@ USE_UNIX_SOCKET=false
 DATABASE_URL=postgresql://user:password@localhost:5432/stiflyt
 ```
 
-### 3. Query turrutebasen
+### 3. Run the API Server
+
+Start the FastAPI server:
+
+```bash
+# Set database user if using Unix socket
+export DB_USER=your_username
+
+# Start the server
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+The API will be available at:
+- API: http://localhost:8000/api/v1/routes/{rutenummer}
+- Interactive docs: http://localhost:8000/docs
+- OpenAPI schema: http://localhost:8000/openapi.json
+
+**Example API request:**
+```bash
+curl http://localhost:8000/api/v1/routes/bre10
+```
+
+**Response includes:**
+- `geometry`: GeoJSON geometry of the route
+- `metadata`: Route metadata (name, organization, length, etc.)
+- `matrikkelenhet_vector`: 1D vector of matrikkelenhet and bruksnavn along the route
+
+### 4. Query turrutebasen
 
 Run the query script to inspect the turrutebasen table:
 
