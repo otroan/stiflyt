@@ -26,7 +26,12 @@ app.include_router(router, prefix="/api/v1", tags=["routes"])
 # Serve frontend static files
 frontend_path = Path(__file__).parent / "frontend"
 if frontend_path.exists():
+    # Mount static files directory for JS, CSS, etc.
     app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
+    # Also mount js directory directly for easier access
+    js_path = frontend_path / "js"
+    if js_path.exists():
+        app.mount("/js", StaticFiles(directory=str(js_path)), name="js")
 
     @app.get("/")
     async def serve_frontend():
@@ -35,6 +40,14 @@ if frontend_path.exists():
         if index_path.exists():
             return FileResponse(str(index_path))
         return {"message": "Stiflyt Route API", "version": "0.1.0", "docs": "/docs"}
+
+    @app.get("/debug.html")
+    async def serve_debug():
+        """Serve debug.html."""
+        debug_path = frontend_path / "debug.html"
+        if debug_path.exists():
+            return FileResponse(str(debug_path))
+        return {"error": "debug.html not found"}, 404
 
 
 @app.get("/health")

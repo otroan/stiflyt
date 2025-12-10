@@ -13,6 +13,7 @@ class MatrikkelenhetItem(BaseModel):
     offset_km: float
     length_meters: float
     length_km: float
+    geometry: Dict[str, Any]  # GeoJSON geometry of the intersection segment
 
 
 class RouteMetadata(BaseModel):
@@ -30,6 +31,8 @@ class RouteResponse(BaseModel):
     geometry: Dict[str, Any]  # GeoJSON geometry
     metadata: RouteMetadata
     matrikkelenhet_vector: List[MatrikkelenhetItem]
+    components: Optional[List[List[int]]] = None  # List of component lists (each component is a list of objids)
+    report: Optional[Dict[str, Any]] = None  # Route report with component and appendix information
 
 
 class ErrorResponse(BaseModel):
@@ -66,4 +69,101 @@ class RouteSegmentsResponse(BaseModel):
     rutenavn: str
     segments: List[RouteSegment]
     total_segments: int
+
+
+class SegmentIssue(BaseModel):
+    """Issue found in a segment."""
+    type: str
+    severity: str  # ERROR, WARNING, INFO
+    message: str
+    distance_meters: Optional[float] = None
+    overlap_length_meters: Optional[float] = None
+    segment1_objid: Optional[int] = None
+    segment2_objid: Optional[int] = None
+    other_segment_objid: Optional[int] = None
+
+
+class DebugSegment(BaseModel):
+    """Segment with debugging information."""
+    objid: int
+    geometry: Dict[str, Any]
+    length_meters: float
+    length_km: float
+    issues: List[SegmentIssue]
+
+
+class ConnectionInfo(BaseModel):
+    """Connection information between segments."""
+    segment1_objid: int
+    segment2_objid: int
+    distance_meters: float
+    end_point: Optional[Dict[str, Any]] = None
+    start_point: Optional[Dict[str, Any]] = None
+    is_connected: bool
+
+
+class RouteDebugResponse(BaseModel):
+    """Route debugging information response."""
+    rutenummer: str
+    segments: List[DebugSegment]
+    analysis: Dict[str, Any]
+    connections: List[ConnectionInfo] = []
+
+
+class CorrectedSegmentInfo(BaseModel):
+    """Segment info in corrected geographic order."""
+    objid: int
+    geometry: Dict[str, Any]
+    length_meters: float
+    cumulative_length_meters: float
+    component_index: Optional[int] = None  # Index of component this segment belongs to
+
+
+class ComponentInfo(BaseModel):
+    """Information about a route component."""
+    index: int
+    segment_objids: List[int]
+    segment_count: int
+    length_meters: float
+    is_main: bool
+
+
+class AppendixInfo(BaseModel):
+    """Information about an appendix (disconnected component)."""
+    component: List[int]
+    segment_objids: List[int]
+    segment_count: int
+    length_meters: float
+
+
+class DeadEndSegment(BaseModel):
+    """Information about a dead-end segment (utstikker)."""
+    segment_objid: int
+    length_meters: float
+    connected_to: Optional[int] = None  # Which segment it's connected to
+
+
+class RouteReport(BaseModel):
+    """Report about route components and appendices."""
+    has_multiple_components: bool
+    component_count: int
+    is_connected: bool
+    components: List[ComponentInfo]
+    appendices: List[AppendixInfo] = []
+    appendices_count: int = 0
+    dead_end_segments: List[DeadEndSegment] = []
+    dead_end_count: int = 0
+
+
+class CorrectedRouteResponse(BaseModel):
+    """Corrected geographic route representation."""
+    rutenummer: str
+    ordered_segment_objids: List  # List of ints if connected, list of lists if disconnected
+    geometry: Dict[str, Any]  # GeoJSON geometry
+    segments_info: List[CorrectedSegmentInfo]
+    total_length_meters: float
+    components: List[List[int]] = []  # List of component lists (each component is a list of objids)
+    is_connected: bool = True  # True if all segments form a single connected route
+    component_count: int = 1  # Number of separate route components
+    report: Optional[RouteReport] = None
 

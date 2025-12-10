@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stiflyt Route Debugger</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .header a {
+            color: white;
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            background: rgba(255,255,255,0.2);
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+
+        .header a:hover {
+            background: rgba(255,255,255,0.3);
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .search-container {
+            position: relative;
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .search-results {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+            margin-top: 0.25rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: none;
+        }
+
+        .search-results.active {
+            display: block;
+        }
+
+        .search-result-item {
+            padding: 0.75rem;
+            cursor: pointer;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .search-result-item:hover {
+            background: #f8f9fa;
+        }
+
+        .search-result-item:last-child {
+            border-bottom: none;
+        }
+
+        .search-result-item strong {
+            color: #2c3e50;
+        }
+
+        .search-result-item small {
+            color: #6c757d;
+            display: block;
+            margin-top: 0.25rem;
+        }
+
+        input[type="text"] {
+            padding: 0.5rem 1rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+            min-width: 200px;
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #2980b9;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 350px;
+            background: white;
+            border-right: 1px solid #ddd;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            box-shadow: 2px 0 4px rgba(0,0,0,0.1);
+        }
+
+        .map-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            z-index: 1000;
+            display: none;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 1rem;
+            border-radius: 4px;
+            margin: 1rem;
+        }
+
+        .info-panel {
+            padding: 1rem;
+            border-bottom: 1px solid #ddd;
+        }
+
+        .info-panel h2 {
+            font-size: 1.2rem;
+            margin-bottom: 0.5rem;
+            color: #2c3e50;
+        }
+
+        .info-panel h3 {
+            font-size: 1.1rem;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+            color: #2c3e50;
+        }
+
+        .info-panel h4 {
+            font-size: 1rem;
+            margin-top: 0.75rem;
+            margin-bottom: 0.25rem;
+            color: #34495e;
+        }
+
+        .info-panel p {
+            color: #6c757d;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+        }
+
+        .info-panel ul {
+            margin-left: 1.5rem;
+            margin-bottom: 0.5rem;
+            color: #6c757d;
+            font-size: 0.9rem;
+        }
+
+        .info-panel li {
+            margin-bottom: 0.25rem;
+        }
+
+        #routeReport {
+            padding: 1rem;
+            background: #f8f9fa;
+            border-radius: 4px;
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔍 Stiflyt Route Debugger</h1>
+        <div class="controls">
+            <div class="search-container">
+                <input type="text" id="routeSearch" placeholder="Søk etter rute..." />
+                <div class="search-results" id="searchResults"></div>
+            </div>
+            <button onclick="loadRouteFromInput()">Last rute</button>
+            <a href="index.html">← Tilbake til hovedvisning</a>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="sidebar">
+            <div class="info-panel">
+                <h2>Debug-visning</h2>
+                <p>Dette verktøyet viser debugging-informasjon for ruter, inkludert koblinger mellom segmenter og identifiserte problemer.</p>
+                <p><strong>Farger:</strong> 🔴 Rød = Feil, ⚠️ Orange = Advarsel, ✓ Grå = Ingen problemer</p>
+                <div id="routeReport"></div>
+            </div>
+        </div>
+
+        <div class="map-container">
+            <div id="map"></div>
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <div>Laster...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="error" id="error" style="display: none;"></div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Common utilities -->
+    <script src="js/common.js"></script>
+
+    <!-- Route viewer -->
+    <script src="js/route-viewer.js"></script>
+
+    <!-- Debug viewer -->
+    <script src="js/debug-viewer.js"></script>
+
+    <script>
+        // Initialize map
+        const map = initMap('map');
+
+        // Create layers control
+        const overlayMaps = {};
+        const layerControl = L.control.layers(null, overlayMaps).addTo(map);
+
+        // Initialize debug viewer
+        const debugViewer = new DebugViewer(map, layerControl);
+
+        // Initialize route viewer (for displaying the route itself)
+        // Disable autoZoom so we can control zooming from debug.html after all layers are loaded
+        // Enable segments and components for debug view
+        const routeViewer = new RouteViewer(map, layerControl, {
+            autoZoom: false,
+            showSegments: true,
+            showComponents: true
+        });
+
+        // Search functionality
+        let searchTimeout = null;
+        document.getElementById('routeSearch').addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+
+            clearTimeout(searchTimeout);
+
+            if (query.length < 2) {
+                document.getElementById('searchResults').classList.remove('active');
+                return;
+            }
+
+            searchTimeout = setTimeout(async () => {
+                try {
+                    const results = await searchRoutes({ prefix: query, limit: 10 });
+                    displaySearchResults(results.routes || []);
+                } catch (error) {
+                    console.error('Search error:', error);
+                }
+            }, 300);
+        });
+
+        function displaySearchResults(routes) {
+            const resultsDiv = document.getElementById('searchResults');
+            resultsDiv.innerHTML = '';
+
+            if (routes.length === 0) {
+                resultsDiv.innerHTML = '<div class="search-result-item">Ingen resultater</div>';
+                resultsDiv.classList.add('active');
+                return;
+            }
+
+            routes.forEach(route => {
+                const item = document.createElement('div');
+                item.className = 'search-result-item';
+                item.innerHTML = `
+                    <strong>${route.rutenummer}</strong> - ${route.rutenavn || 'Ingen navn'}<br>
+                    <small>${route.vedlikeholdsansvarlig || 'Ukjent organisasjon'}</small>
+                `;
+                item.addEventListener('click', () => {
+                    document.getElementById('routeSearch').value = route.rutenummer;
+                    resultsDiv.classList.remove('active');
+                    loadRoute(route.rutenummer);
+                });
+                resultsDiv.appendChild(item);
+            });
+
+            resultsDiv.classList.add('active');
+        }
+
+        // Close search results when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.search-container')) {
+                document.getElementById('searchResults').classList.remove('active');
+            }
+        });
+
+        // Load route function
+        async function loadRoute(rutenummer) {
+            if (!rutenummer) {
+                alert('Vennligst skriv inn et rutenummer');
+                return;
+            }
+
+            const loading = document.getElementById('loading');
+            const errorDiv = document.getElementById('error');
+            errorDiv.style.display = 'none';
+            loading.classList.add('active');
+
+            try {
+                // Clear previous data
+                debugViewer.clear();
+                routeViewer.clear();
+
+                // Load route and debug info in parallel
+                const [routeData, debugData] = await Promise.all([
+                    routeViewer.loadRoute(rutenummer),
+                    debugViewer.loadRouteDebug(rutenummer)
+                ]);
+
+                console.log('Route loaded:', routeData);
+                console.log('Debug info loaded:', debugData);
+
+                // Display route report if available
+                if (routeData && routeData.report) {
+                    displayRouteReport(routeData);
+                }
+
+                // Zoom to route using geometry directly from data
+                zoomToRouteGeometry(routeData, debugData);
+
+            } catch (error) {
+                console.error('Error loading route:', error);
+                errorDiv.textContent = `Feil ved lasting av rute: ${error.message}`;
+                errorDiv.style.display = 'block';
+            } finally {
+                loading.classList.remove('active');
+            }
+        }
+
+        // Load route from input field
+        function loadRouteFromInput() {
+            const input = document.getElementById('routeSearch');
+            const rutenummer = input.value.trim();
+            loadRoute(rutenummer);
+        }
+
+        // Allow Enter key to load route
+        document.getElementById('routeSearch').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                loadRouteFromInput();
+            }
+        });
+
+        /**
+         * Extract bounds from GeoJSON geometry
+         * @param {Object} geometry - GeoJSON geometry
+         * @returns {L.LatLngBounds|null} Bounds or null
+         */
+        function getBoundsFromGeometry(geometry) {
+            if (!geometry || !geometry.coordinates) {
+                return null;
+            }
+
+            const bounds = L.latLngBounds([]);
+            let hasCoords = false;
+
+            function processCoordinates(coords) {
+                if (Array.isArray(coords)) {
+                    if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+                        // This is a coordinate [lng, lat]
+                        bounds.extend([coords[1], coords[0]]);
+                        hasCoords = true;
+                    } else {
+                        // This is an array of coordinates
+                        coords.forEach(coord => processCoordinates(coord));
+                    }
+                }
+            }
+
+            if (geometry.type === 'LineString') {
+                geometry.coordinates.forEach(coord => processCoordinates(coord));
+            } else if (geometry.type === 'MultiLineString') {
+                geometry.coordinates.forEach(line => {
+                    line.forEach(coord => processCoordinates(coord));
+                });
+            } else if (geometry.type === 'Point') {
+                processCoordinates(geometry.coordinates);
+            }
+
+            return hasCoords ? bounds : null;
+        }
+
+        /**
+         * Zoom to route using geometry directly from data
+         * @param {Object} routeData - Route data
+         * @param {Object} debugData - Debug data
+         */
+        function zoomToRouteGeometry(routeData, debugData) {
+            console.log('zoomToRouteGeometry called');
+            const bounds = L.latLngBounds([]);
+            let hasBounds = false;
+
+            // Collect bounds from route geometry
+            if (routeData && routeData.geometry) {
+                const routeBounds = getBoundsFromGeometry(routeData.geometry);
+                if (routeBounds && routeBounds.isValid()) {
+                    bounds.extend(routeBounds);
+                    hasBounds = true;
+                    console.log('Added route geometry bounds');
+                }
+            }
+
+            // Collect bounds from debug segments
+            if (debugData && debugData.segments) {
+                debugData.segments.forEach(segment => {
+                    if (segment.geometry) {
+                        const segmentBounds = getBoundsFromGeometry(segment.geometry);
+                        if (segmentBounds && segmentBounds.isValid()) {
+                            bounds.extend(segmentBounds);
+                            hasBounds = true;
+                        }
+                    }
+                });
+                console.log(`Added bounds from ${debugData.segments.length} debug segments`);
+            }
+
+            // Collect bounds from connections (points)
+            if (debugData && debugData.connections) {
+                debugData.connections.forEach(conn => {
+                    if (conn.point1 && conn.point1.coordinates) {
+                        const coords = conn.point1.coordinates;
+                        if (coords.length >= 2) {
+                            bounds.extend([coords[1], coords[0]]);
+                            hasBounds = true;
+                        }
+                    }
+                    if (conn.point2 && conn.point2.coordinates) {
+                        const coords = conn.point2.coordinates;
+                        if (coords.length >= 2) {
+                            bounds.extend([coords[1], coords[0]]);
+                            hasBounds = true;
+                        }
+                    }
+                });
+                console.log(`Added bounds from ${debugData.connections.length} connections`);
+            }
+
+            // Fit map to all bounds
+            if (hasBounds && bounds.isValid()) {
+                console.log('Fitting map to bounds:', bounds);
+                try {
+                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+                } catch (error) {
+                    console.error('Error fitting bounds:', error);
+                }
+            } else {
+                console.warn('No valid bounds found from geometry data');
+                // Fallback: try to get bounds from layers after a delay
+                setTimeout(() => {
+                    zoomToAllLayers();
+                }, 500);
+            }
+        }
+
+        /**
+         * Zoom to all loaded layers (fallback method)
+         */
+        function zoomToAllLayers() {
+            console.log('zoomToAllLayers (fallback) called');
+            const bounds = L.latLngBounds([]);
+            let hasBounds = false;
+
+            // Helper function to safely get bounds from a layer
+            function tryGetBounds(layer, layerName) {
+                if (!layer) {
+                    return null;
+                }
+
+                if (typeof layer.getBounds !== 'function') {
+                    return null;
+                }
+
+                // Check if it's a layer group with layers
+                if (layer.getLayers && typeof layer.getLayers === 'function') {
+                    const layers = layer.getLayers();
+                    if (layers.length === 0) {
+                        return null;
+                    }
+                }
+
+                try {
+                    const layerBounds = layer.getBounds();
+                    if (layerBounds && typeof layerBounds.isValid === 'function' && layerBounds.isValid()) {
+                        return layerBounds;
+                    }
+                } catch (error) {
+                    console.warn(`Could not get bounds from ${layerName}:`, error);
+                }
+                return null;
+            }
+
+            // Collect bounds from route layer
+            const routeBounds = tryGetBounds(routeViewer.routeLayer, 'routeLayer');
+            if (routeBounds) {
+                bounds.extend(routeBounds);
+                hasBounds = true;
+            }
+
+            // Collect bounds from route layer group
+            const routeGroupBounds = tryGetBounds(routeViewer.routeLayerGroup, 'routeLayerGroup');
+            if (routeGroupBounds) {
+                bounds.extend(routeGroupBounds);
+                hasBounds = true;
+            }
+
+            // Collect bounds from debug layer group
+            const debugBounds = tryGetBounds(debugViewer.debugLayerGroup, 'debugLayerGroup');
+            if (debugBounds) {
+                bounds.extend(debugBounds);
+                hasBounds = true;
+            }
+
+            // Collect bounds from connection layer group
+            const connectionBounds = tryGetBounds(debugViewer.connectionLayerGroup, 'connectionLayerGroup');
+            if (connectionBounds) {
+                bounds.extend(connectionBounds);
+                hasBounds = true;
+            }
+
+            // Collect bounds from segment layer group
+            const segmentBounds = tryGetBounds(routeViewer.segmentLayerGroup, 'segmentLayerGroup');
+            if (segmentBounds) {
+                bounds.extend(segmentBounds);
+                hasBounds = true;
+            }
+
+            // Fit map to all bounds
+            if (hasBounds && bounds.isValid()) {
+                console.log('Fitting map to bounds (fallback):', bounds);
+                try {
+                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+                } catch (error) {
+                    console.error('Error fitting bounds:', error);
+                }
+            } else {
+                console.warn('No valid bounds found from any layer (fallback)');
+            }
+        }
+
+        /**
+         * Display route report information
+         * @param {Object} routeData - Route data with report property
+         */
+        function displayRouteReport(routeData) {
+            const reportDiv = document.getElementById('routeReport');
+            if (!reportDiv || !routeData || !routeData.report) {
+                return;
+            }
+
+            const report = routeData.report;
+            let html = '<h3>Rute-rapport</h3>';
+
+            // Connection status
+            if (report.is_connected) {
+                html += '<p>✅ <strong>Ruten er koblet sammen</strong></p>';
+            } else {
+                html += `<p>⚠️ <strong>Ruten er ikke fullstendig koblet sammen</strong> (${report.component_count} komponenter)</p>`;
+            }
+
+            // Components information
+            if (report.components && report.components.length > 0) {
+                html += '<h4>Komponenter:</h4><ul>';
+                report.components.forEach((component, index) => {
+                    const isMain = component.is_main ? ' (Hovedkomponent)' : '';
+                    html += `<li>Komponent ${component.index + 1}${isMain}: ${component.segment_count} segmenter, ${(component.length_meters / 1000).toFixed(2)} km</li>`;
+                });
+                html += '</ul>';
+            }
+
+            // Appendices (disconnected components)
+            if (report.appendices && report.appendices.length > 0) {
+                html += `<h4>Appendiks (${report.appendices_count}):</h4><ul>`;
+                report.appendices.forEach((appendix, index) => {
+                    html += `<li>Appendiks ${index + 1}: ${appendix.segment_count} segmenter, ${(appendix.length_meters / 1000).toFixed(2)} km</li>`;
+                });
+                html += '</ul>';
+            }
+
+            // Dead-end segments
+            if (report.dead_end_segments && report.dead_end_segments.length > 0) {
+                html += `<h4>Utstikkere (${report.dead_end_count}):</h4><ul>`;
+                report.dead_end_segments.forEach((deadEnd) => {
+                    const connectedInfo = deadEnd.connected_to
+                        ? ` (koblet til segment ${deadEnd.connected_to})`
+                        : ' (ikke koblet)';
+                    html += `<li>Segment ${deadEnd.segment_objid}: ${(deadEnd.length_meters / 1000).toFixed(2)} km${connectedInfo}</li>`;
+                });
+                html += '</ul>';
+            }
+
+            reportDiv.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
+

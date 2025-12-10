@@ -281,6 +281,20 @@
             100% { transform: rotate(360deg); }
         }
 
+        .report-section {
+            margin-bottom: 1.5rem;
+        }
+
+        .report-section h4 {
+            margin-bottom: 0.75rem;
+            color: #2c3e50;
+            font-size: 1.1rem;
+        }
+
+        .component-item {
+            margin-bottom: 0.75rem;
+        }
+
         .error {
             background: #f8d7da;
             color: #721c24;
@@ -333,7 +347,6 @@
             </div>
             <input type="text" id="routeInput" placeholder="Rutenummer (f.eks. bre10)" value="">
             <button id="loadRoute">Last rute</button>
-            <button id="configBtn" title="Backend konfigurasjon" style="padding: 0.5rem; background: #95a5a6; font-size: 0.9rem;">⚙️</button>
         </div>
     </div>
 
@@ -389,52 +402,36 @@
         </div>
     </div>
 
-    <!-- Configuration Modal -->
-    <div class="config-modal" id="configModal">
-        <div class="config-content">
-            <h3>Backend Konfigurasjon</h3>
-            <label for="backendUrlInput">Backend URL:</label>
-            <input type="text" id="backendUrlInput" placeholder="http://localhost:8000" value="">
-            <p style="font-size: 0.85rem; color: #6c757d; margin-bottom: 1rem;">
-                Nåværende: <strong id="currentBackendUrl"></strong>
-            </p>
-            <button onclick="saveBackendConfig()">Lagre</button>
-            <button onclick="closeConfigModal()" style="background: #95a5a6;">Avbryt</button>
-        </div>
-    </div>
-
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
+    <!-- Common utilities -->
+    <script src="js/common.js"></script>
+
+    <!-- Route viewer -->
+    <script src="js/route-viewer.js"></script>
+
     <script>
         // Initialize map
-        const map = L.map('map').setView([61.5, 8.5], 7);
+        const map = initMap('map');
 
-        // Add OpenStreetMap tiles
-        const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors'
-        }).addTo(map);
+        // Create layers control
+        const overlayMaps = {};
+        const layerControl = L.control.layers(null, overlayMaps).addTo(map);
+
+        // Initialize route viewer
+        // Segments and components layers are disabled by default - only enabled in debug view
+        const routeViewer = new RouteViewer(map, layerControl);
 
         // Configuration
-        // Use relative paths - works when frontend and backend are on same domain/port
-        // Can be overridden with window.BACKEND_URL or localStorage 'backend_url'
-        const BACKEND_URL = window.BACKEND_URL ||
-                           localStorage.getItem('backend_url') ||
-                           ''; // Empty string = relative path
+        const BACKEND_URL = CommonConfig.getBackendUrl();
 
-        // State
+        // State (for UI functionality)
         let currentRouteData = null;
-        let routeLayer = null;
-        let propertyLayers = [];
-        let segmentLayerGroup = null;  // Leaflet layer group for segments
-        let layerControl = null;  // Leaflet layers control
-        let markers = [];
+        let propertyLayers = []; // Keep for highlightProperty function
+        let markers = []; // Keep for highlightProperty function
 
-        // Create layers control (will be populated when segments are loaded)
-        const overlayMaps = {};
-        layerControl = L.control.layers(null, overlayMaps).addTo(map);
-
-        // Color palette for properties
+        // Color palette for properties (for UI display)
         const colors = [
             '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
             '#1abc9c', '#e67e22', '#34495e', '#16a085', '#27ae60',
@@ -468,52 +465,30 @@
             }
 
             try {
-                const url = BACKEND_URL ? `${BACKEND_URL}/api/v1/routes/${rutenummer}` : `/api/v1/routes/${rutenummer}`;
-                console.log(`Fetching route from: ${url}`);
-                const response = await fetch(url);
-
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    let errorMessage = `Rute ikke funnet: ${response.statusText}`;
-                    try {
-                        const errorJson = JSON.parse(errorText);
-                        errorMessage = errorJson.detail || errorMessage;
-                    } catch (e) {
-                        // Not JSON, use status text
-                    }
-                    throw new Error(errorMessage);
-                }
-
-                const data = await response.json();
-                currentRouteData = data;
-
-                // Clear previous layers
-                if (routeLayer) {
-                    map.removeLayer(routeLayer);
-                }
+                // Clear previous layers using RouteViewer
+                routeViewer.clear();
                 propertyLayers.forEach(layer => map.removeLayer(layer));
-                if (segmentLayerGroup) {
-                    layerControl.removeLayer(segmentLayerGroup);
-                    map.removeLayer(segmentLayerGroup);
-                    segmentLayerGroup = null;
-                }
                 markers.forEach(marker => map.removeLayer(marker));
                 propertyLayers = [];
                 markers = [];
 
-                // Always display the route
-                displayRoute(data);
+                // Load route using RouteViewer (this handles route, segments, and matrikkelenhet layers)
+                const routeData = await routeViewer.loadRoute(rutenummer);
+                currentRouteData = routeData;
 
-                // Always load segments as a layer (can be toggled via layer control)
-                await loadRouteSegments(rutenummer);
-
-                displayRouteInfo(data);
-                displayProperties(data);
-                displayTimeline(data);
+                // Display route info and properties in UI
+                displayRouteInfo(routeData);
+                displayProperties(routeData);
+                displayTimeline(routeData);
 
                 // Update route name
                 document.getElementById('routeName').textContent =
-                    `${data.metadata.rutenummer} - ${data.metadata.rutenavn}`;
+                    `${routeData.metadata.rutenummer} - ${routeData.metadata.rutenavn}`;
+
+                // Zoom to route after a short delay to ensure all layers are rendered
+                setTimeout(() => {
+                    zoomToRoute();
+                }, 200);
 
             } catch (error) {
                 let errorMessage = `Feil ved lasting av rute: ${error.message}`;
@@ -540,150 +515,13 @@
             }
         }
 
-        // Load and display route segments individually
-        async function loadRouteSegments(rutenummer) {
-            try {
-                const url = BACKEND_URL ? `${BACKEND_URL}/api/v1/routes/${rutenummer}/segments` : `/api/v1/routes/${rutenummer}/segments`;
-                console.log(`Fetching segments from: ${url}`);
-                const response = await fetch(url);
-
-                if (!response.ok) {
-                    // If segments endpoint fails, just skip it (route will still be shown)
-                    console.warn(`Failed to load segments: ${response.statusText}`);
-                    return;
-                }
-
-                const segmentsData = await response.json();
-                displaySegments(segmentsData);
-            } catch (error) {
-                console.error('Error loading segments:', error);
-                // Don't fail route loading if segments fail - route is more important
-            }
-        }
-
-        // Display segments individually with different colors as a Leaflet layer group
-        function displaySegments(segmentsData) {
-            const segments = segmentsData.segments;
-
-            if (!segments || segments.length === 0) {
-                return;
-            }
-
-            // Create a new layer group for segments
-            segmentLayerGroup = L.layerGroup();
-
-            // Generate colors for segments (cycle through color palette)
-            const segmentColors = [
-                '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
-                '#1abc9c', '#e67e22', '#34495e', '#16a085', '#27ae60',
-                '#2980b9', '#8e44ad', '#c0392b', '#d35400', '#7f8c8d',
-                '#e91e63', '#00bcd4', '#4caf50', '#ff9800', '#673ab7'
-            ];
-
-            segments.forEach((segment, index) => {
-                const color = segmentColors[index % segmentColors.length];
-                const geometry = segment.geometry;
-
-                if (geometry && geometry.coordinates) {
-                    try {
-                        const geoJsonLayer = L.geoJSON(geometry, {
-                            style: {
-                                color: color,
-                                weight: 5,
-                                opacity: 0.9
-                            }
-                        });
-
-                        // Add popup with segment info
-                        geoJsonLayer.bindPopup(`
-                            <strong>Segment ${segment.objid}</strong><br>
-                            Lengde: ${segment.length_km.toFixed(2)} km (${segment.length_meters.toFixed(0)} m)
-                        `);
-
-                        // Add to layer group instead of directly to map
-                        geoJsonLayer.addTo(segmentLayerGroup);
-                    } catch (error) {
-                        console.error(`Error displaying segment ${segment.objid}:`, error);
-                    }
-                }
-            });
-
-            // Add the layer group to the map
-            segmentLayerGroup.addTo(map);
-
-            // Add to layers control so user can show/hide it
-            layerControl.addOverlay(segmentLayerGroup, `Segmenter (${segments.length})`);
-
-            // Fit map to both route and segments if route layer exists
-            if (segmentLayerGroup.getLayers().length > 0) {
-                if (routeLayer) {
-                    // Fit to both route and segments
-                    const allBounds = L.latLngBounds([
-                        routeLayer.getBounds().getSouthWest(),
-                        routeLayer.getBounds().getNorthEast(),
-                        segmentLayerGroup.getBounds().getSouthWest(),
-                        segmentLayerGroup.getBounds().getNorthEast()
-                    ]);
-                    map.fitBounds(allBounds, { padding: [50, 50] });
-                } else {
-                    // Only fit to segments
-                    map.fitBounds(segmentLayerGroup.getBounds(), { padding: [50, 50] });
-                }
-            }
-        }
-
-        // Display route on map
-        function displayRoute(data) {
-            const geometry = data.geometry;
-
-            if (geometry && geometry.coordinates) {
-                try {
-                    // Use Leaflet's GeoJSON support to handle both LineString and MultiLineString
-                    const geoJsonLayer = L.geoJSON(geometry, {
-                        style: {
-                            color: '#2c3e50',
-                            weight: 4,
-                            opacity: 0.8
-                        }
-                    }).addTo(map);
-
-                    routeLayer = geoJsonLayer;
-
-                    // Fit map to route bounds
-                    map.fitBounds(geoJsonLayer.getBounds(), { padding: [50, 50] });
-
-                    // Extract coordinates for property splitting
-                    // For MultiLineString, we need to flatten all coordinates
-                    let latlngs = [];
-                    if (geometry.type === 'LineString') {
-                        latlngs = geometry.coordinates.map(coord => [coord[1], coord[0]]);
-                    } else if (geometry.type === 'MultiLineString') {
-                        geometry.coordinates.forEach(line => {
-                            if (Array.isArray(line)) {
-                                line.forEach(coord => {
-                                    if (coord && coord.length >= 2 && coord[0] != null && coord[1] != null) {
-                                        latlngs.push([coord[1], coord[0]]);
-                                    }
-                                });
-                            }
-                        });
-                    }
-
-                    // Split route by properties and add markers
-                    if (latlngs.length > 0) {
-                        splitRouteByProperties(data, latlngs);
-                    }
-                } catch (error) {
-                    console.error('Error displaying route:', error, geometry);
-                    alert(`Kunne ikke vise rute: ${error.message}`);
-                }
-            }
-        }
+        // Note: Route loading and segment display is now handled by RouteViewer class
+        // Debug functionality has been moved to debug.html
 
         // Split route by properties and add markers
         function splitRouteByProperties(data, routeCoords) {
-            const properties = data.matrikkelenhet_vector;
-            if (properties.length === 0) return;
+            const properties = data.matrikkelenhet_vector || [];
+            if (!properties || properties.length === 0) return;
 
             // Group consecutive properties
             const propertyGroups = [];
@@ -692,7 +530,7 @@
                 bruksnavn: properties[0].bruksnavn,
                 startOffset: properties[0].offset_meters,
                 endOffset: properties[0].offset_meters + properties[0].length_meters,
-                color: getColorForProperty(properties[0].matrikkelenhet)
+                color: getColorForPropertyLocal(properties[0].matrikkelenhet)
             };
 
             for (let i = 1; i < properties.length; i++) {
@@ -709,7 +547,7 @@
                         bruksnavn: prop.bruksnavn,
                         startOffset: prop.offset_meters,
                         endOffset: prop.offset_meters + prop.length_meters,
-                        color: getColorForProperty(prop.matrikkelenhet)
+                        color: getColorForPropertyLocal(prop.matrikkelenhet)
                     };
                 }
             }
@@ -769,14 +607,104 @@
             updateLegend(propertyGroups);
         }
 
-        // Get color for property
-        function getColorForProperty(matrikkelenhet) {
-            // Simple hash function for consistent colors
-            let hash = 0;
-            for (let i = 0; i < matrikkelenhet.length; i++) {
-                hash = matrikkelenhet.charCodeAt(i) + ((hash << 5) - hash);
+        // Get color for property (using common utility)
+        function getColorForPropertyLocal(matrikkelenhet) {
+            return getColorForProperty(matrikkelenhet, colors);
+        }
+
+        /**
+         * Zoom to route and all loaded layers
+         */
+        function zoomToRoute() {
+            const bounds = L.latLngBounds([]);
+            let hasBounds = false;
+
+            // Helper function to safely get bounds from a layer
+            function tryGetBounds(layer, layerName) {
+                if (!layer) {
+                    return null;
+                }
+
+                if (typeof layer.getBounds !== 'function') {
+                    return null;
+                }
+
+                // Check if it's a layer group with layers
+                if (layer.getLayers && typeof layer.getLayers === 'function') {
+                    const layers = layer.getLayers();
+                    if (layers.length === 0) {
+                        return null;
+                    }
+                }
+
+                try {
+                    const layerBounds = layer.getBounds();
+                    if (layerBounds && typeof layerBounds.isValid === 'function' && layerBounds.isValid()) {
+                        return layerBounds;
+                    }
+                } catch (error) {
+                    console.warn(`Could not get bounds from ${layerName}:`, error);
+                }
+                return null;
             }
-            return colors[Math.abs(hash) % colors.length];
+
+            // Collect bounds from route layer
+            const routeBounds = tryGetBounds(routeViewer.routeLayer, 'routeLayer');
+            if (routeBounds) {
+                bounds.extend(routeBounds);
+                hasBounds = true;
+            }
+
+            // Collect bounds from route layer group
+            const routeGroupBounds = tryGetBounds(routeViewer.routeLayerGroup, 'routeLayerGroup');
+            if (routeGroupBounds) {
+                bounds.extend(routeGroupBounds);
+                hasBounds = true;
+            }
+
+            // Collect bounds from property layer group
+            const propertyBounds = tryGetBounds(routeViewer.propertyLayerGroup, 'propertyLayerGroup');
+            if (propertyBounds) {
+                bounds.extend(propertyBounds);
+                hasBounds = true;
+            }
+
+            // Fit map to all bounds
+            if (hasBounds && bounds.isValid()) {
+                console.log('Fitting map to bounds:', bounds);
+                try {
+                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+                } catch (error) {
+                    console.error('Error fitting bounds:', error);
+                    // Fallback: try to zoom using geometry from data
+                    zoomToRouteFromGeometry();
+                }
+            } else {
+                console.warn('No valid bounds found from any layer, trying geometry fallback');
+                // Fallback: try to zoom using geometry from data
+                zoomToRouteFromGeometry();
+            }
+        }
+
+        /**
+         * Fallback zoom using geometry directly from route data
+         */
+        function zoomToRouteFromGeometry() {
+            if (!currentRouteData || !currentRouteData.geometry) {
+                console.warn('No route data available for geometry-based zoom');
+                return;
+            }
+
+            try {
+                const geoJsonLayer = L.geoJSON(currentRouteData.geometry);
+                const bounds = geoJsonLayer.getBounds();
+                if (bounds && bounds.isValid()) {
+                    console.log('Fitting map to bounds from geometry:', bounds);
+                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+                }
+            } catch (error) {
+                console.error('Error fitting bounds from geometry:', error);
+            }
         }
 
         // Update legend
@@ -812,11 +740,20 @@
         // Display properties table
         function displayProperties(data) {
             const tbody = document.getElementById('propertiesTableBody');
-            const properties = data.matrikkelenhet_vector;
+            const properties = data.matrikkelenhet_vector || [];
+
+            if (!properties || properties.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5">Ingen matrikkelenhet-data tilgjengelig</td></tr>';
+                return;
+            }
 
             // Group consecutive properties
             const grouped = [];
-            let current = { ...properties[0], endOffset: properties[0].offset_meters + properties[0].length_meters };
+            let current = {
+                ...properties[0],
+                endOffset: properties[0].offset_meters + properties[0].length_meters,
+                color: getColorForPropertyLocal(properties[0].matrikkelenhet)
+            };
 
             for (let i = 1; i < properties.length; i++) {
                 const prop = properties[i];
@@ -826,19 +763,22 @@
                     current.endOffset = prop.offset_meters + prop.length_meters;
                 } else {
                     grouped.push(current);
-                    current = { ...prop, endOffset: prop.offset_meters + prop.length_meters };
+                    current = {
+                        ...prop,
+                        endOffset: prop.offset_meters + prop.length_meters,
+                        color: getColorForPropertyLocal(prop.matrikkelenhet)
+                    };
                 }
             }
             grouped.push(current);
 
             tbody.innerHTML = grouped.map(prop => {
-                const color = getColorForProperty(prop.matrikkelenhet);
                 return `
                     <tr onclick="highlightProperty('${prop.matrikkelenhet}')">
                         <td>${(prop.offset_km).toFixed(2)} km</td>
                         <td>${((prop.offset_km + prop.length_km)).toFixed(2)} km</td>
                         <td>
-                            <span class="property-color" style="background-color: ${color}"></span>
+                            <span class="property-color" style="background-color: ${prop.color}"></span>
                             ${prop.matrikkelenhet}
                         </td>
                         <td>${prop.bruksnavn || '-'}</td>
@@ -846,15 +786,23 @@
                     </tr>
                 `;
             }).join('');
+
+            // Update legend with grouped properties
+            updateLegend(grouped);
         }
 
         // Display timeline
         function displayTimeline(data) {
             const content = document.getElementById('timelineContent');
-            const properties = data.matrikkelenhet_vector;
+            const properties = data.matrikkelenhet_vector || [];
+
+            if (!properties || properties.length === 0) {
+                content.innerHTML = '<p>Ingen matrikkelenhet-data tilgjengelig</p>';
+                return;
+            }
 
             content.innerHTML = properties.map((prop, index) => {
-                const color = getColorForProperty(prop.matrikkelenhet);
+                const color = getColorForPropertyLocal(prop.matrikkelenhet);
                 return `
                     <div style="
                         border-left: 4px solid ${color};
@@ -930,62 +878,18 @@
             });
         }
 
-        // Configuration functions
-        function openConfigModal() {
-            document.getElementById('configModal').classList.add('active');
-            const currentUrl = BACKEND_URL || '(relativ path - samme domene)';
-            document.getElementById('backendUrlInput').value = BACKEND_URL || '';
-            document.getElementById('currentBackendUrl').textContent = currentUrl;
-        }
-
-        function closeConfigModal() {
-            document.getElementById('configModal').classList.remove('active');
-        }
-
-        function saveBackendConfig() {
-            const newUrl = document.getElementById('backendUrlInput').value.trim();
-            // Empty string means use relative paths
-            if (newUrl === '') {
-                localStorage.removeItem('backend_url');
-            } else {
-                localStorage.setItem('backend_url', newUrl);
-            }
-            window.location.reload(); // Reload to use new URL
-        }
-
-        // Close modal on outside click
-        document.getElementById('configModal').addEventListener('click', (e) => {
-            if (e.target.id === 'configModal') {
-                closeConfigModal();
-            }
-        });
-
-        // Search routes function
-        async function searchRoutes(query) {
-            console.log('searchRoutes called with query:', query);
+        // Search routes function (using common utility)
+        async function performSearch(query) {
+            console.log('performSearch called with query:', query);
             if (!query || query.length < 2) {
                 document.getElementById('searchResults').classList.remove('active');
                 return;
             }
 
             try {
-                // Try prefix search first
-                const url = BACKEND_URL ? `${BACKEND_URL}/api/v1/routes?prefix=${encodeURIComponent(query)}&limit=20`
-                                        : `/api/v1/routes?prefix=${encodeURIComponent(query)}&limit=20`;
-
-                console.log('Fetching search results from:', url);
-                const response = await fetch(url);
-
-                if (!response.ok) {
-                    console.error('Search response not OK:', response.status, response.statusText);
-                    const errorText = await response.text();
-                    console.error('Error response:', errorText);
-                    return;
-                }
-
-                const data = await response.json();
+                const data = await searchRoutes({ prefix: query, limit: 20 });
                 console.log('Search results:', data);
-                displaySearchResults(data.routes);
+                displaySearchResults(data.routes || []);
             } catch (error) {
                 console.error('Search error:', error);
                 alert(`Søkefeil: ${error.message}`);
@@ -1051,7 +955,7 @@
                 const query = document.getElementById('searchInput').value.trim();
                 if (query) {
                     console.log('Searching for:', query);
-                    searchRoutes(query);
+                    performSearch(query);
                 } else {
                     console.warn('No search query entered');
                 }
@@ -1063,7 +967,7 @@
         document.getElementById('searchInput').addEventListener('input', (e) => {
             const query = e.target.value.trim();
             if (query.length >= 2) {
-                searchRoutes(query);
+                performSearch(query);
             } else {
                 document.getElementById('searchResults').classList.remove('active');
             }
@@ -1073,12 +977,10 @@
             if (e.key === 'Enter') {
                 const query = e.target.value.trim();
                 if (query) {
-                    searchRoutes(query);
+                    performSearch(query);
                 }
             }
         });
-
-        document.getElementById('configBtn').addEventListener('click', openConfigModal);
 
         document.getElementById('routeInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
