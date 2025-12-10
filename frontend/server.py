@@ -11,15 +11,17 @@ class FilteredHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         """Override log_message to filter out HTTPS/TLS probe errors."""
         # Filter out HTTPS/TLS handshake attempts (common bot/scanner behavior)
-        # These show up as "Bad request version" errors
+        # These show up as "Bad request version" or "Invalid HTTP request" errors
         if len(args) >= 2:
             message = str(args[1]) if len(args) > 1 else ""
             # Skip logging for HTTPS/TLS handshake attempts
-            if "Bad request version" in message or ("code 400" in format and "\x16\x03" in message):
+            if ("Bad request version" in message or
+                "Invalid HTTP request" in message or
+                ("code 400" in format and "\x16\x03" in message)):
                 return  # Don't log these
 
         # Also check the format string
-        if "Bad request version" in format:
+        if "Bad request version" in format or "Invalid HTTP request" in format:
             return
 
         # Log normal requests

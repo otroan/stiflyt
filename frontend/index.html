@@ -331,7 +331,7 @@
                 <button id="searchBtn">Søk</button>
                 <div class="search-results" id="searchResults"></div>
             </div>
-            <input type="text" id="routeInput" placeholder="Rutenummer (f.eks. bre10)" value="bre10">
+            <input type="text" id="routeInput" placeholder="Rutenummer (f.eks. bre10)" value="">
             <button id="loadRoute">Last rute</button>
             <button id="configBtn" title="Backend konfigurasjon" style="padding: 0.5rem; background: #95a5a6; font-size: 0.9rem;">⚙️</button>
         </div>
@@ -411,7 +411,7 @@
         const map = L.map('map').setView([61.5, 8.5], 7);
 
         // Add OpenStreetMap tiles
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
 
@@ -426,7 +426,13 @@
         let currentRouteData = null;
         let routeLayer = null;
         let propertyLayers = [];
+        let segmentLayerGroup = null;  // Leaflet layer group for segments
+        let layerControl = null;  // Leaflet layers control
         let markers = [];
+
+        // Create layers control (will be populated when segments are loaded)
+        const overlayMaps = {};
+        layerControl = L.control.layers(null, overlayMaps).addTo(map);
 
         // Color palette for properties
         const colors = [
@@ -449,8 +455,17 @@
 
         // Load route function
         async function loadRoute(rutenummer) {
+            console.log('loadRoute called with rutenummer:', rutenummer);
+            if (!rutenummer) {
+                console.error('No rutenummer provided to loadRoute');
+                alert('Vennligst skriv inn et rutenummer');
+                return;
+            }
+
             const loading = document.getElementById('loading');
-            loading.classList.add('active');
+            if (loading) {
+                loading.classList.add('active');
+            }
 
             try {
                 const url = BACKEND_URL ? `${BACKEND_URL}/api/v1/routes/${rutenummer}` : `/api/v1/routes/${rutenummer}`;
@@ -477,12 +492,21 @@
                     map.removeLayer(routeLayer);
                 }
                 propertyLayers.forEach(layer => map.removeLayer(layer));
+                if (segmentLayerGroup) {
+                    layerControl.removeLayer(segmentLayerGroup);
+                    map.removeLayer(segmentLayerGroup);
+                    segmentLayerGroup = null;
+                }
                 markers.forEach(marker => map.removeLayer(marker));
                 propertyLayers = [];
                 markers = [];
 
-                // Display route
+                // Always display the route
                 displayRoute(data);
+
+                // Always load segments as a layer (can be toggled via layer control)
+                await loadRouteSegments(rutenummer);
+
                 displayRouteInfo(data);
                 displayProperties(data);
                 displayTimeline(data);
@@ -493,6 +517,7 @@
 
             } catch (error) {
                 let errorMessage = `Feil ved lasting av rute: ${error.message}`;
+                console.error('Route loading error:', error);
 
                 // Check for network errors
                 if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
@@ -501,7 +526,6 @@
                 }
 
                 alert(errorMessage);
-                console.error('Route loading error:', error);
 
                 // Show error in UI
                 const errorDiv = document.createElement('div');
@@ -513,6 +537,98 @@
                 setTimeout(() => errorDiv.remove(), 5000);
             } finally {
                 loading.classList.remove('active');
+            }
+        }
+
+        // Load and display route segments individually
+        async function loadRouteSegments(rutenummer) {
+            try {
+                const url = BACKEND_URL ? `${BACKEND_URL}/api/v1/routes/${rutenummer}/segments` : `/api/v1/routes/${rutenummer}/segments`;
+                console.log(`Fetching segments from: ${url}`);
+                const response = await fetch(url);
+
+                if (!response.ok) {
+                    // If segments endpoint fails, just skip it (route will still be shown)
+                    console.warn(`Failed to load segments: ${response.statusText}`);
+                    return;
+                }
+
+                const segmentsData = await response.json();
+                displaySegments(segmentsData);
+            } catch (error) {
+                console.error('Error loading segments:', error);
+                // Don't fail route loading if segments fail - route is more important
+            }
+        }
+
+        // Display segments individually with different colors as a Leaflet layer group
+        function displaySegments(segmentsData) {
+            const segments = segmentsData.segments;
+
+            if (!segments || segments.length === 0) {
+                return;
+            }
+
+            // Create a new layer group for segments
+            segmentLayerGroup = L.layerGroup();
+
+            // Generate colors for segments (cycle through color palette)
+            const segmentColors = [
+                '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+                '#1abc9c', '#e67e22', '#34495e', '#16a085', '#27ae60',
+                '#2980b9', '#8e44ad', '#c0392b', '#d35400', '#7f8c8d',
+                '#e91e63', '#00bcd4', '#4caf50', '#ff9800', '#673ab7'
+            ];
+
+            segments.forEach((segment, index) => {
+                const color = segmentColors[index % segmentColors.length];
+                const geometry = segment.geometry;
+
+                if (geometry && geometry.coordinates) {
+                    try {
+                        const geoJsonLayer = L.geoJSON(geometry, {
+                            style: {
+                                color: color,
+                                weight: 5,
+                                opacity: 0.9
+                            }
+                        });
+
+                        // Add popup with segment info
+                        geoJsonLayer.bindPopup(`
+                            <strong>Segment ${segment.objid}</strong><br>
+                            Lengde: ${segment.length_km.toFixed(2)} km (${segment.length_meters.toFixed(0)} m)
+                        `);
+
+                        // Add to layer group instead of directly to map
+                        geoJsonLayer.addTo(segmentLayerGroup);
+                    } catch (error) {
+                        console.error(`Error displaying segment ${segment.objid}:`, error);
+                    }
+                }
+            });
+
+            // Add the layer group to the map
+            segmentLayerGroup.addTo(map);
+
+            // Add to layers control so user can show/hide it
+            layerControl.addOverlay(segmentLayerGroup, `Segmenter (${segments.length})`);
+
+            // Fit map to both route and segments if route layer exists
+            if (segmentLayerGroup.getLayers().length > 0) {
+                if (routeLayer) {
+                    // Fit to both route and segments
+                    const allBounds = L.latLngBounds([
+                        routeLayer.getBounds().getSouthWest(),
+                        routeLayer.getBounds().getNorthEast(),
+                        segmentLayerGroup.getBounds().getSouthWest(),
+                        segmentLayerGroup.getBounds().getNorthEast()
+                    ]);
+                    map.fitBounds(allBounds, { padding: [50, 50] });
+                } else {
+                    // Only fit to segments
+                    map.fitBounds(segmentLayerGroup.getBounds(), { padding: [50, 50] });
+                }
             }
         }
 
@@ -846,6 +962,7 @@
 
         // Search routes function
         async function searchRoutes(query) {
+            console.log('searchRoutes called with query:', query);
             if (!query || query.length < 2) {
                 document.getElementById('searchResults').classList.remove('active');
                 return;
@@ -856,15 +973,22 @@
                 const url = BACKEND_URL ? `${BACKEND_URL}/api/v1/routes?prefix=${encodeURIComponent(query)}&limit=20`
                                         : `/api/v1/routes?prefix=${encodeURIComponent(query)}&limit=20`;
 
+                console.log('Fetching search results from:', url);
                 const response = await fetch(url);
+
                 if (!response.ok) {
+                    console.error('Search response not OK:', response.status, response.statusText);
+                    const errorText = await response.text();
+                    console.error('Error response:', errorText);
                     return;
                 }
 
                 const data = await response.json();
+                console.log('Search results:', data);
                 displaySearchResults(data.routes);
             } catch (error) {
                 console.error('Search error:', error);
+                alert(`Søkefeil: ${error.message}`);
             }
         }
 
@@ -904,20 +1028,37 @@
             }
         });
 
-        // Event listeners
-        document.getElementById('loadRoute').addEventListener('click', () => {
-            const rutenummer = document.getElementById('routeInput').value.trim();
-            if (rutenummer) {
-                loadRoute(rutenummer);
-            }
-        });
+        // Event listeners - ensure elements exist before adding listeners
+        const loadRouteBtn = document.getElementById('loadRoute');
+        const searchBtn = document.getElementById('searchBtn');
 
-        document.getElementById('searchBtn').addEventListener('click', () => {
-            const query = document.getElementById('searchInput').value.trim();
-            if (query) {
-                searchRoutes(query);
-            }
-        });
+        if (loadRouteBtn) {
+            loadRouteBtn.addEventListener('click', () => {
+                const rutenummer = document.getElementById('routeInput').value.trim();
+                if (rutenummer) {
+                    console.log('Loading route:', rutenummer);
+                    loadRoute(rutenummer);
+                } else {
+                    console.warn('No route number entered');
+                }
+            });
+        } else {
+            console.error('loadRoute button not found!');
+        }
+
+        if (searchBtn) {
+            searchBtn.addEventListener('click', () => {
+                const query = document.getElementById('searchInput').value.trim();
+                if (query) {
+                    console.log('Searching for:', query);
+                    searchRoutes(query);
+                } else {
+                    console.warn('No search query entered');
+                }
+            });
+        } else {
+            console.error('searchBtn button not found!');
+        }
 
         document.getElementById('searchInput').addEventListener('input', (e) => {
             const query = e.target.value.trim();
@@ -945,11 +1086,11 @@
             }
         });
 
-        // Load default route on page load
+        // Initialize on page load
         window.addEventListener('load', () => {
             const backendUrl = BACKEND_URL || '(relativ path)';
             console.log(`Backend URL: ${backendUrl}`);
-            loadRoute('bre10');
+            // No default route - user must search or enter route number
         });
     </script>
 </body>

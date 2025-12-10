@@ -51,3 +51,19 @@ class RouteSearchResponse(BaseModel):
     routes: List[RouteListItem]
     total: int
 
+
+class RouteSegment(BaseModel):
+    """Individual route segment."""
+    objid: int
+    geometry: Dict[str, Any]  # GeoJSON geometry
+    length_meters: float
+    length_km: float
+
+
+class RouteSegmentsResponse(BaseModel):
+    """Route segments response."""
+    rutenummer: str
+    rutenavn: str
+    segments: List[RouteSegment]
+    total_segments: int
+

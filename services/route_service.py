@@ -65,13 +65,35 @@ def combine_route_geometry(conn, segments):
 
 
 def get_route_length(conn, route_geom):
-    """Get route length in meters."""
-    query = """
-        SELECT ST_Length(ST_Transform(%s::geometry, 3857)) as length_meters;
+    """Get route length in meters.
+
+    Uses geography (spherical) calculation for accurate distance measurements.
+    Handles both LineString and MultiLineString geometries.
+    For MultiLineString, sums the length of all constituent lines.
+    """
+    # Check geometry type and calculate length accordingly
+    check_type_query = """
+        SELECT ST_GeometryType(%s::geometry) as geom_type;
     """
 
     with conn.cursor() as cur:
-        cur.execute(query, (route_geom,))
+        cur.execute(check_type_query, (route_geom,))
+        geom_type = cur.fetchone()[0]
+
+        if geom_type == 'ST_MultiLineString':
+            # For MultiLineString, sum lengths of all geometries using geography
+            length_query = """
+                SELECT SUM(ST_Length(ST_Transform(ST_GeometryN(%s::geometry, generate_series(1, ST_NumGeometries(%s::geometry))), 4326)::geography)) as length_meters;
+            """
+            cur.execute(length_query, (route_geom, route_geom))
+        else:
+            # For LineString, use geography for accurate spherical distance calculation
+            # Transform to WGS84 (4326) first, then cast to geography
+            length_query = """
+                SELECT ST_Length(ST_Transform(%s::geometry, 4326)::geography) as length_meters;
+            """
+            cur.execute(length_query, (route_geom,))
+
         result = cur.fetchone()
         return result[0] if result else 0.0
 
@@ -291,6 +313,56 @@ def get_route_data(rutenummer):
             'geometry': geometry_geojson,
             'metadata': metadata,
             'matrikkelenhet_vector': matrikkelenhet_vector
+        }
+
+    finally:
+        conn.close()
+
+
+def get_route_segments_data(rutenummer):
+    """Get individual segments for a route with geometry and length."""
+    conn = get_db_connection()
+
+    try:
+        # Get route segments with geometry and length
+        # Use geography for accurate distance calculation (not Web Mercator which distorts at high latitudes)
+        query = f"""
+            SELECT
+                f.objid,
+                f.senterlinje,
+                fi.rutenummer,
+                fi.rutenavn,
+                ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
+            FROM {ROUTE_SCHEMA}.fotrute f
+            JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+            WHERE fi.rutenummer = %s
+            ORDER BY f.objid;
+        """
+
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, (rutenummer,))
+            segments = cur.fetchall()
+
+        if not segments:
+            return None
+
+        # Convert each segment geometry to GeoJSON
+        segments_data = []
+        for seg in segments:
+            geom_geojson = geometry_to_geojson(conn, seg['senterlinje'])
+            if geom_geojson:
+                segments_data.append({
+                    'objid': seg['objid'],
+                    'geometry': geom_geojson,
+                    'length_meters': seg['length_meters'],
+                    'length_km': seg['length_meters'] / 1000.0
+                })
+
+        return {
+            'rutenummer': segments[0]['rutenummer'],
+            'rutenavn': segments[0]['rutenavn'],
+            'segments': segments_data,
+            'total_segments': len(segments_data)
         }
 
     finally:

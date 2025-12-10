@@ -1,8 +1,8 @@
 """API routes."""
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
-from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem
-from services.route_service import get_route_data, search_routes, get_route_list
+from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse
+from services.route_service import get_route_data, search_routes, get_route_list, get_route_segments_data
 
 router = APIRouter()
 
@@ -76,5 +76,36 @@ async def get_route(rutenummer: str):
         raise HTTPException(
             status_code=500,
             detail=f"Error processing route '{rutenummer}': {error_detail}"
+        )
+
+
+@router.get("/routes/{rutenummer}/segments", response_model=RouteSegmentsResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_route_segments(rutenummer: str):
+    """
+    Get individual segments for a route.
+
+    Returns each segment separately with its geometry and length.
+    Useful for debugging route data issues like overlapping segments.
+    """
+    try:
+        segments_data = get_route_segments_data(rutenummer)
+
+        if segments_data is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Route '{rutenummer}' not found"
+            )
+
+        return RouteSegmentsResponse(**segments_data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = str(e)
+        print(f"Error getting segments for route {rutenummer}: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting segments for route '{rutenummer}': {error_detail}"
         )
 
