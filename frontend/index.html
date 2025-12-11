@@ -157,12 +157,14 @@
             cursor: pointer;
             font-size: 0.9rem;
             transition: background 0.2s;
+            color: #2c3e50;
         }
 
         .tab.active {
             background: white;
             border-bottom: 2px solid #3498db;
             font-weight: 600;
+            color: #2c3e50;
         }
 
         .tab-content {
@@ -434,47 +436,6 @@
             margin: 1rem;
         }
 
-        .legend {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            background: white;
-            padding: 1rem;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-            z-index: 1000;
-            max-width: 250px;
-            max-height: 60vh;
-            overflow: hidden; /* scroll handled on content */
-        }
-
-        .legend h4 {
-            margin-bottom: 0.5rem;
-            font-size: 0.9rem;
-        }
-
-        .legend-item {
-            display: flex;
-            align-items: center;
-            margin-bottom: 0.25rem;
-            font-size: 0.85rem;
-        }
-
-        .legend-color {
-            width: 16px;
-            height: 16px;
-            border-radius: 3px;
-            margin-right: 0.5rem;
-            border: 1px solid #333;
-        }
-
-        /* Scrollable legend content */
-        #legendContent {
-            max-height: calc(60vh - 32px); /* subtract title/padding */
-            overflow-y: auto;
-            overflow-x: hidden;
-        }
-
         /* Box zoom control styling - ensure visibility */
         .leaflet-zoom-box-icon {
             background: white !important;
@@ -623,10 +584,6 @@
                 <div class="spinner"></div>
                 <div>Laster rute...</div>
             </div>
-            <div class="legend" id="legend" style="display: none;">
-                <h4>Eiendommer</h4>
-                <div id="legendContent"></div>
-            </div>
         </div>
     </div>
 
@@ -686,27 +643,6 @@
         const baseMaps = map._baseLayers || {};
         const overlayMaps = {};
         const layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
-
-        // Prevent map scroll/click when interacting with the legend (enables legend scrolling)
-        const legendEl = document.getElementById('legend');
-        if (legendEl && L && L.DomEvent) {
-            L.DomEvent.disableScrollPropagation(legendEl);
-            L.DomEvent.disableClickPropagation(legendEl);
-
-            const legendContentEl = document.getElementById('legendContent');
-            if (legendContentEl) {
-                L.DomEvent.disableScrollPropagation(legendContentEl);
-                L.DomEvent.disableClickPropagation(legendContentEl);
-
-                legendContentEl.addEventListener('wheel', (e) => {
-                    e.stopPropagation(); // keep map from hijacking
-                }, { passive: true });
-            }
-
-            legendEl.addEventListener('wheel', (e) => {
-                e.stopPropagation(); // keep map from hijacking
-            }, { passive: true });
-        }
 
         // Add box zoom control using Leaflet.ZoomBox plugin
         if (typeof L.control.zoomBox === 'function') {
@@ -955,8 +891,6 @@
                 }
             });
 
-            // Update legend
-            updateLegend(propertyGroups);
         }
 
         // Get color for property (using common utility)
@@ -1059,36 +993,6 @@
             }
         }
 
-        // Update legend
-        function updateLegend(propertyGroups) {
-            const legend = document.getElementById('legend');
-            const legendContent = document.getElementById('legendContent');
-
-            // Get unique properties
-            const uniqueProps = {};
-            propertyGroups.forEach(group => {
-                if (!uniqueProps[group.matrikkelenhet]) {
-                    uniqueProps[group.matrikkelenhet] = {
-                        color: group.color,
-                        bruksnavn: group.bruksnavn
-                    };
-                }
-            });
-
-            legendContent.innerHTML = Object.entries(uniqueProps)
-                .map(([matrikkel, info]) => `
-                    <div class="legend-item">
-                        <div class="legend-color" style="background-color: ${info.color}"></div>
-                        <div>
-                            <strong>${matrikkel}</strong><br>
-                            <small>${info.bruksnavn || 'Ingen navn'}</small>
-                        </div>
-                    </div>
-                `).join('');
-
-            legend.style.display = 'block';
-        }
-
         // Display properties table
         function displayProperties(data) {
             const tbody = document.getElementById('propertiesTableBody');
@@ -1138,9 +1042,6 @@
                     </tr>
                 `;
             }).join('');
-
-            // Update legend with grouped properties
-            updateLegend(grouped);
         }
 
         // Display timeline
