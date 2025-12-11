@@ -789,7 +789,8 @@ def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=Non
                 fi.rutenavn,
                 fi.vedlikeholdsansvarlig,
                 {geometry_expr},
-                COUNT(DISTINCT f.objid) as segment_count
+                COUNT(DISTINCT f.objid) as segment_count,
+                SUM(ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography)) as total_length_meters
             FROM {ROUTE_SCHEMA}.fotrute f
             JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
             -- ST_Intersects returns routes that intersect the bounding box (any part of route is in box)
@@ -846,12 +847,15 @@ def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=Non
                         # Skip routes with invalid geometry
                         continue
 
+                total_length_meters = float(row['total_length_meters']) if row.get('total_length_meters') else 0.0
                 route_items.append({
                     'rutenummer': rutenummer,
                     'rutenavn': row['rutenavn'],
                     'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
                     'geometry': geometry,
-                    'segment_count': row['segment_count']
+                    'segment_count': row['segment_count'],
+                    'total_length_meters': total_length_meters,
+                    'total_length_km': total_length_meters / 1000.0
                 })
 
             return route_items

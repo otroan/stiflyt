@@ -62,6 +62,8 @@ class BboxRouteItem(BaseModel):
     vedlikeholdsansvarlig: Optional[str] = None
     geometry: Dict[str, Any]  # GeoJSON geometry
     segment_count: int
+    total_length_meters: float
+    total_length_km: float
 
 
 class BboxRouteResponse(BaseModel):

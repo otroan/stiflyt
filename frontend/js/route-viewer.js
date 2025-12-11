@@ -20,6 +20,8 @@ class RouteViewer {
         // Bounding box route layers
         this.bboxRouteLayerGroup = null;
         this.bboxRoutes = new Map(); // Map of rutenummer -> layer for quick lookup
+        this.routeDataMap = new Map(); // Map of rutenummer -> route data for overlapping route selector
+        this.routeSelectorPopup = null; // Current route selector popup
 
         // Color palette for properties (from constants)
         this.colors = PROPERTY_COLORS;
@@ -153,6 +155,13 @@ class RouteViewer {
             this.bboxRouteLayerGroup.clearLayers();
         }
         this.bboxRoutes.clear();
+        this.routeDataMap.clear();
+
+        // Close route selector if open
+        if (this.routeSelectorPopup) {
+            this.map.removeLayer(this.routeSelectorPopup);
+            this.routeSelectorPopup = null;
+        }
     }
 
     /**
@@ -222,31 +231,10 @@ class RouteViewer {
                 for (let i = batchIndex; i < endIndex; i++) {
                     const route = routesToAdd[i];
 
-                    // Create GeoJSON layer for this route with optimized styling
-                    const routeLayer = createGeoJSONLayer(route.geometry, {
-                        color: '#6c757d', // Light gray for overview routes
-                        weight: 2,
-                        opacity: 0.6,
-                        fillOpacity: 0
-                    });
-
-                    // Set lower z-index so selected routes appear on top
-                    if (routeLayer.setZIndex) {
-                        routeLayer.setZIndex(100); // Lower z-index for bbox routes
-                    }
-
-                    // Add click handler to load full route details
-                    // Use the global loadRoute function from index.html to ensure UI updates
-                    routeLayer.on('click', () => {
-                        console.log(`Loading full route details for: ${route.rutenummer}`);
-                        // Use global loadRoute function if available, otherwise fall back to this.loadRoute
-                        if (typeof window !== 'undefined' && window.loadRoute) {
-                            window.loadRoute(route.rutenummer);
-                        } else {
-                            // Fallback to direct call if global function not available
-                            this.loadRoute(route.rutenummer);
-                        }
-                    });
+                    // Use backend-provided distance - backend always provides total_length_km
+                    // Don't calculate from geometry as it only shows visible/simplified part
+                    const distanceKm = route.total_length_km ?? 0;
+                    const distanceDisplay = distanceKm > 0 ? `${distanceKm.toFixed(2)} km` : 'N/A';
 
                     // Add popup with route info (lazy - only create when needed)
                     const popupContent = `
@@ -260,19 +248,146 @@ class RouteViewer {
                             <em style="font-size: 0.85em; color: #6c757d;">Klikk for å laste full rute</em>
                         </div>
                     `;
-                    routeLayer.bindPopup(popupContent);
 
-                    // Simplified hover effect (only weight change, no opacity)
-                    routeLayer.on('mouseover', function() {
-                        this.setStyle({ weight: 3 });
-                    });
-                    routeLayer.on('mouseout', function() {
-                        this.setStyle({ weight: 2 });
+                    // Tooltip content for hover
+                    const tooltipContent = `
+                        <div style="font-weight: 600;">
+                            ${route.rutenummer}<br>
+                            <small style="font-weight: normal;">${distanceDisplay}</small>
+                        </div>
+                    `;
+
+                    // Create GeoJSON layer for this route with optimized styling
+                    const routeLayer = createGeoJSONLayer(route.geometry, {
+                        style: {
+                            color: '#3498db', // Blue for overview routes
+                            weight: 2,
+                            opacity: 0.6,
+                            fillOpacity: 0
+                        },
+                        popupContent: popupContent,
+                        tooltipContent: tooltipContent, // Bind tooltips via onEachFeature
+                        layerName: `route-${route.rutenummer}`
                     });
 
-                    // Add to layer group and store reference
-                    routeLayer.addTo(this.bboxRouteLayerGroup);
-                    this.bboxRoutes.set(route.rutenummer, routeLayer);
+                    // Set lower z-index so selected routes appear on top
+                    if (routeLayer && routeLayer.setZIndex) {
+                        routeLayer.setZIndex(100); // Lower z-index for bbox routes
+                    }
+
+                        // Store route data for overlapping route selector
+                        this.routeDataMap.set(route.rutenummer, route);
+
+                        // Add click handler with support for overlapping routes
+                        if (routeLayer) {
+                            // Bind click to individual layers to detect overlaps
+                            setTimeout(() => {
+                                if (routeLayer.eachLayer) {
+                                    routeLayer.eachLayer((layer) => {
+                                        layer.on('click', (e) => {
+                                            L.DomEvent.stopPropagation(e);
+                                            this.handleRouteClick(e, route.rutenummer);
+                                        });
+                                    });
+                                } else {
+                                    routeLayer.on('click', (e) => {
+                                        L.DomEvent.stopPropagation(e);
+                                        this.handleRouteClick(e, route.rutenummer);
+                                    });
+                                }
+                            }, 50);
+
+                        // Add hover effects and bind tooltips to individual layers after adding to map
+                        // Tooltips must be bound AFTER layer is on map to work properly
+                        setTimeout(() => {
+                            if (routeLayer.eachLayer) {
+                                routeLayer.eachLayer(function(layer) {
+                                    // Store original weight for restoration
+                                    const originalWeight = layer.options.weight || 2;
+
+                                    // Bind tooltip if pending (stored during layer creation)
+                                    if (layer._pendingTooltipContent && layer.bindTooltip) {
+                                        try {
+                                            layer.bindTooltip(layer._pendingTooltipContent, {
+                                                permanent: false,
+                                                direction: 'auto',
+                                                className: 'route-tooltip',
+                                                opacity: 0.95,
+                                                offset: [0, -5]
+                                            });
+
+                                            // Manually open/close tooltip on hover
+                                            layer.on('mouseover', function(e) {
+                                                if (this.openTooltip) {
+                                                    this.openTooltip(e.latlng);
+                                                }
+                                            });
+                                            layer.on('mouseout', function(e) {
+                                                if (this.closeTooltip) {
+                                                    this.closeTooltip();
+                                                }
+                                            });
+
+                                            delete layer._pendingTooltipContent;
+                                        } catch (error) {
+                                            console.error('Error binding tooltip to layer:', error);
+                                        }
+                                    }
+
+                                    // Bind hover effect to make route thicker
+                                    layer.on('mouseover', function(e) {
+                                        this.setStyle({ weight: originalWeight * 2.5 });
+                                    });
+                                    layer.on('mouseout', function(e) {
+                                        this.setStyle({ weight: originalWeight });
+                                    });
+                                });
+                            } else {
+                                // Single layer
+                                const originalWeight = routeLayer.options.weight || 2;
+
+                                // Bind tooltip if pending
+                                if (routeLayer._pendingTooltipContent && routeLayer.bindTooltip) {
+                                    try {
+                                        routeLayer.bindTooltip(routeLayer._pendingTooltipContent, {
+                                            permanent: false,
+                                            direction: 'auto',
+                                            className: 'route-tooltip',
+                                            opacity: 0.95,
+                                            offset: [0, -5]
+                                        });
+
+                                        routeLayer.on('mouseover', function(e) {
+                                            if (this.openTooltip) {
+                                                this.openTooltip(e.latlng);
+                                            }
+                                        });
+                                        routeLayer.on('mouseout', function(e) {
+                                            if (this.closeTooltip) {
+                                                this.closeTooltip();
+                                            }
+                                        });
+
+                                        delete routeLayer._pendingTooltipContent;
+                                    } catch (error) {
+                                        console.error('Error binding tooltip to single layer:', error);
+                                    }
+                                }
+
+                                routeLayer.on('mouseover', function(e) {
+                                    this.setStyle({ weight: originalWeight * 2.5 });
+                                });
+                                routeLayer.on('mouseout', function(e) {
+                                    this.setStyle({ weight: originalWeight });
+                                });
+                            }
+                        }, 50);
+
+                        // Add to layer group and store reference
+                        routeLayer.addTo(this.bboxRouteLayerGroup);
+
+                        this.bboxRoutes.set(route.rutenummer, routeLayer);
+                    }
                 }
 
                 batchIndex = endIndex;
@@ -436,6 +551,19 @@ class RouteViewer {
 
                         const componentColor = colors[index % colors.length];
 
+                        // Create tooltip content if metadata available
+                        let tooltipContent = null;
+                        if (data.metadata) {
+                            const rutenummer = data.metadata.rutenummer;
+                            const distanceKm = data.metadata.total_length_km || 0;
+                            tooltipContent = `
+                                <div style="font-weight: 600;">
+                                    ${rutenummer}<br>
+                                    <small style="font-weight: normal;">${distanceKm.toFixed(2)} km</small>
+                                </div>
+                            `;
+                        }
+
                         // Create a layer for this component with filtered geometry
                         const popupContent = `
                             <strong>Komponent ${index + 1}</strong><br>
@@ -449,6 +577,7 @@ class RouteViewer {
                                 opacity: 0.8
                             },
                             popupContent: popupContent,
+                            tooltipContent: tooltipContent,
                             layerGroup: this.routeLayerGroup,
                             layerName: `component-${index + 1}`
                         });
@@ -479,7 +608,33 @@ class RouteViewer {
                     }
                 } else {
                     // Single connected route
-                    this.routeLayer = displayRouteGeometry(this.map, data.geometry);
+                    // Create tooltip content if metadata available
+                    let tooltipContent = null;
+                    if (data.metadata) {
+                        const rutenummer = data.metadata.rutenummer;
+                        const distanceKm = data.metadata.total_length_km || 0;
+                        tooltipContent = `
+                            <div style="font-weight: 600;">
+                                ${rutenummer}<br>
+                                <small style="font-weight: normal;">${distanceKm.toFixed(2)} km</small>
+                            </div>
+                        `;
+                    }
+
+                    // Use createGeoJSONLayer to ensure tooltips work properly
+                    this.routeLayer = createGeoJSONLayer(data.geometry, {
+                        style: {
+                            color: '#2c3e50',
+                            weight: 5,
+                            opacity: 0.8
+                        },
+                        tooltipContent: tooltipContent,
+                        layerName: 'selected-route'
+                    });
+
+                    if (this.routeLayer) {
+                        this.routeLayer.addTo(this.map);
+                    }
 
                     // Ensure selected route appears on top of bbox routes
                     if (this.routeLayer) {
@@ -801,6 +956,196 @@ class RouteViewer {
      */
     getCurrentRouteData() {
         return this.currentRouteData;
+    }
+
+    /**
+     * Handle route click - check for overlapping routes and show selector if needed
+     * @param {Event} e - Click event
+     * @param {string} clickedRutenummer - Route number that was clicked
+     */
+    handleRouteClick(e, clickedRutenummer) {
+        const clickPoint = e.latlng;
+        const clickedRoute = this.routeDataMap.get(clickedRutenummer);
+
+        if (!clickedRoute || !clickedRoute.geometry) {
+            // Fallback to direct load
+            this.loadRouteDirectly(clickedRutenummer);
+            return;
+        }
+
+        // Find all routes that might overlap at this point
+        const overlappingRoutes = [];
+
+        // Check all routes to see if they contain this point
+        this.routeDataMap.forEach((route, rutenummer) => {
+            if (this.isPointOnRoute(clickPoint, route.geometry)) {
+                overlappingRoutes.push({
+                    rutenummer: rutenummer,
+                    rutenavn: route.rutenavn || 'Ingen navn',
+                    distance: route.total_length_km || 0,
+                    vedlikeholdsansvarlig: route.vedlikeholdsansvarlig || 'Ukjent'
+                });
+            }
+        });
+
+        // If only one route, load it directly
+        if (overlappingRoutes.length === 1) {
+            this.loadRouteDirectly(clickedRutenummer);
+        } else if (overlappingRoutes.length > 1) {
+            // Show route selector
+            this.showRouteSelector(e, overlappingRoutes);
+        } else {
+            // Fallback
+            this.loadRouteDirectly(clickedRutenummer);
+        }
+    }
+
+    /**
+     * Check if a point is on a route geometry (simplified check)
+     * @param {L.LatLng} point - Point to check
+     * @param {Object} geometry - GeoJSON geometry
+     * @returns {boolean} True if point is likely on the route
+     */
+    isPointOnRoute(point, geometry) {
+        if (!geometry || !geometry.coordinates) return false;
+
+        const tolerance = 0.001; // ~100 meters
+        const processCoordinates = (coords) => {
+            if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
+                // MultiLineString
+                return coords.some(coordArray => processCoordinates(coordArray));
+            } else if (Array.isArray(coords[0]) && typeof coords[0][0] === 'number') {
+                // LineString - check if point is near any segment
+                for (let i = 0; i < coords.length - 1; i++) {
+                    const [lng1, lat1] = coords[i];
+                    const [lng2, lat2] = coords[i + 1];
+
+                    // Simple distance check - if point is close to line segment
+                    const dist1 = Math.sqrt(Math.pow(point.lat - lat1, 2) + Math.pow(point.lng - lng1, 2));
+                    const dist2 = Math.sqrt(Math.pow(point.lat - lat2, 2) + Math.pow(point.lng - lng2, 2));
+
+                    if (dist1 < tolerance || dist2 < tolerance) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        };
+
+        return processCoordinates(geometry.coordinates);
+    }
+
+    /**
+     * Show route selector popup for overlapping routes
+     * @param {Event} e - Click event
+     * @param {Array} routes - Array of overlapping routes
+     */
+    showRouteSelector(e, routes) {
+        // Remove existing selector if any
+        if (this.routeSelectorPopup) {
+            this.map.removeLayer(this.routeSelectorPopup);
+        }
+
+        // Sort routes by name for better UX
+        routes.sort((a, b) => a.rutenummer.localeCompare(b.rutenummer));
+
+        // Create selector HTML
+        let selectorHTML = `
+            <div style="min-width: 250px; max-height: 400px; overflow-y: auto;">
+                <h4 style="margin: 0 0 10px 0; font-size: 1rem;">Flere ruter på dette punktet:</h4>
+                <div style="display: flex; flex-direction: column; gap: 5px;">
+        `;
+
+        routes.forEach((route, index) => {
+            selectorHTML += `
+                <button
+                    class="route-selector-btn"
+                    data-rutenummer="${route.rutenummer}"
+                    style="
+                        text-align: left;
+                        padding: 8px 12px;
+                        border: 1px solid #ddd;
+                        border-radius: 4px;
+                        background: white;
+                        cursor: pointer;
+                        transition: background 0.2s;
+                    "
+                    onmouseover="this.style.background='#f0f0f0'"
+                    onmouseout="this.style.background='white'"
+                >
+                    <strong>${route.rutenummer}</strong><br>
+                    <small style="color: #666;">${route.rutenavn}</small><br>
+                    <small style="color: #999;">${route.distance.toFixed(2)} km • ${route.vedlikeholdsansvarlig}</small>
+                </button>
+            `;
+        });
+
+        selectorHTML += `
+                </div>
+                <div style="margin-top: 10px; font-size: 0.85em; color: #666;">
+                    Bruk piltaster for å navigere, Enter for å velge
+                </div>
+            </div>
+        `;
+
+        // Create popup
+        const popup = L.popup({
+            maxWidth: 300,
+            className: 'route-selector-popup'
+        })
+        .setLatLng(e.latlng)
+        .setContent(selectorHTML)
+        .openOn(this.map);
+
+        this.routeSelectorPopup = popup;
+
+        // Add click handlers to buttons
+        setTimeout(() => {
+            const buttons = document.querySelectorAll('.route-selector-btn');
+            let selectedIndex = 0;
+
+            buttons.forEach((btn, index) => {
+                btn.addEventListener('click', () => {
+                    const rutenummer = btn.dataset.rutenummer;
+                    this.loadRouteDirectly(rutenummer);
+                    this.map.closePopup();
+                });
+
+                // Keyboard navigation
+                btn.addEventListener('keydown', (keyEvent) => {
+                    if (keyEvent.key === 'ArrowDown') {
+                        keyEvent.preventDefault();
+                        selectedIndex = Math.min(selectedIndex + 1, buttons.length - 1);
+                        buttons[selectedIndex].focus();
+                    } else if (keyEvent.key === 'ArrowUp') {
+                        keyEvent.preventDefault();
+                        selectedIndex = Math.max(selectedIndex - 1, 0);
+                        buttons[selectedIndex].focus();
+                    } else if (keyEvent.key === 'Enter') {
+                        keyEvent.preventDefault();
+                        btn.click();
+                    }
+                });
+            });
+
+            // Focus first button
+            if (buttons.length > 0) {
+                buttons[0].focus();
+            }
+        }, 100);
+    }
+
+    /**
+     * Load route directly (used by selector and single-route clicks)
+     * @param {string} rutenummer - Route number to load
+     */
+    loadRouteDirectly(rutenummer) {
+        console.log(`Loading full route details for: ${rutenummer}`);
+        if (typeof window !== 'undefined' && window.loadRoute) {
+            window.loadRoute(rutenummer);
+        } else {
+            this.loadRoute(rutenummer);
+        }
     }
 }
 

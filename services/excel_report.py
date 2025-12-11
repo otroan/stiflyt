@@ -4,6 +4,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
 from .route_service import get_route_data, RouteNotFoundError, RouteDataError
+from .matrikkel_owner_service import fetch_owners_for_matrikkelenheter
 
 
 def generate_owners_excel(rutenummer):
@@ -15,7 +16,7 @@ def generate_owners_excel(rutenummer):
     - Length of path within this matrikkelenhet (in meters and kilometers)
     - Matrikkelenhet
     - Bruksnavn
-    - Placeholder for kontaktinformasjon (to be filled in phase 2)
+    - Kontaktinformasjon (owner information from Matrikkel API, if credentials are configured)
 
     Args:
         rutenummer: Route identifier
@@ -33,6 +34,24 @@ def generate_owners_excel(rutenummer):
     # Extract matrikkelenhet vector
     matrikkelenhet_vector = route_data.get('matrikkelenhet_vector', [])
     metadata = route_data.get('metadata', {})
+
+    # Fetch owner information from Matrikkel API (if credentials are available)
+    # This will gracefully handle missing credentials by returning None for owner info
+    owner_results = fetch_owners_for_matrikkelenheter(matrikkelenhet_vector)
+
+    # Create a mapping from matrikkelenhet identifier to owner info for quick lookup
+    # Use a tuple of key fields as the key for reliable matching
+    owner_info_map = {}
+    for item, owner_info, error in owner_results:
+        # Create a unique key from matrikkelenhet identifier
+        key = (
+            item.get('kommunenummer'),
+            item.get('gardsnummer'),
+            item.get('bruksnummer'),
+            item.get('festenummer'),
+            item.get('matrikkelenhet', '')
+        )
+        owner_info_map[key] = owner_info if owner_info else ""
 
     # Create workbook and worksheet
     wb = Workbook()
@@ -85,7 +104,16 @@ def generate_owners_excel(rutenummer):
         ws.cell(row=idx, column=4, value=round(item.get('length_km', 0), 3))
         ws.cell(row=idx, column=5, value=item.get('matrikkelenhet', ''))
         ws.cell(row=idx, column=6, value=item.get('bruksnavn', ''))
-        ws.cell(row=idx, column=7, value="")  # Placeholder for kontaktinformasjon
+        # Get owner information from map using matrikkelenhet identifier as key
+        key = (
+            item.get('kommunenummer'),
+            item.get('gardsnummer'),
+            item.get('bruksnummer'),
+            item.get('festenummer'),
+            item.get('matrikkelenhet', '')
+        )
+        kontaktinformasjon = owner_info_map.get(key, "")
+        ws.cell(row=idx, column=7, value=kontaktinformasjon)
 
     # Format columns
     # Offset columns (meters and km)

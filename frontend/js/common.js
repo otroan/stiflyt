@@ -207,6 +207,7 @@ function displayRouteGeometry(map, geometry, style = {}) {
  * @param {Object} options - Configuration options
  * @param {Object} options.style - Leaflet style options (color, weight, opacity)
  * @param {string} options.popupContent - HTML content for popup (optional)
+ * @param {string} options.tooltipContent - HTML content for tooltip (optional)
  * @param {L.LayerGroup} options.layerGroup - Layer group to add the layer to (optional)
  * @param {string} options.layerName - Name for error messages (optional)
  * @returns {L.GeoJSON|null} GeoJSON layer or null if creation failed
@@ -219,19 +220,34 @@ function createGeoJSONLayer(geometry, options = {}) {
     const {
         style = {},
         popupContent = null,
+        tooltipContent = null,
         layerGroup = null,
         layerName = 'layer'
     } = options;
 
     try {
+        // Create the GeoJSON layer using onEachFeature to properly attach events
+        // This is the correct Leaflet pattern for hover interactions
         const geoJsonLayer = L.geoJSON(geometry, {
-            style: style
-        });
+            style: style,
+            interactive: true, // Ensure layers are interactive
+            onEachFeature: function(feature, layer) {
+                // Ensure layer is interactive (redundant but safe)
+                if (layer.setInteractive) {
+                    layer.setInteractive(true);
+                }
 
-        // Add popup if content provided
-        if (popupContent) {
-            geoJsonLayer.bindPopup(popupContent);
-        }
+                // Bind popup if provided
+                if (popupContent) {
+                    layer.bindPopup(popupContent);
+                }
+
+                // Store tooltip content on layer for later binding (after layer is on map)
+                if (tooltipContent) {
+                    layer._pendingTooltipContent = tooltipContent;
+                }
+            }
+        });
 
         // Add to layer group if provided
         if (layerGroup) {
@@ -454,6 +470,56 @@ function getBoundsFromGeometry(geometry) {
     }
 }
 
+/**
+ * Calculate distance in meters from GeoJSON geometry using Haversine formula
+ * @param {Object} geometry - GeoJSON geometry object
+ * @returns {number} Distance in meters, or 0 if calculation fails
+ */
+function calculateGeometryDistance(geometry) {
+    if (!geometry || !geometry.coordinates) {
+        return 0;
+    }
+
+    try {
+        let totalDistance = 0;
+
+        // Haversine formula to calculate distance between two lat/lng points
+        const haversineDistance = (lat1, lng1, lat2, lng2) => {
+            const R = 6371000; // Earth radius in meters
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLng = (lng2 - lng1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        };
+
+        const processCoordinates = (coords) => {
+            if (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
+                // MultiLineString or Polygon - process each LineString
+                coords.forEach(coordArray => processCoordinates(coordArray));
+            } else if (Array.isArray(coords[0]) && typeof coords[0][0] === 'number') {
+                // LineString or Polygon ring - calculate distance along the line
+                for (let i = 0; i < coords.length - 1; i++) {
+                    const [lng1, lat1] = coords[i];
+                    const [lng2, lat2] = coords[i + 1];
+                    if (typeof lat1 === 'number' && typeof lng1 === 'number' &&
+                        typeof lat2 === 'number' && typeof lng2 === 'number') {
+                        totalDistance += haversineDistance(lat1, lng1, lat2, lng2);
+                    }
+                }
+            }
+        };
+
+        processCoordinates(geometry.coordinates);
+        return totalDistance;
+    } catch (error) {
+        console.warn('Could not calculate distance from geometry:', error);
+        return 0;
+    }
+}
+
 // Export for use in modules
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -472,7 +538,8 @@ if (typeof module !== 'undefined' && module.exports) {
         isValidBounds,
         fitMapToBounds,
         combineBounds,
-        getBoundsFromGeometry
+        getBoundsFromGeometry,
+        calculateGeometryDistance
     };
 }
 

@@ -165,7 +165,9 @@ async def get_routes_in_bbox_endpoint(
                 rutenavn=r.get('rutenavn'),  # Handle None values
                 vedlikeholdsansvarlig=r.get('vedlikeholdsansvarlig'),
                 geometry=r['geometry'],
-                segment_count=r['segment_count']
+                segment_count=r['segment_count'],
+                total_length_meters=r.get('total_length_meters', 0.0),
+                total_length_km=r.get('total_length_km', 0.0)
             )
             for r in routes
             if r.get('geometry')  # Only include routes with valid geometry

@@ -221,6 +221,104 @@
             font-size: 1.1rem;
         }
 
+        /* Progress modal for Excel download */
+        .download-progress-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 10000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .download-progress-modal.active {
+            display: flex;
+        }
+
+        .download-progress-content {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            min-width: 400px;
+            max-width: 500px;
+        }
+
+        .download-progress-content h3 {
+            margin: 0 0 1.5rem 0;
+            color: #2c3e50;
+            font-size: 1.25rem;
+        }
+
+        .progress-steps {
+            list-style: none;
+            padding: 0;
+            margin: 0 0 1.5rem 0;
+        }
+
+        .progress-step {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem 0;
+            color: #6c757d;
+            transition: color 0.3s;
+        }
+
+        .progress-step.active {
+            color: #2c3e50;
+            font-weight: 600;
+        }
+
+        .progress-step.completed {
+            color: #28a745;
+        }
+
+        .progress-step-icon {
+            margin-right: 0.75rem;
+            font-size: 1.2rem;
+            width: 24px;
+            text-align: center;
+        }
+
+        .progress-step.active .progress-step-icon {
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .progress-bar-container {
+            width: 100%;
+            height: 8px;
+            background: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: #28a745;
+            width: 0%;
+            transition: width 0.3s ease;
+            border-radius: 4px;
+        }
+
+        .progress-bar.animated {
+            animation: progress-pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes progress-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
         .info-item {
             display: flex;
             justify-content: space-between;
@@ -401,6 +499,53 @@
             color: white !important;
         }
 
+        /* Route tooltip styling */
+        .route-tooltip {
+            background: rgba(44, 62, 80, 0.95) !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 4px !important;
+            padding: 6px 10px !important;
+            font-size: 0.9rem !important;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+            white-space: nowrap !important;
+            z-index: 10000 !important;
+            pointer-events: none !important;
+        }
+
+        .route-tooltip::before {
+            border-top-color: rgba(44, 62, 80, 0.95) !important;
+        }
+
+        /* Ensure Leaflet tooltip container has proper z-index */
+        .leaflet-tooltip {
+            z-index: 10000 !important;
+        }
+
+        /* Ensure Leaflet interactive layers have pointer events enabled */
+        .leaflet-interactive {
+            pointer-events: auto !important;
+        }
+
+        .leaflet-overlay-pane svg {
+            pointer-events: none;
+        }
+
+        .leaflet-overlay-pane svg path.leaflet-interactive {
+            pointer-events: auto !important;
+        }
+
+        /* Route selector popup styling */
+        .route-selector-popup .leaflet-popup-content-wrapper {
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .route-selector-popup .leaflet-popup-content {
+            margin: 0;
+            padding: 0;
+        }
+
     </style>
 </head>
 <body>
@@ -471,6 +616,34 @@
                 <h4>Eiendommer</h4>
                 <div id="legendContent"></div>
             </div>
+        </div>
+    </div>
+
+    <!-- Download Progress Modal -->
+    <div id="downloadProgressModal" class="download-progress-modal">
+        <div class="download-progress-content">
+            <h3>Genererer Excel-rapport...</h3>
+            <div class="progress-bar-container">
+                <div id="progressBar" class="progress-bar animated"></div>
+            </div>
+            <ul class="progress-steps" id="progressSteps">
+                <li class="progress-step" id="step1">
+                    <span class="progress-step-icon">⏳</span>
+                    <span>Henter rutedata...</span>
+                </li>
+                <li class="progress-step" id="step2">
+                    <span class="progress-step-icon">⏳</span>
+                    <span>Henter eierinformasjon fra Matrikkel...</span>
+                </li>
+                <li class="progress-step" id="step3">
+                    <span class="progress-step-icon">⏳</span>
+                    <span>Genererer Excel-fil...</span>
+                </li>
+                <li class="progress-step" id="step4">
+                    <span class="progress-step-icon">⏳</span>
+                    <span>Ferdig!</span>
+                </li>
+            </ul>
         </div>
     </div>
 
@@ -1013,16 +1186,67 @@
             }
 
             const downloadBtn = document.getElementById('downloadExcelBtn');
-            if (downloadBtn) {
-                downloadBtn.disabled = true;
-                downloadBtn.innerHTML = '<span class="icon">⏳</span><span>Laster ned...</span>';
+            const progressModal = document.getElementById('downloadProgressModal');
+            const progressBar = document.getElementById('progressBar');
+
+            // Show progress modal
+            if (progressModal) {
+                progressModal.classList.add('active');
             }
 
+            // Disable button
+            if (downloadBtn) {
+                downloadBtn.disabled = true;
+            }
+
+            // Update progress steps
+            function updateProgressStep(stepNum, status) {
+                const step = document.getElementById(`step${stepNum}`);
+                if (!step) return;
+
+                step.classList.remove('active', 'completed');
+                const icon = step.querySelector('.progress-step-icon');
+
+                if (status === 'active') {
+                    step.classList.add('active');
+                    if (icon) icon.textContent = '⏳';
+                } else if (status === 'completed') {
+                    step.classList.add('completed');
+                    if (icon) icon.textContent = '✓';
+                } else if (status === 'pending') {
+                    if (icon) icon.textContent = '○';
+                }
+            }
+
+            // Update progress bar
+            function updateProgressBar(percent) {
+                if (progressBar) {
+                    progressBar.style.width = percent + '%';
+                }
+            }
+
+            // Initialize progress
+            updateProgressStep(1, 'pending');
+            updateProgressStep(2, 'pending');
+            updateProgressStep(3, 'pending');
+            updateProgressStep(4, 'pending');
+            updateProgressBar(0);
+
             try {
+                // Step 1: Starting
+                updateProgressStep(1, 'active');
+                updateProgressBar(10);
+                await new Promise(resolve => setTimeout(resolve, 300)); // Small delay for visual feedback
+
                 const backendUrl = CommonConfig.getBackendUrl();
                 const url = backendUrl
                     ? `${backendUrl}/api/v1/routes/${rutenummer}/owners.xlsx`
                     : `/api/v1/routes/${rutenummer}/owners.xlsx`;
+
+                // Step 2: Fetching data (this includes Matrikkel API calls)
+                updateProgressStep(1, 'completed');
+                updateProgressStep(2, 'active');
+                updateProgressBar(30);
 
                 // Use fetch with credentials to handle basic auth
                 // Browser will prompt for username/password if not already authenticated
@@ -1032,6 +1256,15 @@
                 });
 
                 if (!response.ok) {
+                    updateProgressStep(2, 'pending');
+                    updateProgressBar(0);
+                    if (progressModal) {
+                        progressModal.classList.remove('active');
+                    }
+                    if (downloadBtn) {
+                        downloadBtn.disabled = false;
+                    }
+
                     if (response.status === 401) {
                         alert('Autentisering påkrevd. Vennligst oppgi brukernavn og passord når nettleseren ber om det.');
                     } else {
@@ -1048,8 +1281,19 @@
                     return;
                 }
 
+                // Step 3: Processing blob
+                updateProgressStep(2, 'completed');
+                updateProgressStep(3, 'active');
+                updateProgressBar(70);
+
                 // Get the blob and create download link
                 const blob = await response.blob();
+
+                // Step 4: Completing download
+                updateProgressStep(3, 'completed');
+                updateProgressStep(4, 'active');
+                updateProgressBar(90);
+
                 const downloadUrl = window.URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = downloadUrl;
@@ -1058,14 +1302,35 @@
                 link.click();
                 document.body.removeChild(link);
                 window.URL.revokeObjectURL(downloadUrl);
+
+                // Complete
+                updateProgressStep(4, 'completed');
+                updateProgressBar(100);
+
+                // Hide modal after a short delay
+                await new Promise(resolve => setTimeout(resolve, 500));
+                if (progressModal) {
+                    progressModal.classList.remove('active');
+                }
             } catch (error) {
                 console.error('Error downloading Excel report:', error);
+
+                // Reset progress
+                updateProgressStep(1, 'pending');
+                updateProgressStep(2, 'pending');
+                updateProgressStep(3, 'pending');
+                updateProgressStep(4, 'pending');
+                updateProgressBar(0);
+
+                if (progressModal) {
+                    progressModal.classList.remove('active');
+                }
+
                 alert(`Feil ved nedlasting: ${error.message}`);
             } finally {
                 // Re-enable button
                 if (downloadBtn) {
                     downloadBtn.disabled = false;
-                    downloadBtn.innerHTML = '<span class="icon">📥</span><span>Last ned Excel-rapport (eiere)</span>';
                 }
             }
         }
