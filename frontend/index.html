@@ -546,6 +546,15 @@
             padding: 0;
         }
 
+        /* Custom draw line control styling */
+        .leaflet-control-draw-line {
+            transition: background-color 0.2s, color 0.2s;
+        }
+
+        .leaflet-control-draw-line:hover {
+            background-color: #f4f4f4 !important;
+        }
+
     </style>
 </head>
 <body>
@@ -560,6 +569,8 @@
             <input type="text" id="routeFilter" placeholder="Filtrer ruter (prefix, f.eks. bre)" style="width: 200px;" title="Filtrer visuelle ruter etter rutenummer (prefix)">
             <input type="text" id="routeInput" placeholder="Rutenummer (f.eks. bre10)" value="">
             <button id="loadRoute">Last rute</button>
+            <button id="getOwnersBtn" style="background: #9b59b6; display: none; margin-left: 0.5rem;">Hent eiere</button>
+            <button id="clearDrawingBtn" style="background: #e74c3c; display: none; margin-left: 0.5rem;" title="Slett tegning og eiere">🗑️ Slett tegning</button>
         </div>
     </div>
 
@@ -654,6 +665,10 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet-zoombox@0.5.2/L.Control.ZoomBox.css" />
     <script src="https://unpkg.com/leaflet-zoombox@0.5.2/L.Control.ZoomBox.min.js"></script>
 
+    <!-- Leaflet Geoman (for drawing) -->
+    <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.css" />
+    <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.min.js"></script>
+
     <!-- Constants -->
     <script src="js/constants.js"></script>
 
@@ -730,6 +745,11 @@
         let propertyLayers = []; // Keep for highlightProperty function
         let markers = []; // Keep for highlightProperty function
 
+        // Drawing state
+        let drawnLine = null;
+        let drawingMode = false;
+        let drawingLayerGroup = L.layerGroup().addTo(map);
+
         // Color palette for properties (for UI display)
         const colors = [
             '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
@@ -770,6 +790,20 @@
                 markers.forEach(marker => map.removeLayer(marker));
                 propertyLayers = [];
                 markers = [];
+
+                // Clear drawing if active
+                if (drawnLine) {
+                    drawingLayerGroup.removeLayer(drawnLine);
+                    drawnLine = null;
+                }
+                if (drawingMode && map.pm) {
+                    map.pm.disableDraw('Line');
+                    drawingMode = false;
+                }
+                getOwnersBtn.style.display = 'none';
+                if (drawLineControl && drawLineControl._button) {
+                    updateDrawButton(drawLineControl._button, false);
+                }
 
                 // Hide download button while loading
                 const downloadBtn = document.getElementById('downloadExcelBtn');
@@ -1530,6 +1564,382 @@
             console.log(`Backend URL: ${backendUrl}`);
             // No default route - user must search or enter route number
         });
+
+        // ===== Drawing functionality with Leaflet Geoman =====
+
+        // Initialize Geoman (only enable LineString drawing)
+        if (typeof map.pm !== 'undefined') {
+            // Disable all drawing modes by default
+            map.pm.setGlobalOptions({
+                allowSelfIntersection: false,
+                snappable: true,
+                snapDistance: 20
+            });
+
+            // Hide all Geoman controls - we'll create our own custom control
+            map.pm.addControls({
+                position: 'topleft',
+                drawCircle: false,
+                drawRectangle: false,
+                drawPolygon: false,
+                drawPolyline: false,
+                drawMarker: false,
+                drawText: false,
+                editMode: false,
+                dragMode: false,
+                cutPolygon: false,
+                removalMode: false,
+                rotateMode: false
+            });
+        }
+
+        // Create custom Leaflet Control for drawing
+        const DrawLineControl = L.Control.extend({
+            onAdd: function(map) {
+                const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control leaflet-control-draw');
+                const button = L.DomUtil.create('a', 'leaflet-control-draw-line', container);
+                button.href = '#';
+                button.title = 'Tegn linje (klikk igjen for å slette)';
+                button.innerHTML = '✏️';
+                button.style.cssText = 'font-size: 18px; line-height: 30px; text-align: center; display: block; width: 30px; height: 30px; background: white; border: 2px solid rgba(0,0,0,0.2); border-radius: 4px; cursor: pointer;';
+
+                // Prevent map click when clicking button
+                L.DomEvent.disableClickPropagation(button);
+                L.DomEvent.on(button, 'click', L.DomEvent.stop);
+
+                // Add click handler
+                L.DomEvent.on(button, 'click', () => {
+                    handleDrawLineToggle(button);
+                });
+
+                // Store button reference for later updates
+                this._button = button;
+
+                return container;
+            },
+
+            onRemove: function(map) {
+                // Cleanup if needed
+            }
+        });
+
+        // Add the control to the map
+        const drawLineControl = new DrawLineControl({
+            position: 'topleft'
+        });
+        drawLineControl.addTo(map);
+
+        // Drawing controls
+        const getOwnersBtn = document.getElementById('getOwnersBtn');
+        const clearDrawingBtn = document.getElementById('clearDrawingBtn');
+
+        // Function to clear drawing and all results
+        function clearDrawingAndResults() {
+            // Clear drawn line
+            if (drawnLine) {
+                drawingLayerGroup.removeLayer(drawnLine);
+                drawnLine = null;
+            }
+
+            // Clear route viewer (removes property layers)
+            routeViewer.clear();
+
+            // Hide buttons
+            getOwnersBtn.style.display = 'none';
+            clearDrawingBtn.style.display = 'none';
+
+            // Reset drawing mode
+            if (drawingMode && map.pm) {
+                map.pm.disableDraw('Line');
+                drawingMode = false;
+            }
+
+            // Update draw button
+            if (drawLineControl && drawLineControl._button) {
+                updateDrawButton(drawLineControl._button, false);
+            }
+
+            // Reset sidebar
+            const routeNameEl = document.getElementById('routeName');
+            if (routeNameEl) {
+                routeNameEl.textContent = 'Velg en rute';
+            }
+
+            // Clear sidebar content
+            document.getElementById('routeInfo').innerHTML = '';
+            document.getElementById('propertiesTableBody').innerHTML = '';
+            document.getElementById('timelineContent').innerHTML = '';
+
+            // Hide download button
+            const downloadBtn = document.getElementById('downloadExcelBtn');
+            if (downloadBtn) {
+                downloadBtn.style.display = 'none';
+            }
+        }
+
+        // Clear drawing button handler
+        if (clearDrawingBtn) {
+            clearDrawingBtn.addEventListener('click', () => {
+                clearDrawingAndResults();
+            });
+        }
+
+        // Toggle drawing mode - click to draw, click again to delete existing drawing
+        function handleDrawLineToggle(button) {
+            // If there's already a drawing, delete it and reset
+            if (drawnLine) {
+                clearDrawingAndResults();
+                return;
+            }
+
+            // If currently drawing, stop drawing
+            if (drawingMode) {
+                if (map.pm) {
+                    map.pm.disableDraw('Line');
+                }
+                drawingMode = false;
+                updateDrawButton(button, false);
+            } else {
+                // Start drawing
+                if (map.pm) {
+                    map.pm.enableDraw('Line', {
+                        continueDrawing: false,
+                        finishOn: 'dblclick',
+                        snappable: true,
+                        snapDistance: 20
+                    });
+                }
+                drawingMode = true;
+                updateDrawButton(button, true);
+                getOwnersBtn.style.display = 'none';
+            }
+        }
+
+        // Update button appearance
+        function updateDrawButton(button, isActive) {
+            if (isActive) {
+                button.innerHTML = '❌';
+                button.style.background = '#e74c3c';
+                button.style.color = 'white';
+                button.title = 'Avbryt tegning';
+            } else {
+                button.innerHTML = '✏️';
+                button.style.background = 'white';
+                button.style.color = 'black';
+                button.title = 'Tegn linje (klikk igjen for å slette)';
+            }
+        }
+
+        // Handle drawing completion
+        if (map.pm) {
+            map.on('pm:create', (e) => {
+                const layer = e.layer;
+
+                // Only handle LineString
+                if (layer instanceof L.Polyline) {
+                    // Store the drawn line
+                    drawnLine = layer;
+                    drawingLayerGroup.addLayer(layer);
+
+                    // Style the line
+                    layer.setStyle({
+                        color: '#9b59b6',
+                        weight: 5,
+                        opacity: 0.8
+                    });
+
+                    // Disable drawing mode
+                    map.pm.disableDraw('Line');
+                    drawingMode = false;
+                    if (drawLineControl && drawLineControl._button) {
+                        updateDrawButton(drawLineControl._button, false);
+                    }
+
+                    // Show get owners button
+                    getOwnersBtn.style.display = 'inline-block';
+
+                    // Fit map to drawn line
+                    const bounds = layer.getBounds();
+                    if (bounds && bounds.isValid()) {
+                        map.fitBounds(bounds, { padding: [50, 50] });
+                    }
+                }
+            });
+        }
+
+        // Get owners for drawn line
+        if (getOwnersBtn) {
+            getOwnersBtn.addEventListener('click', async () => {
+                if (!drawnLine) {
+                    alert('Ingen linje tegnet. Vennligst tegn en linje først.');
+                    return;
+                }
+
+                // Disable button during request
+                getOwnersBtn.disabled = true;
+                getOwnersBtn.textContent = 'Laster...';
+
+                try {
+                    // Get GeoJSON from the drawn line
+                    // Leaflet's toGeoJSON() returns a Feature, not a Geometry
+                    const geoJsonFeature = drawnLine.toGeoJSON();
+
+                    // Extract geometry from feature (if it's a Feature) or use directly (if it's already a Geometry)
+                    let geoJson;
+                    if (geoJsonFeature.type === 'Feature') {
+                        geoJson = geoJsonFeature.geometry;
+                    } else {
+                        geoJson = geoJsonFeature;
+                    }
+
+                    // Validate it's a LineString
+                    if (!geoJson || geoJson.type !== 'LineString') {
+                        throw new Error(`Kun LineString er støttet, fikk: ${geoJson ? geoJson.type : 'ukjent'}`);
+                    }
+
+                    // Show loading
+                    const loading = document.getElementById('loading');
+                    if (loading) {
+                        loading.classList.add('active');
+                    }
+
+                    // Submit to backend
+                    const backendUrl = CommonConfig.getBackendUrl();
+                    const url = backendUrl
+                        ? `${backendUrl}/api/v1/geometry/owners`
+                        : '/api/v1/geometry/owners';
+
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            geometry: geoJson
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+                        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+                    }
+
+                    const data = await response.json();
+
+                    // Display results (similar to route display)
+                    displayGeometryOwners(data);
+
+                    // Show clear button after owners are loaded
+                    clearDrawingBtn.style.display = 'inline-block';
+
+                    // Make the drawn line clickable to delete (after owners are loaded)
+                    if (drawnLine) {
+                        drawnLine.off('click'); // Remove any existing handlers
+                        drawnLine.on('click', () => {
+                            clearDrawingAndResults();
+                        });
+
+                        // Add visual feedback that it's clickable
+                        drawnLine.off('mouseover mouseout'); // Remove any existing handlers
+                        drawnLine.on('mouseover', function() {
+                            this.setStyle({ weight: 7, opacity: 1.0 });
+                            if (map.getContainer()) {
+                                map.getContainer().style.cursor = 'pointer';
+                            }
+                        });
+                        drawnLine.on('mouseout', function() {
+                            this.setStyle({ weight: 5, opacity: 0.8 });
+                            if (map.getContainer()) {
+                                map.getContainer().style.cursor = '';
+                            }
+                        });
+                    }
+
+                } catch (error) {
+                    console.error('Error getting owners:', error);
+                    alert(`Feil ved henting av eiere: ${error.message}`);
+                } finally {
+                    getOwnersBtn.disabled = false;
+                    getOwnersBtn.textContent = 'Hent eiere';
+                    const loading = document.getElementById('loading');
+                    if (loading) {
+                        loading.classList.remove('active');
+                    }
+                }
+            });
+        }
+
+        // Display geometry owners (reuse route display logic)
+        function displayGeometryOwners(data) {
+            // Update sidebar header
+            const routeNameEl = document.getElementById('routeName');
+            if (routeNameEl) {
+                routeNameEl.textContent = `Tegnet linje (${data.total_length_km.toFixed(2)} km)`;
+            }
+
+            // Create metadata similar to route metadata
+            const metadata = {
+                rutenummer: 'Tegnet linje',
+                rutenavn: 'Tegnet linje',
+                vedlikeholdsansvarlig: null,
+                total_length_meters: data.total_length_meters,
+                total_length_km: data.total_length_km,
+                segment_count: 0
+            };
+
+            // Create route-like data structure
+            const routeData = {
+                geometry: data.geometry,
+                metadata: metadata,
+                matrikkelenhet_vector: data.matrikkelenhet_vector || []
+            };
+
+            // Display using existing functions
+            displayRouteInfo(routeData);
+            displayProperties(routeData);
+            displayTimeline(routeData);
+
+            // Display geometry on map (similar to route)
+            if (data.geometry) {
+                // Clear previous route layers but keep drawn line
+                routeViewer.clear();
+
+                // Use the existing drawnLine if available, otherwise create new layer
+                if (drawnLine) {
+                    // Update the existing drawn line to be the route layer
+                    routeViewer.routeLayer = drawnLine;
+                } else {
+                    // Fallback: create new layer if drawnLine is not available
+                    const geoJsonLayer = createGeoJSONLayer(data.geometry, {
+                        style: {
+                            color: '#9b59b6',
+                            weight: 5,
+                            opacity: 0.8
+                        },
+                        layerName: 'drawn-line'
+                    });
+                    if (geoJsonLayer) {
+                        geoJsonLayer.addTo(map);
+                        routeViewer.routeLayer = geoJsonLayer;
+                        drawnLine = geoJsonLayer; // Store reference
+                    }
+                }
+
+                // Display property layers
+                if (data.matrikkelenhet_vector && data.matrikkelenhet_vector.length > 0) {
+                    // Use RouteViewer's displayMatrikkelenhetLayer method
+                    routeViewer.displayMatrikkelenhetLayer({
+                        matrikkelenhet_vector: data.matrikkelenhet_vector
+                    });
+                }
+            }
+
+            // Switch to properties tab
+            const propertiesTab = document.querySelector('.tab[data-tab="properties"]');
+            if (propertiesTab) {
+                propertiesTab.click();
+            }
+        }
     </script>
 </body>
 </html>

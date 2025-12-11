@@ -6,12 +6,13 @@ from typing import Optional, Callable, Any
 
 from fastapi import APIRouter, HTTPException, Query, Path, Depends, Response, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem
+from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem, GeometryOwnerRequest, GeometryOwnerResponse
 from services.route_service import get_route_data, search_routes, get_route_list, get_route_segments_data, get_routes_in_bbox, RouteNotFoundError, RouteDataError
 from services.route_debug import get_route_debug_info
 from services.route_geometry import get_corrected_route_geometry
 from services.database import get_db_connection
 from services.excel_report import generate_owners_excel
+from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
 
 router = APIRouter()
 security = HTTPBasic()
@@ -317,3 +318,47 @@ async def download_route_owners_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
+
+
+@router.post("/geometry/owners", response_model=GeometryOwnerResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_geometry_owners(request: GeometryOwnerRequest):
+    """
+    Get property owners for a LineString geometry.
+
+    Accepts a GeoJSON LineString geometry and returns all property owners
+    along the line, similar to route owner lookup.
+
+    The geometry must be a valid GeoJSON LineString with at least 2 coordinates.
+    Coordinates should be in [longitude, latitude] format (WGS84, EPSG:4326).
+
+    Example request:
+    ```json
+    {
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[10.0, 59.0], [10.1, 59.1], [10.2, 59.2]]
+      }
+    }
+    ```
+
+    Returns:
+    - geometry: Original GeoJSON geometry
+    - total_length_meters: Total length of the line in meters
+    - total_length_km: Total length in kilometers
+    - matrikkelenhet_vector: List of property intersections with owner information
+    """
+    try:
+        result = get_owners_for_linestring(request.geometry)
+        return GeometryOwnerResponse(**result)
+    except GeometryOwnerError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        print(f"Error getting owners for geometry: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing geometry: {str(e)}"
+        )

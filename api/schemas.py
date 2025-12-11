@@ -185,3 +185,21 @@ class CorrectedRouteResponse(BaseModel):
     component_count: int = 1  # Number of separate route components
     report: Optional[RouteReport] = None
 
+
+class MatrikkelenhetItemWithOwners(MatrikkelenhetItem):
+    """Matrikkelenhet item with owner information."""
+    owners: Optional[str] = None  # Owner information from Matrikkel API
+
+
+class GeometryOwnerRequest(BaseModel):
+    """Request for geometry owner lookup."""
+    geometry: Dict[str, Any]  # GeoJSON LineString geometry
+
+
+class GeometryOwnerResponse(BaseModel):
+    """Response for geometry owner lookup."""
+    geometry: Dict[str, Any]  # GeoJSON LineString geometry
+    total_length_meters: float
+    total_length_km: float
+    matrikkelenhet_vector: List[MatrikkelenhetItemWithOwners]
+
