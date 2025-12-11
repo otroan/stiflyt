@@ -1,15 +1,20 @@
 """API routes."""
+import secrets
 import traceback
 from functools import wraps
-from fastapi import APIRouter, HTTPException, Query, Path
 from typing import Optional, Callable, Any
+
+from fastapi import APIRouter, HTTPException, Query, Path, Depends, Response, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem
 from services.route_service import get_route_data, search_routes, get_route_list, get_route_segments_data, get_routes_in_bbox, RouteNotFoundError, RouteDataError
 from services.route_debug import get_route_debug_info
 from services.route_geometry import get_corrected_route_geometry
 from services.database import get_db_connection
+from services.excel_report import generate_owners_excel
 
 router = APIRouter()
+security = HTTPBasic()
 
 
 def handle_route_errors(operation_name: str):
@@ -260,3 +265,53 @@ async def get_corrected_route(
     finally:
         conn.close()
 
+def require_shared_login(credentials: HTTPBasicCredentials = Depends(security)):
+    """
+    Krever at klienten sender riktig basic auth-bruker/passord.
+    Bruker constant-time compare for å unngå timing-angrep.
+    """
+
+    is_user_ok = secrets.compare_digest(credentials.username, SHARED_USERNAME)
+    is_pass_ok = secrets.compare_digest(credentials.password, SHARED_PASSWORD)
+
+    if not (is_user_ok and is_pass_ok):
+        # Browser vil typisk vise login-dialog når den får 401 + denne headeren
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    # Hvis du vil, kan du returnere en “user”-struktur, men her er det bare fellesbruker
+    return {"username": SHARED_USERNAME}
+
+SHARED_USERNAME = "dnt"
+SHARED_PASSWORD = "dnt"
+
+@router.get("/routes/{rutenummer}/owners.xlsx")
+@handle_route_errors("generating owners Excel report for route")
+async def download_route_owners_excel(
+    rutenummer: str = Path(..., min_length=1, description="Route identifier (rutenummer)"),
+    user=Depends(require_shared_login),
+):
+    """
+    Download Excel report with route owners information.
+
+    Requires authentication. The report contains:
+    - Offset along the path (meters and kilometers)
+    - Length of path within each matrikkelenhet (meters and kilometers)
+    - Matrikkelenhet
+    - Bruksnavn
+    - Placeholder for kontaktinformasjon (to be filled in phase 2)
+    """
+    # Generate Excel file using the service
+    excel_bytes = generate_owners_excel(rutenummer)
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="route-{rutenummer}-owners.xlsx"'
+    }
+    return Response(
+        content=excel_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )

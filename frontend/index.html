@@ -188,6 +188,39 @@
             color: #2c3e50;
         }
 
+        .download-button {
+            margin-top: 1rem;
+            padding: 0.75rem 1.5rem;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: background-color 0.2s;
+        }
+
+        .download-button:hover {
+            background: #218838;
+        }
+
+        .download-button:active {
+            background: #1e7e34;
+        }
+
+        .download-button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+
+        .download-button .icon {
+            font-size: 1.1rem;
+        }
+
         .info-item {
             display: flex;
             justify-content: space-between;
@@ -313,6 +346,8 @@
             box-shadow: 0 2px 8px rgba(0,0,0,0.15);
             z-index: 1000;
             max-width: 250px;
+            max-height: 60vh;
+            overflow: hidden; /* scroll handled on content */
         }
 
         .legend h4 {
@@ -333,6 +368,13 @@
             border-radius: 3px;
             margin-right: 0.5rem;
             border: 1px solid #333;
+        }
+
+        /* Scrollable legend content */
+        #legendContent {
+            max-height: calc(60vh - 32px); /* subtract title/padding */
+            overflow-y: auto;
+            overflow-x: hidden;
         }
 
         /* Box zoom control styling - ensure visibility */
@@ -391,6 +433,10 @@
                     <div class="route-info">
                         <h3>Ruteinformasjon</h3>
                         <div id="routeInfo"></div>
+                        <button id="downloadExcelBtn" class="download-button" style="display: none;">
+                            <span class="icon">📥</span>
+                            <span>Last ned Excel-rapport (eiere)</span>
+                        </button>
                     </div>
                 </div>
                 <div id="propertiesTab" class="tab-pane">
@@ -452,6 +498,27 @@
         const baseMaps = map._baseLayers || {};
         const overlayMaps = {};
         const layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+        // Prevent map scroll/click when interacting with the legend (enables legend scrolling)
+        const legendEl = document.getElementById('legend');
+        if (legendEl && L && L.DomEvent) {
+            L.DomEvent.disableScrollPropagation(legendEl);
+            L.DomEvent.disableClickPropagation(legendEl);
+
+            const legendContentEl = document.getElementById('legendContent');
+            if (legendContentEl) {
+                L.DomEvent.disableScrollPropagation(legendContentEl);
+                L.DomEvent.disableClickPropagation(legendContentEl);
+
+                legendContentEl.addEventListener('wheel', (e) => {
+                    e.stopPropagation(); // keep map from hijacking
+                }, { passive: true });
+            }
+
+            legendEl.addEventListener('wheel', (e) => {
+                e.stopPropagation(); // keep map from hijacking
+            }, { passive: true });
+        }
 
         // Add box zoom control using Leaflet.ZoomBox plugin
         if (typeof L.control.zoomBox === 'function') {
@@ -531,6 +598,12 @@
                 propertyLayers = [];
                 markers = [];
 
+                // Hide download button while loading
+                const downloadBtn = document.getElementById('downloadExcelBtn');
+                if (downloadBtn) {
+                    downloadBtn.style.display = 'none';
+                }
+
                 // Load route using RouteViewer (this handles route, segments, and matrikkelenhet layers)
                 const routeData = await routeViewer.loadRoute(rutenummer);
                 currentRouteData = routeData;
@@ -545,6 +618,11 @@
                 displayRouteInfo(routeData);
                 displayProperties(routeData);
                 displayTimeline(routeData);
+
+                // Show download button now that route is loaded (displayRouteInfo also sets this, but ensure it's shown)
+                if (downloadBtn && routeData && routeData.metadata) {
+                    downloadBtn.style.display = 'inline-flex';
+                }
 
                 // Activate the first tab (route info) to ensure content is visible
                 const firstTab = document.querySelector('.tab[data-tab="info"]');
@@ -918,6 +996,78 @@
                     <span>${data.matrikkelenhet_vector.length}</span>
                 </div>
             `;
+
+            // Show download button and set up click handler
+            const downloadBtn = document.getElementById('downloadExcelBtn');
+            if (downloadBtn) {
+                downloadBtn.style.display = 'inline-flex';
+                downloadBtn.onclick = () => downloadExcelReport(meta.rutenummer);
+            }
+        }
+
+        // Download Excel report for route owners
+        async function downloadExcelReport(rutenummer) {
+            if (!rutenummer) {
+                alert('Ingen rute valgt');
+                return;
+            }
+
+            const downloadBtn = document.getElementById('downloadExcelBtn');
+            if (downloadBtn) {
+                downloadBtn.disabled = true;
+                downloadBtn.innerHTML = '<span class="icon">⏳</span><span>Laster ned...</span>';
+            }
+
+            try {
+                const backendUrl = CommonConfig.getBackendUrl();
+                const url = backendUrl
+                    ? `${backendUrl}/api/v1/routes/${rutenummer}/owners.xlsx`
+                    : `/api/v1/routes/${rutenummer}/owners.xlsx`;
+
+                // Use fetch with credentials to handle basic auth
+                // Browser will prompt for username/password if not already authenticated
+                const response = await fetch(url, {
+                    method: 'GET',
+                    credentials: 'include', // Include credentials for basic auth
+                });
+
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        alert('Autentisering påkrevd. Vennligst oppgi brukernavn og passord når nettleseren ber om det.');
+                    } else {
+                        const errorText = await response.text();
+                        let errorMessage = `Kunne ikke laste ned rapport: ${response.statusText}`;
+                        try {
+                            const errorJson = JSON.parse(errorText);
+                            errorMessage = errorJson.detail || errorMessage;
+                        } catch (e) {
+                            // Ignore JSON parse errors
+                        }
+                        alert(errorMessage);
+                    }
+                    return;
+                }
+
+                // Get the blob and create download link
+                const blob = await response.blob();
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = `route-${rutenummer}-owners.xlsx`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                window.URL.revokeObjectURL(downloadUrl);
+            } catch (error) {
+                console.error('Error downloading Excel report:', error);
+                alert(`Feil ved nedlasting: ${error.message}`);
+            } finally {
+                // Re-enable button
+                if (downloadBtn) {
+                    downloadBtn.disabled = false;
+                    downloadBtn.innerHTML = '<span class="icon">📥</span><span>Last ned Excel-rapport (eiere)</span>';
+                }
+            }
         }
 
         // Highlight property on map
