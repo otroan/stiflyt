@@ -132,8 +132,10 @@ async def get_routes_in_bbox_endpoint(
     """
     Get routes that intersect with a bounding box.
 
-    Returns routes with simplified geometry that intersect the specified bounding box.
-    Useful for displaying all routes visible in the current map view.
+    Returns routes with simplified geometry where ANY part of the route intersects
+    the specified bounding box (not just routes fully contained within the box).
+    This includes routes that are partially in the box, touch the boundary, or are
+    fully contained. Useful for displaying all routes visible in the current map view.
 
     Examples:
     - /api/v1/routes/bbox?min_lat=59.0&min_lng=10.0&max_lat=60.0&max_lng=11.0

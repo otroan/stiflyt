@@ -34,6 +34,9 @@ class RouteViewer {
 
         // Flag to prevent bbox reloading when a specific route is being loaded
         this._loadingSpecificRoute = false;
+
+        // Store last bbox filters to allow reloading after route load
+        this._lastBboxFilters = null;
     }
 
     /**
@@ -157,9 +160,10 @@ class RouteViewer {
      * @param {Object} filters - Optional filters {prefix, organization}
      */
     async loadRoutesInBbox(filters = {}) {
-        // Don't reload bbox routes if a specific route is being loaded
-        if (this._loadingSpecificRoute) {
-            console.log('Skipping bbox route reload - specific route is being loaded');
+        // Don't reload bbox routes if a specific route is currently being loaded
+        // But allow reloading after the route has finished loading
+        if (this._isLoading && this._loadingSpecificRoute) {
+            console.log('Skipping bbox route reload - specific route is currently loading');
             return;
         }
 
@@ -298,6 +302,9 @@ class RouteViewer {
      * @param {Object} filters - Optional filters {prefix, organization}
      */
     loadRoutesInBboxDebounced(filters = {}) {
+        // Store filters for potential reload after route load
+        this._lastBboxFilters = filters;
+
         // Clear existing timer
         if (this._bboxQueryTimer) {
             clearTimeout(this._bboxQueryTimer);
@@ -532,11 +539,21 @@ class RouteViewer {
 
             this._isLoading = false;
 
-            // Re-enable bbox loading after a delay to allow zoom to complete
-            // But keep the flag set for a bit longer to prevent immediate reload
+            // Re-enable bbox loading immediately after route is loaded
+            // The _isLoading check will prevent reloading during actual loading
+            this._loadingSpecificRoute = false;
+
+            // Reload bbox routes after a short delay to allow zoom to complete
+            // This ensures bbox routes are visible in the new view
             setTimeout(() => {
-                this._loadingSpecificRoute = false;
-            }, 2000); // 2 second delay to allow map to finish zooming
+                // Only reload if map hasn't been moved by user (check if still in similar view)
+                // For now, just reload to ensure routes are visible
+                if (this.map && !this._isLoading) {
+                    // Get current filters from the map if available, or use defaults
+                    const currentFilters = this._lastBboxFilters || {};
+                    this.loadRoutesInBboxDebounced(currentFilters);
+                }
+            }, 500); // Short delay to allow zoom animation to start
 
             return data;
         } catch (error) {

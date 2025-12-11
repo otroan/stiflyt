@@ -448,9 +448,10 @@
         // Initialize map
         const map = initMap('map');
 
-        // Create layers control
+        // Create layers control with base layers and overlays
+        const baseMaps = map._baseLayers || {};
         const overlayMaps = {};
-        const layerControl = L.control.layers(null, overlayMaps).addTo(map);
+        const layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
 
         // Add box zoom control using Leaflet.ZoomBox plugin
         if (typeof L.control.zoomBox === 'function') {
@@ -1061,17 +1062,13 @@
         };
 
         // Add event listeners for map move/zoom to load routes in bounding box
-        // But only if not loading a specific route
+        // The routeViewer will handle checking if a route is currently loading
         map.on('moveend', () => {
-            if (!routeViewer._loadingSpecificRoute) {
-                routeViewer.loadRoutesInBboxDebounced(bboxFilters);
-            }
+            routeViewer.loadRoutesInBboxDebounced(bboxFilters);
         });
 
         map.on('zoomend', () => {
-            if (!routeViewer._loadingSpecificRoute) {
-                routeViewer.loadRoutesInBboxDebounced(bboxFilters);
-            }
+            routeViewer.loadRoutesInBboxDebounced(bboxFilters);
         });
 
         // Load routes in initial view

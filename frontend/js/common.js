@@ -24,8 +24,23 @@ function initMap(mapId, center = [61.5, 8.5], zoom = 7) {
     const map = L.map(mapId).setView(center, zoom);
 
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors'
-    }).addTo(map);
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 19
+    });
+
+    const topo4Layer = L.tileLayer('https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png', {
+        attribution: '© <a href="https://www.kartverket.no/">Kartverket</a>',
+        maxZoom: 19
+    });
+
+    // Add OSM as default
+    osmLayer.addTo(map);
+
+    // Store layers for layer control
+    map._baseLayers = {
+        'OpenStreetMap': osmLayer,
+        'Kartverket Topo4': topo4Layer
+    };
 
     return map;
 }

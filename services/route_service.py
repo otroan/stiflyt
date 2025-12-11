@@ -687,6 +687,12 @@ def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=Non
     """
     Get routes that intersect with a bounding box.
 
+    This function returns routes where ANY part of the route intersects the bounding box,
+    not just routes that are completely contained within the box. This means:
+    - Routes that are partially in the box are included
+    - Routes that touch the boundary are included
+    - Routes that are fully contained are included
+
     Args:
         min_lat: Minimum latitude (south)
         min_lng: Minimum longitude (west)
@@ -786,6 +792,8 @@ def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=Non
                 COUNT(DISTINCT f.objid) as segment_count
             FROM {ROUTE_SCHEMA}.fotrute f
             JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+            -- ST_Intersects returns routes that intersect the bounding box (any part of route is in box)
+            -- This includes routes that are partially in the box, touch the boundary, or are fully contained
             WHERE ST_Intersects(
                 f.senterlinje::geometry,
                 ST_Transform(
