@@ -1078,6 +1078,16 @@
             const info = document.getElementById('routeInfo');
             const meta = data.metadata;
 
+            // Format endpoint name with source indicator
+            function formatEndpointName(endpoint) {
+                if (!endpoint || !endpoint.name) {
+                    return 'Ukjent';
+                }
+                const sourceLabel = endpoint.source === 'ruteinfopunkt' ? ' (ruteinfopunkt)' :
+                                   endpoint.source === 'stedsnavn' ? ' (stedsnavn)' : '';
+                return `${endpoint.name}${sourceLabel}`;
+            }
+
             info.innerHTML = `
                 <div class="info-item">
                     <span class="info-label">Rutenummer:</span>
@@ -1090,6 +1100,14 @@
                 <div class="info-item">
                     <span class="info-label">Vedlikeholdsansvarlig:</span>
                     <span>${meta.vedlikeholdsansvarlig || 'Ukjent'}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Startpunkt:</span>
+                    <span>${formatEndpointName(data.start_point)}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Sluttpunkt:</span>
+                    <span>${formatEndpointName(data.end_point)}</span>
                 </div>
                 <div class="info-item">
                     <span class="info-label">Total lengde:</span>

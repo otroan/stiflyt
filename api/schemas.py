@@ -16,6 +16,14 @@ class MatrikkelenhetItem(BaseModel):
     geometry: Dict[str, Any]  # GeoJSON geometry of the intersection segment
 
 
+class EndpointInfo(BaseModel):
+    """Information about a route endpoint."""
+    name: str
+    source: str  # 'ruteinfopunkt' or 'stedsnavn'
+    distance_meters: Optional[float] = None
+    coordinates: Optional[List[float]] = None  # [lon, lat]
+
+
 class RouteMetadata(BaseModel):
     """Route metadata."""
     rutenummer: str
@@ -33,6 +41,8 @@ class RouteResponse(BaseModel):
     matrikkelenhet_vector: List[MatrikkelenhetItem]
     components: Optional[List[List[int]]] = None  # List of component lists (each component is a list of objids)
     report: Optional[Dict[str, Any]] = None  # Route report with component and appendix information
+    start_point: Optional[EndpointInfo] = None  # Name and info for start point
+    end_point: Optional[EndpointInfo] = None  # Name and info for end point
 
 
 class ErrorResponse(BaseModel):

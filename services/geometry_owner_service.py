@@ -127,3 +127,4 @@ def get_owners_for_linestring(geometry_geojson):
             if isinstance(e, GeometryOwnerError):
                 raise
             raise GeometryOwnerError(f"Error processing geometry: {str(e)}")
+

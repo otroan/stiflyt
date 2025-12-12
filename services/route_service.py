@@ -925,12 +925,18 @@ def get_route_data(rutenummer, use_corrected_geometry=True):
             # Calculate offsets and create matrikkelenhet vector
             matrikkelenhet_vector = calculate_offsets(conn, route_geom, intersections, total_length)
 
+            # Look up endpoint names
+            from .route_endpoints import get_route_endpoint_names
+            endpoint_names = get_route_endpoint_names(conn, route_geom_geojson, rutenummer)
+
             return {
                 'geometry': route_geom_geojson,
                 'metadata': metadata,
                 'matrikkelenhet_vector': matrikkelenhet_vector,
                 'components': corrected.get('components', []),
-                'report': corrected.get('report')
+                'report': corrected.get('report'),
+                'start_point': endpoint_names.get('start_point'),
+                'end_point': endpoint_names.get('end_point')
             }
         else:
             # Original implementation using database order
@@ -968,10 +974,16 @@ def get_route_data(rutenummer, use_corrected_geometry=True):
             # Calculate offsets and create matrikkelenhet vector
             matrikkelenhet_vector = calculate_offsets(conn, route_geom, intersections, total_length)
 
+            # Look up endpoint names
+            from .route_endpoints import get_route_endpoint_names
+            endpoint_names = get_route_endpoint_names(conn, geometry_geojson, rutenummer)
+
             return {
                 'geometry': geometry_geojson,
                 'metadata': metadata,
-                'matrikkelenhet_vector': matrikkelenhet_vector
+                'matrikkelenhet_vector': matrikkelenhet_vector,
+                'start_point': endpoint_names.get('start_point'),
+                'end_point': endpoint_names.get('end_point')
             }
 
 
