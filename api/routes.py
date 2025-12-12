@@ -460,20 +460,24 @@ async def get_links(
         with conn.cursor(row_factory=dict_row) as cur:
             # Use quoted schema and table name for safety
             schema_quoted = quote_identifier(ROUTE_SCHEMA)
-            table_quoted = quote_identifier("links")
-            full_table_name = f"{schema_quoted}.{table_quoted}"
+            # Use links_with_routes view which includes route information
+            view_quoted = quote_identifier("links_with_routes")
+            full_view_name = f"{schema_quoted}.{view_quoted}"
 
             query = f"""
                 SELECT
-                    link_id,
-                    a_node,
-                    b_node,
-                    length_m,
-                    ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
-                FROM {full_table_name}
-                WHERE geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)
-                    AND geom IS NOT NULL
-                ORDER BY link_id
+                    l.link_id,
+                    l.a_node,
+                    l.b_node,
+                    l.length_m,
+                    l.rutenavn_list,
+                    l.rutenummer_list,
+                    l.rutetype_list,
+                    ST_AsGeoJSON(ST_Transform(l.geom, 4326))::json as geometry
+                FROM {full_view_name} l
+                WHERE l.geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)
+                    AND l.geom IS NOT NULL
+                ORDER BY l.link_id
                 LIMIT %s
                 OFFSET %s
             """
@@ -488,6 +492,46 @@ async def get_links(
         # Parse geometry (handles both string and dict from PostGIS)
         geometry = parse_geometry(row["geometry"])
 
+        # Build route information from arrays
+        # Arrays might be None if link has no routes
+        rutenavn_list = row.get("rutenavn_list")
+        rutenummer_list = row.get("rutenummer_list")
+        rutetype_list = row.get("rutetype_list")
+
+        # Ensure we have lists (handle None and ensure they're iterable)
+        if rutenavn_list is None:
+            rutenavn_list = []
+        if rutenummer_list is None:
+            rutenummer_list = []
+        if rutetype_list is None:
+            rutetype_list = []
+
+        # Create list of route info objects (deduplicate by rutenummer)
+        routes_info = []
+        seen_rutenummer = set()
+
+        # Combine arrays into route info objects
+        # Use the longest array as reference, but handle cases where arrays have different lengths
+        max_len = max(
+            len(rutenavn_list) if rutenavn_list else 0,
+            len(rutenummer_list) if rutenummer_list else 0,
+            len(rutetype_list) if rutetype_list else 0
+        )
+
+        for i in range(max_len):
+            rutenummer = rutenummer_list[i] if rutenummer_list and i < len(rutenummer_list) else None
+            rutenavn = rutenavn_list[i] if rutenavn_list and i < len(rutenavn_list) else None
+            rutetype = rutetype_list[i] if rutetype_list and i < len(rutetype_list) else None
+
+            # Only add if we have at least rutenummer and haven't seen it before
+            if rutenummer and rutenummer not in seen_rutenummer:
+                seen_rutenummer.add(rutenummer)
+                routes_info.append({
+                    "rutenummer": rutenummer,
+                    "rutenavn": rutenavn,
+                    "rutetype": rutetype
+                })
+
         feature = {
             "type": "Feature",
             "id": row["link_id"],
@@ -495,7 +539,8 @@ async def get_links(
             "properties": {
                 "length_m": row["length_m"],
                 "a_node": row["a_node"],
-                "b_node": row["b_node"]
+                "b_node": row["b_node"],
+                "routes": routes_info  # List of route info objects
             }
         }
         features.append(feature)

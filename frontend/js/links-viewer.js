@@ -9,6 +9,12 @@ class LinksViewer {
         this.linksLayerGroup = null;
         this.enabled = options.enabled !== false; // Default to enabled
         this.links = new Map(); // Map of link_id -> layer for quick lookup
+        this.linkData = new Map(); // Map of link_id -> feature data
+
+        // Selected links management
+        this.selectedLinks = new Set(); // Set of selected link_ids
+        this.selectionMode = true; // Selection mode is always active by default
+        this.onSelectionChange = null; // Callback when selection changes
 
         // Debounce timer for bounding box queries
         this._bboxQueryTimer = null;
@@ -20,11 +26,129 @@ class LinksViewer {
 
     /**
      * Clear all links layers from the map
+     * @param {boolean} preserveSelection - If true, preserve selectedLinks when clearing
      */
-    clear() {
+    clear(preserveSelection = false) {
         if (this.linksLayerGroup) {
             this.linksLayerGroup.clearLayers();
             this.links.clear();
+            this.linkData.clear();
+        }
+        if (!preserveSelection) {
+            this.selectedLinks.clear();
+        }
+    }
+
+    /**
+     * Enable/disable selection mode
+     */
+    setSelectionMode(enabled) {
+        this.selectionMode = enabled;
+        this.updateLinkStyles();
+    }
+
+    /**
+     * Clear all selected links
+     */
+    clearSelection() {
+        this.selectedLinks.clear();
+        this.updateLinkStyles();
+        if (this.onSelectionChange) {
+            this.onSelectionChange(Array.from(this.selectedLinks));
+        }
+    }
+
+    /**
+     * Toggle selection of a link
+     * Selection is always enabled, but we check selectionMode for compatibility
+     */
+    toggleLinkSelection(linkId) {
+        // Selection is always enabled, but keep check for compatibility
+        if (!this.selectionMode) {
+            return;
+        }
+
+        if (this.selectedLinks.has(linkId)) {
+            this.selectedLinks.delete(linkId);
+        } else {
+            this.selectedLinks.add(linkId);
+        }
+
+        this.updateLinkStyle(linkId);
+
+        if (this.onSelectionChange) {
+            this.onSelectionChange(Array.from(this.selectedLinks));
+        }
+    }
+
+    /**
+     * Get selected links data
+     */
+    getSelectedLinksData() {
+        return Array.from(this.selectedLinks).map(linkId => {
+            const linkData = this.linkData.get(linkId);
+            if (!linkData) {
+                console.warn(`Link data not found for linkId: ${linkId}`);
+                return null;
+            }
+            if (!linkData.geometry) {
+                console.warn(`Link ${linkId} has no geometry:`, linkData);
+                return null;
+            }
+            return linkData;
+        }).filter(Boolean);
+    }
+
+    /**
+     * Update style for a specific link based on selection state
+     */
+    updateLinkStyle(linkId) {
+        const layer = this.links.get(linkId);
+        if (!layer) return;
+
+        const isSelected = this.selectedLinks.has(linkId);
+
+            if (layer.eachLayer) {
+                // MultiLineString - update each layer
+                layer.eachLayer((subLayer) => {
+                    if (isSelected) {
+                        subLayer.setStyle({
+                            color: '#27ae60', // Green for selected
+                            weight: 5,  // Increased from 3
+                            opacity: 1.0
+                        });
+                    } else {
+                        subLayer.setStyle({
+                            color: '#e74c3c', // Red for unselected
+                            weight: 3,  // Increased from 1.5
+                            opacity: 0.7
+                        });
+                    }
+                });
+            } else {
+                // Single layer
+                if (isSelected) {
+                    layer.setStyle({
+                        color: '#27ae60', // Green for selected
+                        weight: 5,  // Increased from 3
+                        opacity: 1.0
+                    });
+                } else {
+                    layer.setStyle({
+                        color: '#e74c3c', // Red for unselected
+                        weight: 3,  // Increased from 1.5
+                        opacity: 0.7
+                    });
+                }
+            }
+    }
+
+    /**
+     * Update styles for all links based on selection state
+     */
+    updateLinkStyles() {
+        for (const linkId of this.links.keys()) {
+            this.updateLinkStyle(linkId);
         }
     }
 
@@ -109,8 +233,11 @@ class LinksViewer {
             // We pass WGS84 coordinates - backend should handle conversion
             const data = await loadLinksInBbox(bbox, { limit: 1000 });
 
-            // Clear previous links
-            this.clear();
+            // Preserve selection when reloading (user might have selected links)
+            const preservedSelection = new Set(this.selectedLinks);
+
+            // Clear previous links but preserve selection
+            this.clear(true);
 
             // Create layer group if it doesn't exist
             if (!this.linksLayerGroup) {
@@ -138,34 +265,143 @@ class LinksViewer {
                     const lengthKm = lengthM / 1000.0;
                     const aNode = props.a_node || 'N/A';
                     const bNode = props.b_node || 'N/A';
+                    const routes = props.routes || []; // Array of route info objects
 
-                    // Create popup content
-                    const popupContent = `
-                        <div style="min-width: 200px;">
-                            <strong>Link ${linkId}</strong><br>
-                            <small>
-                                Node A: ${aNode}<br>
-                                Node B: ${bNode}<br>
-                                Lengde: ${lengthKm.toFixed(2)} km (${lengthM.toFixed(0)} m)
-                            </small>
-                        </div>
-                    `;
+                    // Store feature data
+                    this.linkData.set(linkId, feature);
+
+                    // Create tooltip content with route information
+                    let tooltipContent = null;
+                    if (routes && routes.length > 0) {
+                        // Build tooltip with route information
+                        const routeList = routes.map(route => {
+                            const rutenummer = route.rutenummer || 'Ukjent';
+                            const rutenavn = route.rutenavn || 'Ingen navn';
+                            const rutetype = route.rutetype || '';
+                            const typeLabel = rutetype ? ` (${rutetype})` : '';
+                            return `<div style="margin: 2px 0;">
+                                <strong>${rutenummer}</strong>${typeLabel}<br>
+                                <small>${rutenavn}</small>
+                            </div>`;
+                        }).join('');
+
+                        tooltipContent = `
+                            <div style="max-width: 250px;">
+                                <strong>Link ${linkId}</strong><br>
+                                <small>Lengde: ${lengthKm.toFixed(2)} km</small>
+                                ${routes.length > 1 ? `<br><strong>Ruter (${routes.length}):</strong>` : '<br><strong>Rute:</strong>'}
+                                ${routeList}
+                            </div>
+                        `;
+                    } else {
+                        // No routes, show basic info
+                        tooltipContent = `
+                            <div style="max-width: 200px;">
+                                <strong>Link ${linkId}</strong><br>
+                                <small>Lengde: ${lengthKm.toFixed(2)} km</small><br>
+                                <small style="color: #999;">Ingen ruter</small>
+                            </div>
+                        `;
+                    }
+
+                    // No popup needed - only tooltip on hover and click for selection
+                    const isSelected = this.selectedLinks.has(linkId);
+
+                    // Determine initial style based on selection state
+                    // Make links wider for easier clicking
+                    const initialStyle = {
+                        color: isSelected ? '#27ae60' : '#e74c3c',
+                        weight: isSelected ? 5 : 3,  // Increased from 3/1.5 to 5/3
+                        opacity: isSelected ? 1.0 : 0.7,
+                        fillOpacity: 0
+                    };
 
                     // Create GeoJSON layer for this link
                     const linkLayer = createGeoJSONLayer(feature.geometry, {
-                        style: {
-                            color: '#e74c3c', // Red color for links
-                            weight: 1.5,
-                            opacity: 0.7,
-                            fillOpacity: 0
-                        },
-                        popupContent: popupContent,
+                        style: initialStyle,
+                        tooltipContent: tooltipContent, // Only tooltip for mouseover
                         layerGroup: this.linksLayerGroup,
                         layerName: `link-${linkId}`
                     });
 
                     if (linkLayer) {
                         this.links.set(linkId, linkLayer);
+
+                        // Add click handler for selection and bind tooltips
+                        // Tooltips must be bound AFTER layer is on map to work properly
+                        setTimeout(() => {
+                            if (linkLayer.eachLayer) {
+                                linkLayer.eachLayer((layer) => {
+                                    // Bind tooltip if pending
+                                    if (layer._pendingTooltipContent && layer.bindTooltip) {
+                                        try {
+                                            layer.bindTooltip(layer._pendingTooltipContent, {
+                                                permanent: false,
+                                                direction: 'auto',
+                                                className: 'link-tooltip',
+                                                opacity: 0.95,
+                                                offset: [0, -5]
+                                            });
+
+                                            // Manually open/close tooltip on hover
+                                            layer.on('mouseover', function(e) {
+                                                if (this.openTooltip) {
+                                                    this.openTooltip(e.latlng);
+                                                }
+                                            });
+                                            layer.on('mouseout', function(e) {
+                                                if (this.closeTooltip) {
+                                                    this.closeTooltip();
+                                                }
+                                            });
+
+                                            delete layer._pendingTooltipContent;
+                                        } catch (error) {
+                                            console.error('Error binding tooltip to link layer:', error);
+                                        }
+                                    }
+
+                                    // Click handler for selection only (no popup)
+                                    layer.on('click', (e) => {
+                                        L.DomEvent.stopPropagation(e);
+                                        this.toggleLinkSelection(linkId);
+                                    });
+                                });
+                            } else {
+                                // Single layer
+                                if (linkLayer._pendingTooltipContent && linkLayer.bindTooltip) {
+                                    try {
+                                        linkLayer.bindTooltip(linkLayer._pendingTooltipContent, {
+                                            permanent: false,
+                                            direction: 'auto',
+                                            className: 'link-tooltip',
+                                            opacity: 0.95,
+                                            offset: [0, -5]
+                                        });
+
+                                        linkLayer.on('mouseover', function(e) {
+                                            if (this.openTooltip) {
+                                                this.openTooltip(e.latlng);
+                                            }
+                                        });
+                                        linkLayer.on('mouseout', function(e) {
+                                            if (this.closeTooltip) {
+                                                this.closeTooltip();
+                                            }
+                                        });
+
+                                        delete linkLayer._pendingTooltipContent;
+                                    } catch (error) {
+                                        console.error('Error binding tooltip to single link layer:', error);
+                                    }
+                                }
+
+                                linkLayer.on('click', (e) => {
+                                    L.DomEvent.stopPropagation(e);
+                                    this.toggleLinkSelection(linkId);
+                                });
+                            }
+                        }, 50);
                     }
                 }
 
@@ -177,6 +413,27 @@ class LinksViewer {
                 } else {
                     this._isLoading = false;
                     console.log(`Loaded ${features.length} links`);
+
+                    // Restore selection state for links that are still loaded
+                    // Only restore if links are actually in the current view
+                    const linksToRestore = [];
+                    for (const linkId of preservedSelection) {
+                        if (this.links.has(linkId) && this.linkData.has(linkId)) {
+                            linksToRestore.push(linkId);
+                        }
+                    }
+
+                    // Restore selection
+                    this.selectedLinks.clear();
+                    for (const linkId of linksToRestore) {
+                        this.selectedLinks.add(linkId);
+                        this.updateLinkStyle(linkId);
+                    }
+
+                    // Notify selection change if any links were restored
+                    if (linksToRestore.length > 0 && this.onSelectionChange) {
+                        this.onSelectionChange(Array.from(this.selectedLinks));
+                    }
                 }
             };
 
@@ -185,6 +442,25 @@ class LinksViewer {
                 processBatch();
             } else {
                 this._isLoading = false;
+
+                // Restore selection even if no features (in case selection was cleared)
+                const linksToRestore = [];
+                for (const linkId of preservedSelection) {
+                    if (this.links.has(linkId) && this.linkData.has(linkId)) {
+                        linksToRestore.push(linkId);
+                    }
+                }
+
+                if (linksToRestore.length > 0) {
+                    this.selectedLinks.clear();
+                    for (const linkId of linksToRestore) {
+                        this.selectedLinks.add(linkId);
+                        this.updateLinkStyle(linkId);
+                    }
+                    if (this.onSelectionChange) {
+                        this.onSelectionChange(Array.from(this.selectedLinks));
+                    }
+                }
             }
         } catch (error) {
             console.error('Error loading links:', error);

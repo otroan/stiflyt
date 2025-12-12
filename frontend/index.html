@@ -478,6 +478,25 @@
             border-top-color: rgba(44, 62, 80, 0.95) !important;
         }
 
+        /* Link tooltip styling */
+        .link-tooltip {
+            background: rgba(44, 62, 80, 0.95) !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 4px !important;
+            padding: 8px 12px !important;
+            font-size: 0.85rem !important;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+            white-space: normal !important;
+            max-width: 250px !important;
+            z-index: 10000 !important;
+            pointer-events: none !important;
+        }
+
+        .link-tooltip::before {
+            border-top-color: rgba(44, 62, 80, 0.95) !important;
+        }
+
         /* Ensure Leaflet tooltip container has proper z-index */
         .leaflet-tooltip {
             z-index: 10000 !important;
@@ -531,6 +550,8 @@
             <input type="text" id="routeInput" placeholder="Rutenummer (f.eks. bre10)" value="">
             <button id="loadRoute">Last rute</button>
             <button id="toggleLinksBtn" style="background: #e74c3c; margin-left: 0.5rem;" title="Vis/skjul nettverkslenker">🔗 Lenker</button>
+            <button id="getLinkOwnersBtn" style="background: #9b59b6; display: none; margin-left: 0.5rem;" title="Hent eiere for valgte lenker">👥 Hent eiere (lenker)</button>
+            <button id="clearLinkSelectionBtn" style="background: #e74c3c; display: none; margin-left: 0.5rem;" title="Fjern valg av lenker">🗑️ Fjern valg</button>
             <button id="getOwnersBtn" style="background: #9b59b6; display: none; margin-left: 0.5rem;">Hent eiere</button>
             <button id="clearDrawingBtn" style="background: #e74c3c; display: none; margin-left: 0.5rem;" title="Slett tegning og eiere">🗑️ Slett tegning</button>
         </div>
@@ -544,7 +565,6 @@
             <div class="sidebar-tabs">
                 <button class="tab active" data-tab="info">Info</button>
                 <button class="tab" data-tab="properties">Eiendommer</button>
-                <button class="tab" data-tab="timeline">Tidslinje</button>
             </div>
             <div class="tab-content">
                 <div id="infoTab" class="tab-pane active">
@@ -571,10 +591,6 @@
                         </thead>
                         <tbody id="propertiesTableBody"></tbody>
                     </table>
-                </div>
-                <div id="timelineTab" class="tab-pane">
-                    <h3>Eiendommer i rekkefølge</h3>
-                    <div id="timelineContent"></div>
                 </div>
             </div>
         </div>
@@ -767,7 +783,6 @@
                 // Display route info and properties in UI
                 displayRouteInfo(routeData);
                 displayProperties(routeData);
-                displayTimeline(routeData);
 
                 // Show download button now that route is loaded (displayRouteInfo also sets this, but ensure it's shown)
                 if (downloadBtn && routeData && routeData.metadata) {
@@ -1010,6 +1025,95 @@
                 return;
             }
 
+            // Check if we have link information (from selected links)
+            const hasLinkInfo = properties.some(p => p.link_id !== undefined);
+
+            if (hasLinkInfo) {
+                // Group by link_id
+                const linkGroups = new Map();
+
+                for (const prop of properties) {
+                    const linkId = prop.link_id || 'unknown';
+                    if (!linkGroups.has(linkId)) {
+                        linkGroups.set(linkId, {
+                            linkId: linkId,
+                            aNode: prop.link_a_node,
+                            bNode: prop.link_b_node,
+                            properties: []
+                        });
+                    }
+                    linkGroups.get(linkId).properties.push(prop);
+                }
+
+                // Build HTML with link groups
+                let html = '';
+                const sortedLinks = Array.from(linkGroups.values()).sort((a, b) =>
+                    (a.linkId || 0) - (b.linkId || 0)
+                );
+
+                for (const linkGroup of sortedLinks) {
+                    // Link header row
+                    html += `
+                        <tr class="link-group-header" style="background-color: #e9ecef; font-weight: bold;">
+                            <td colspan="5">
+                                🔗 Link ${linkGroup.linkId}
+                                ${linkGroup.aNode ? `(Node ${linkGroup.aNode} → ${linkGroup.bNode})` : ''}
+                                <small style="font-weight: normal; color: #6c757d;">
+                                    (${linkGroup.properties.length} eiendommer)
+                                </small>
+                            </td>
+                        </tr>
+                    `;
+
+                    // Group consecutive properties within this link
+                    const linkProps = linkGroup.properties.sort((a, b) =>
+                        (a.offset_meters || 0) - (b.offset_meters || 0)
+                    );
+
+                    const grouped = [];
+                    let current = {
+                        ...linkProps[0],
+                        endOffset: (linkProps[0].offset_meters || 0) + (linkProps[0].length_meters || 0),
+                        color: getColorForPropertyLocal(linkProps[0].matrikkelenhet)
+                    };
+
+                    for (let i = 1; i < linkProps.length; i++) {
+                        const prop = linkProps[i];
+                        if (prop.matrikkelenhet === current.matrikkelenhet &&
+                            (prop.offset_meters || 0) - current.endOffset < 10) {
+                            current.length_meters += (prop.length_meters || 0);
+                            current.endOffset = (prop.offset_meters || 0) + (prop.length_meters || 0);
+                        } else {
+                            grouped.push(current);
+                            current = {
+                                ...prop,
+                                endOffset: (prop.offset_meters || 0) + (prop.length_meters || 0),
+                                color: getColorForPropertyLocal(prop.matrikkelenhet)
+                            };
+                        }
+                    }
+                    grouped.push(current);
+
+                    // Properties for this link
+                    html += grouped.map(prop => {
+                        return `
+                            <tr onclick="highlightProperty('${prop.matrikkelenhet}')" style="background-color: #f8f9fa;">
+                                <td>${(prop.offset_km || 0).toFixed(2)} km</td>
+                                <td>${((prop.offset_km || 0) + (prop.length_km || 0)).toFixed(2)} km</td>
+                                <td>
+                                    <span class="property-color" style="background-color: ${prop.color}"></span>
+                                    ${prop.matrikkelenhet}
+                                </td>
+                                <td>${prop.bruksnavn || '-'}</td>
+                                <td>${(prop.length_meters || 0).toFixed(0)} m</td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+
+                tbody.innerHTML = html;
+            } else {
+                // Original behavior for routes (no link grouping)
             // Group consecutive properties
             const grouped = [];
             let current = {
@@ -1050,35 +1154,8 @@
                 `;
             }).join('');
         }
-
-        // Display timeline
-        function displayTimeline(data) {
-            const content = document.getElementById('timelineContent');
-            const properties = data.matrikkelenhet_vector || [];
-
-            if (!properties || properties.length === 0) {
-                content.innerHTML = '<p>Ingen matrikkelenhet-data tilgjengelig</p>';
-                return;
-            }
-
-            content.innerHTML = properties.map((prop, index) => {
-                const color = getColorForPropertyLocal(prop.matrikkelenhet);
-                return `
-                    <div style="
-                        border-left: 4px solid ${color};
-                        padding: 0.75rem;
-                        margin-bottom: 0.5rem;
-                        background: white;
-                        border-radius: 4px;
-                        cursor: pointer;
-                    " onclick="highlightProperty('${prop.matrikkelenhet}')">
-                        <strong>${prop.matrikkelenhet}</strong>
-                        ${prop.bruksnavn ? `<br><em>${prop.bruksnavn}</em>` : ''}
-                        <br><small>${prop.offset_km.toFixed(2)} - ${(prop.offset_km + prop.length_km).toFixed(2)} km (${prop.length_meters.toFixed(0)} m)</small>
-                    </div>
-                `;
-            }).join('');
         }
+
 
         // Display route info
         function displayRouteInfo(data) {
@@ -1480,12 +1557,512 @@
                     linksViewer.enable();
                     toggleLinksBtn.style.background = '#27ae60'; // Green when enabled
                     toggleLinksBtn.textContent = '🔗 Lenker (på)';
+                    // Selection is always enabled, no button needed
                 } else {
                     linksViewer.disable();
                     toggleLinksBtn.style.background = '#e74c3c'; // Red when disabled
                     toggleLinksBtn.textContent = '🔗 Lenker';
+                    // Hide selection controls when links are disabled
+                    const getLinkOwnersBtn = document.getElementById('getLinkOwnersBtn');
+                    const clearLinkSelectionBtn = document.getElementById('clearLinkSelectionBtn');
+                    if (getLinkOwnersBtn) getLinkOwnersBtn.style.display = 'none';
+                    if (clearLinkSelectionBtn) clearLinkSelectionBtn.style.display = 'none';
                 }
             });
+        }
+
+        // Link selection is now always enabled by default
+        // No toggle button needed - links can always be selected
+
+        // Selection change callback
+        linksViewer.onSelectionChange = (selectedLinkIds) => {
+            const getLinkOwnersBtn = document.getElementById('getLinkOwnersBtn');
+            const clearLinkSelectionBtn = document.getElementById('clearLinkSelectionBtn');
+
+            if (selectedLinkIds.length > 0) {
+                if (getLinkOwnersBtn) {
+                    getLinkOwnersBtn.style.display = 'inline-block';
+                    getLinkOwnersBtn.textContent = `👥 Hent eiere (${selectedLinkIds.length} lenker)`;
+                }
+                if (clearLinkSelectionBtn) {
+                    clearLinkSelectionBtn.style.display = 'inline-block';
+                }
+            } else {
+                if (getLinkOwnersBtn) getLinkOwnersBtn.style.display = 'none';
+                if (clearLinkSelectionBtn) clearLinkSelectionBtn.style.display = 'none';
+            }
+        };
+
+        // Clear link selection
+        const clearLinkSelectionBtn = document.getElementById('clearLinkSelectionBtn');
+        if (clearLinkSelectionBtn) {
+            clearLinkSelectionBtn.addEventListener('click', () => {
+                linksViewer.clearSelection();
+            });
+        }
+
+        // Get owners for selected links
+        const getLinkOwnersBtn = document.getElementById('getLinkOwnersBtn');
+        if (getLinkOwnersBtn) {
+            getLinkOwnersBtn.addEventListener('click', async () => {
+                const selectedLinks = linksViewer.getSelectedLinksData();
+                if (selectedLinks.length === 0) {
+                    alert('Ingen lenker valgt. Vennligst velg lenker først.');
+                    return;
+                }
+
+                // Disable button during request
+                getLinkOwnersBtn.disabled = true;
+                getLinkOwnersBtn.textContent = 'Laster...';
+
+                try {
+                    // Process each link individually to get owners per link
+                    // This preserves individual link geometry instead of combining them
+                    const loading = document.getElementById('loading');
+                    if (loading) {
+                        loading.classList.add('active');
+                    }
+
+                    const backendUrl = CommonConfig.getBackendUrl();
+                    const baseUrl = backendUrl
+                        ? `${backendUrl}/api/v1/geometry/owners`
+                        : '/api/v1/geometry/owners';
+
+                    // Process all links in parallel
+                    const linkResults = await Promise.all(
+                        selectedLinks.map(async (link) => {
+                            if (!link || !link.geometry) {
+                                console.warn('Skipping link without geometry:', link);
+                                return null;
+                            }
+
+                            // Extract geometry from feature
+                            let geometry = link.geometry;
+
+                            // Convert MultiLineString to LineString by flattening coordinates
+                            if (geometry.type === 'MultiLineString') {
+                                // Flatten all LineStrings into one LineString
+                                const allCoords = [];
+                                for (const lineString of geometry.coordinates) {
+                                    if (allCoords.length > 0) {
+                                        // Check if we need to connect (if last point != first point of next)
+                                        const lastPoint = allCoords[allCoords.length - 1];
+                                        const firstPoint = lineString[0];
+                                        const distance = Math.sqrt(
+                                            Math.pow(lastPoint[0] - firstPoint[0], 2) +
+                                            Math.pow(lastPoint[1] - firstPoint[1], 2)
+                                        );
+
+                                        if (distance > 0.0001) {
+                                            // Points are different, add connection
+                                            allCoords.push(firstPoint);
+                                        }
+                                        // Add rest of coordinates (skip first if same point)
+                                        allCoords.push(...lineString.slice(1));
+                                    } else {
+                                        // First lineString, add all
+                                        allCoords.push(...lineString);
+                                    }
+                                }
+                                geometry = {
+                                    type: 'LineString',
+                                    coordinates: allCoords
+                                };
+                            } else if (geometry.type !== 'LineString') {
+                                console.warn('Skipping unsupported geometry type:', geometry.type);
+                                return null;
+                            }
+
+                            // Validate LineString has at least 2 coordinates
+                            if (!geometry.coordinates || geometry.coordinates.length < 2) {
+                                console.warn(`Link ${link.id} has invalid LineString (less than 2 coordinates)`);
+                                return null;
+                            }
+
+                            try {
+                                const response = await fetch(baseUrl, {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json'
+                                    },
+                                    body: JSON.stringify({
+                                        geometry: geometry
+                                    })
+                                });
+
+                                if (!response.ok) {
+                                    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+                                    throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+                                }
+
+                                const data = await response.json();
+
+                                console.log(`Link ${link.id} response:`, {
+                                    hasMatrikkelenhet: !!data.matrikkelenhet_vector,
+                                    count: data.matrikkelenhet_vector?.length || 0,
+                                    totalLength: data.total_length_meters
+                                });
+
+                                // Add link metadata to each matrikkelenhet item
+                                const linkId = link.id;
+                                const linkProps = link.properties || {};
+
+                                const matrikkelenhetVector = (data.matrikkelenhet_vector || []).map(item => ({
+                                    ...item,
+                                    link_id: linkId,
+                                    link_a_node: linkProps.a_node,
+                                    link_b_node: linkProps.b_node
+                                }));
+
+                                console.log(`Link ${linkId} processed: ${matrikkelenhetVector.length} matrikkelenheter`);
+
+                                return {
+                                    linkId: linkId,
+                                    aNode: linkProps.a_node,
+                                    bNode: linkProps.b_node,
+                                    lengthM: linkProps.length_m || 0,
+                                    geometry: geometry,
+                                    matrikkelenhet_vector: matrikkelenhetVector
+                                };
+                            } catch (error) {
+                                console.error(`Error processing link ${link.id}:`, error);
+                                return {
+                                    linkId: link.id,
+                                    error: error.message,
+                                    matrikkelenhet_vector: []
+                                };
+                            }
+                        })
+                    );
+
+                    // Filter out null results
+                    const validResults = linkResults.filter(r => r !== null);
+
+                    if (validResults.length === 0) {
+                        throw new Error('Ingen gyldige lenker kunne prosesseres');
+                    }
+
+                    console.log(`Processing ${validResults.length} valid link results`);
+
+                    // Combine all matrikkelenhet vectors from all links
+                    const allMatrikkelenhet = [];
+                    let totalLengthMeters = 0;
+                    let totalLengthKm = 0;
+
+                    for (const result of validResults) {
+                        if (result.error) {
+                            console.warn(`Link ${result.linkId} had error:`, result.error);
+                            continue;
+                        }
+
+                        const matrikkelenhetVector = result.matrikkelenhet_vector || [];
+                        console.log(`Link ${result.linkId}: adding ${matrikkelenhetVector.length} matrikkelenheter`);
+
+                        if (matrikkelenhetVector.length > 0) {
+                            allMatrikkelenhet.push(...matrikkelenhetVector);
+                        }
+                        totalLengthMeters += result.lengthM || 0;
+                    }
+                    totalLengthKm = totalLengthMeters / 1000.0;
+
+                    console.log(`Total matrikkelenheter collected: ${allMatrikkelenhet.length}`);
+                    console.log(`Total length: ${totalLengthMeters}m (${totalLengthKm}km)`);
+
+                    // Sort by link_id, then by offset within each link
+                    allMatrikkelenhet.sort((a, b) => {
+                        const linkCompare = (a.link_id || 0) - (b.link_id || 0);
+                        if (linkCompare !== 0) return linkCompare;
+                        return (a.offset_meters || 0) - (b.offset_meters || 0);
+                    });
+
+                    // Create combined geometry (MultiLineString) to show all links
+                    const geometries = validResults
+                        .filter(r => !r.error && r.geometry)
+                        .map(r => r.geometry);
+
+                    let combinedGeometry;
+                    if (geometries.length === 1) {
+                        combinedGeometry = geometries[0];
+                    } else {
+                        combinedGeometry = {
+                            type: 'MultiLineString',
+                            coordinates: geometries.map(g => {
+                                if (g.type === 'LineString') {
+                                    return g.coordinates;
+                                } else if (g.type === 'MultiLineString') {
+                                    return g.coordinates;
+                                }
+                                return [];
+                            }).flat()
+                        };
+                    }
+
+                    // Create response structure similar to geometry/owners endpoint
+                    const combinedData = {
+                        geometry: combinedGeometry,
+                        total_length_meters: totalLengthMeters,
+                        total_length_km: totalLengthKm,
+                        matrikkelenhet_vector: allMatrikkelenhet,
+                        links: validResults.map(r => ({
+                            link_id: r.linkId,
+                            a_node: r.aNode,
+                            b_node: r.bNode,
+                            length_m: r.lengthM
+                        }))
+                    };
+
+                    // Display results (reuse existing display function)
+                    displayGeometryOwners(combinedData);
+
+                } catch (error) {
+                    console.error('Error getting owners for links:', error);
+                    alert(`Feil ved henting av eiere: ${error.message}`);
+                } finally {
+                    getLinkOwnersBtn.disabled = false;
+                    const loading = document.getElementById('loading');
+                    if (loading) {
+                        loading.classList.remove('active');
+                    }
+                }
+            });
+        }
+
+        // Helper function to sort links in geographic order based on a_node and b_node
+        function sortLinksByNodes(links) {
+            if (!links || links.length === 0) {
+                return [];
+            }
+
+            // Filter out links without geometry
+            const validLinks = links.filter(link => {
+                if (!link) {
+                    console.warn('Null or undefined link in sortLinksByNodes');
+                    return false;
+                }
+                if (!link.geometry) {
+                    console.warn('Link without geometry:', link.id || 'unknown');
+                    return false;
+                }
+                return true;
+            });
+
+            if (validLinks.length === 0) {
+                console.warn('No valid links after filtering');
+                return [];
+            }
+            if (validLinks.length === 1) {
+                return [{ link: validLinks[0], reversed: false }];
+            }
+
+            // Create a map of link_id -> link for quick lookup
+            const linkMap = new Map();
+            const nodeToLinks = new Map(); // node -> array of links that connect to this node
+
+            for (const link of validLinks) {
+                if (!link || !link.id) {
+                    console.warn('Skipping link without id:', link);
+                    continue;
+                }
+
+                const linkId = link.id;
+                const aNode = link.properties?.a_node;
+                const bNode = link.properties?.b_node;
+
+                linkMap.set(linkId, link);
+
+                // Track which links connect to each node
+                if (aNode !== undefined && aNode !== null) {
+                    if (!nodeToLinks.has(aNode)) {
+                        nodeToLinks.set(aNode, []);
+                    }
+                    nodeToLinks.get(aNode).push({ linkId, nodeType: 'a' });
+                }
+
+                if (bNode !== undefined && bNode !== null) {
+                    if (!nodeToLinks.has(bNode)) {
+                        nodeToLinks.set(bNode, []);
+                    }
+                    nodeToLinks.get(bNode).push({ linkId, nodeType: 'b' });
+                }
+            }
+
+            // Find start link (link with a node that only appears once, or first link if all nodes appear twice)
+            let startLink = null;
+            let startNode = null;
+            let needsReverse = false;
+
+            // Try to find a link with a node that only appears once (endpoint)
+            for (const [node, linkRefs] of nodeToLinks.entries()) {
+                if (linkRefs.length === 1) {
+                    // This is an endpoint - use the link connected to it as start
+                    const linkRef = linkRefs[0];
+                    startLink = linkMap.get(linkRef.linkId);
+                    startNode = node;
+                    // If the endpoint is b_node, we need to reverse
+                    needsReverse = (linkRef.nodeType === 'b');
+                    break;
+                }
+            }
+
+            // If no endpoint found, just use first valid link
+            if (!startLink) {
+                startLink = validLinks[0];
+                startNode = startLink.properties?.a_node;
+                needsReverse = false;
+            }
+
+            // Build ordered sequence by following node connections
+            const orderedLinks = [];
+            const visited = new Set();
+            let currentLink = startLink;
+            let currentNode = startNode;
+
+            while (currentLink && !visited.has(currentLink.id)) {
+                visited.add(currentLink.id);
+
+                // Determine if we need to reverse this link
+                const aNode = currentLink.properties?.a_node;
+                const bNode = currentLink.properties?.b_node;
+                const shouldReverse = (needsReverse || (currentNode === bNode && aNode !== currentNode));
+
+                orderedLinks.push({
+                    link: currentLink,
+                    reversed: shouldReverse
+                });
+
+                // Find next node (the one we're moving towards)
+                const nextNode = shouldReverse ? aNode : bNode;
+
+                // Find next link connected to this node
+                if (nextNode !== undefined && nextNode !== null) {
+                    const connectedLinks = nodeToLinks.get(nextNode) || [];
+                    const nextLinkRef = connectedLinks.find(ref =>
+                        ref.linkId !== currentLink.id && !visited.has(ref.linkId)
+                    );
+
+                    if (nextLinkRef) {
+                        currentLink = linkMap.get(nextLinkRef.linkId);
+                        currentNode = nextNode;
+                        // Determine if next link needs reversal
+                        // If we're at b_node of current and next link's a_node is here, no reverse
+                        // If we're at b_node of current and next link's b_node is here, reverse
+                        needsReverse = (nextLinkRef.nodeType === 'b');
+                    } else {
+                        // No more connected links
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            // Add any remaining unvisited links (disconnected components)
+            for (const link of validLinks) {
+                if (!visited.has(link.id)) {
+                    orderedLinks.push({
+                        link: link,
+                        reversed: false
+                    });
+                }
+            }
+
+            return orderedLinks;
+        }
+
+        // Helper function to combine link geometries into a single LineString
+        function combineLinkGeometries(links) {
+            if (!links || links.length === 0) {
+                return null;
+            }
+
+            // Filter out invalid links
+            const validLinks = links.filter(link => {
+                if (!link || !link.geometry) {
+                    console.warn('Skipping link without geometry:', link);
+                    return false;
+                }
+                return true;
+            });
+
+            if (validLinks.length === 0) {
+                console.error('No valid links with geometry found');
+                return null;
+            }
+
+            // First, sort links in geographic order based on nodes
+            const sortedLinks = sortLinksByNodes(validLinks);
+
+            // Collect all coordinates from sorted links
+            const allCoordinates = [];
+
+            for (const sortedItem of sortedLinks) {
+                // Handle format: {link, reversed}
+                if (!sortedItem || typeof sortedItem !== 'object') {
+                    console.warn('Invalid sorted link item:', sortedItem);
+                    continue;
+                }
+
+                const link = sortedItem.link;
+                const reversed = sortedItem.reversed || false;
+
+                if (!link) {
+                    console.warn('Sorted item missing link property:', sortedItem);
+                    continue;
+                }
+
+                if (!link.geometry) {
+                    console.warn('Link missing geometry:', link);
+                    continue;
+                }
+
+                let coords = null;
+                const geom = link.geometry;
+
+                if (geom.type === 'LineString' && geom.coordinates) {
+                    coords = reversed ? [...geom.coordinates].reverse() : geom.coordinates;
+                } else if (geom.type === 'MultiLineString' && geom.coordinates) {
+                    // For MultiLineString, reverse each LineString
+                    coords = [];
+                    for (const lineString of geom.coordinates) {
+                        const reversedLine = reversed ? [...lineString].reverse() : lineString;
+                        coords.push(...reversedLine);
+                    }
+                }
+
+                if (!coords || coords.length === 0) continue;
+
+                // Add coordinates, avoiding duplicates at connection points
+                if (allCoordinates.length > 0) {
+                    const lastCoord = allCoordinates[allCoordinates.length - 1];
+                    const firstCoord = coords[0];
+
+                    // If coordinates are very close (same point), skip first coordinate
+                    const distance = Math.sqrt(
+                        Math.pow(lastCoord[0] - firstCoord[0], 2) +
+                        Math.pow(lastCoord[1] - firstCoord[1], 2)
+                    );
+
+                    if (distance < 0.0001) {
+                        // Same point, skip first coordinate
+                        allCoordinates.push(...coords.slice(1));
+                    } else {
+                        // Different points, add all
+                        allCoordinates.push(...coords);
+                    }
+                } else {
+                    // First link, add all coordinates
+                    allCoordinates.push(...coords);
+                }
+            }
+
+            if (allCoordinates.length < 2) {
+                return null;
+            }
+
+            return {
+                type: 'LineString',
+                coordinates: allCoordinates
+            };
         }
 
         // Route filter input handler (disabled - routes not loaded automatically)
@@ -1620,7 +2197,6 @@
             // Clear sidebar content
             document.getElementById('routeInfo').innerHTML = '';
             document.getElementById('propertiesTableBody').innerHTML = '';
-            document.getElementById('timelineContent').innerHTML = '';
 
             // Hide download button
             const downloadBtn = document.getElementById('downloadExcelBtn');
@@ -1849,7 +2425,6 @@
             // Display using existing functions
             displayRouteInfo(routeData);
             displayProperties(routeData);
-            displayTimeline(routeData);
 
             // Display geometry on map (similar to route)
             if (data.geometry) {
