@@ -8,12 +8,12 @@ from typing import Optional, Callable, Any, Annotated
 from fastapi import APIRouter, HTTPException, Query, Path, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem, GeometryOwnerRequest, GeometryOwnerResponse
+from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest
 from services.route_service import get_route_data, search_routes, get_route_list, get_route_segments_data, get_routes_in_bbox, RouteNotFoundError, RouteDataError
 from services.route_debug import get_route_debug_info
 from services.route_geometry import get_corrected_route_geometry
 from services.database import get_db_connection, db_connection, ROUTE_SCHEMA, quote_identifier
-from services.excel_report import generate_owners_excel
+from services.excel_report import generate_owners_excel, generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
 import psycopg
 from psycopg.rows import dict_row
@@ -324,6 +324,60 @@ async def download_route_owners_excel(
     )
 
 
+@router.post("/owners.xlsx")
+@handle_route_errors("generating owners Excel report")
+async def download_owners_excel(
+    request: ExcelReportRequest,
+    user=Depends(require_shared_login),
+):
+    """
+    Download Excel report with owners information from matrikkelenhet_vector.
+
+    This endpoint can be used for:
+    - Drawn lines (send geometry and get matrikkelenhet_vector first)
+    - Selected links (send link_ids and get matrikkelenhet_vector first)
+    - Any custom geometry
+
+    Requires authentication.
+    """
+    try:
+        # Convert matrikkelenhet_vector items to dict format if needed
+        matrikkelenhet_vector = []
+        for item in request.matrikkelenhet_vector:
+            if isinstance(item, dict):
+                matrikkelenhet_vector.append(item)
+            else:
+                # Convert Pydantic model to dict
+                matrikkelenhet_vector.append(item.dict())
+
+        # Generate Excel file
+        excel_bytes = generate_owners_excel_from_data(
+            matrikkelenhet_vector,
+            request.metadata,
+            request.title
+        )
+
+        # Create filename
+        title = request.title or "rapport"
+        filename = f"{title}-owners.xlsx"
+
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+        return Response(
+            content=excel_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers=headers,
+        )
+    except Exception as e:
+        print(f"Error generating Excel report: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating Excel report: {str(e)}"
+        )
+
+
 @router.post("/geometry/owners", response_model=GeometryOwnerResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def get_geometry_owners(request: GeometryOwnerRequest):
     """
@@ -473,6 +527,7 @@ async def get_links(
                     l.rutenavn_list,
                     l.rutenummer_list,
                     l.rutetype_list,
+                    l.vedlikeholdsansvarlig_list,
                     ST_AsGeoJSON(ST_Transform(l.geom, 4326))::json as geometry
                 FROM {full_view_name} l
                 WHERE l.geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)
@@ -497,6 +552,7 @@ async def get_links(
         rutenavn_list = row.get("rutenavn_list")
         rutenummer_list = row.get("rutenummer_list")
         rutetype_list = row.get("rutetype_list")
+        vedlikeholdsansvarlig_list = row.get("vedlikeholdsansvarlig_list")
 
         # Ensure we have lists (handle None and ensure they're iterable)
         if rutenavn_list is None:
@@ -505,6 +561,8 @@ async def get_links(
             rutenummer_list = []
         if rutetype_list is None:
             rutetype_list = []
+        if vedlikeholdsansvarlig_list is None:
+            vedlikeholdsansvarlig_list = []
 
         # Create list of route info objects (deduplicate by rutenummer)
         routes_info = []
@@ -515,13 +573,15 @@ async def get_links(
         max_len = max(
             len(rutenavn_list) if rutenavn_list else 0,
             len(rutenummer_list) if rutenummer_list else 0,
-            len(rutetype_list) if rutetype_list else 0
+            len(rutetype_list) if rutetype_list else 0,
+            len(vedlikeholdsansvarlig_list) if vedlikeholdsansvarlig_list else 0
         )
 
         for i in range(max_len):
             rutenummer = rutenummer_list[i] if rutenummer_list and i < len(rutenummer_list) else None
             rutenavn = rutenavn_list[i] if rutenavn_list and i < len(rutenavn_list) else None
             rutetype = rutetype_list[i] if rutetype_list and i < len(rutetype_list) else None
+            vedlikeholdsansvarlig = vedlikeholdsansvarlig_list[i] if vedlikeholdsansvarlig_list and i < len(vedlikeholdsansvarlig_list) else None
 
             # Only add if we have at least rutenummer and haven't seen it before
             if rutenummer and rutenummer not in seen_rutenummer:
@@ -529,7 +589,8 @@ async def get_links(
                 routes_info.append({
                     "rutenummer": rutenummer,
                     "rutenavn": rutenavn,
-                    "rutetype": rutetype
+                    "rutetype": rutetype,
+                    "vedlikeholdsansvarlig": vedlikeholdsansvarlig
                 })
 
         feature = {

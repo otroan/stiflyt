@@ -278,15 +278,17 @@ class LinksViewer {
                             const rutenummer = route.rutenummer || 'Ukjent';
                             const rutenavn = route.rutenavn || 'Ingen navn';
                             const rutetype = route.rutetype || '';
+                            const vedlikeholdsansvarlig = route.vedlikeholdsansvarlig || '';
                             const typeLabel = rutetype ? ` (${rutetype})` : '';
-                            return `<div style="margin: 2px 0;">
+                            const ansvarligLabel = vedlikeholdsansvarlig ? `<br><small style="color: #666;">${vedlikeholdsansvarlig}</small>` : '';
+                            return `<div style="margin: 3px 0; padding-bottom: 3px; border-bottom: 1px solid #eee;">
                                 <strong>${rutenummer}</strong>${typeLabel}<br>
-                                <small>${rutenavn}</small>
+                                <small>${rutenavn}</small>${ansvarligLabel}
                             </div>`;
                         }).join('');
 
                         tooltipContent = `
-                            <div style="max-width: 250px;">
+                            <div style="max-width: 400px;">
                                 <strong>Link ${linkId}</strong><br>
                                 <small>Lengde: ${lengthKm.toFixed(2)} km</small>
                                 ${routes.length > 1 ? `<br><strong>Ruter (${routes.length}):</strong>` : '<br><strong>Rute:</strong>'}

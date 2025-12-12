@@ -213,3 +213,10 @@ class GeometryOwnerResponse(BaseModel):
     total_length_km: float
     matrikkelenhet_vector: List[MatrikkelenhetItemWithOwners]
 
+
+class ExcelReportRequest(BaseModel):
+    """Request for Excel report generation."""
+    matrikkelenhet_vector: List[MatrikkelenhetItem]
+    metadata: Optional[Dict[str, Any]] = None  # Optional metadata (rutenummer, rutenavn, total_length_km, etc.)
+    title: Optional[str] = "Rapport"  # Title for the report
+

@@ -7,43 +7,27 @@ from .route_service import get_route_data, RouteNotFoundError, RouteDataError
 from .matrikkel_owner_service import fetch_owners_for_matrikkelenheter
 
 
-def generate_owners_excel(rutenummer):
+def generate_owners_excel_from_data(matrikkelenhet_vector, metadata=None, title="Rapport"):
     """
-    Generate Excel report for route owners.
-
-    The report contains:
-    - Offset along the path (in meters and kilometers)
-    - Length of path within this matrikkelenhet (in meters and kilometers)
-    - Matrikkelenhet
-    - Bruksnavn
-    - Kontaktinformasjon (owner information from Matrikkel API, if credentials are configured)
+    Generate Excel report from matrikkelenhet_vector data directly.
 
     Args:
-        rutenummer: Route identifier
+        matrikkelenhet_vector: List of matrikkelenhet items with offset and length info
+        metadata: Optional metadata dict with rutenummer, rutenavn, total_length_km, etc.
+        title: Title for the report (used in filename and metadata)
 
     Returns:
         bytes: Excel file as bytes
-
-    Raises:
-        RouteNotFoundError: If the route is not found
-        RouteDataError: If route data cannot be processed
     """
-    # Get route data including matrikkelenhet_vector
-    route_data = get_route_data(rutenummer, use_corrected_geometry=True)
-
-    # Extract matrikkelenhet vector
-    matrikkelenhet_vector = route_data.get('matrikkelenhet_vector', [])
-    metadata = route_data.get('metadata', {})
+    if metadata is None:
+        metadata = {}
 
     # Fetch owner information from Matrikkel API (if credentials are available)
-    # This will gracefully handle missing credentials by returning None for owner info
     owner_results = fetch_owners_for_matrikkelenheter(matrikkelenhet_vector)
 
     # Create a mapping from matrikkelenhet identifier to owner info for quick lookup
-    # Use a tuple of key fields as the key for reliable matching
     owner_info_map = {}
     for item, owner_info, error in owner_results:
-        # Create a unique key from matrikkelenhet identifier
         key = (
             item.get('kommunenummer'),
             item.get('gardsnummer'),
@@ -81,16 +65,16 @@ def generate_owners_excel(rutenummer):
         cell.font = header_font
         cell.alignment = header_alignment
 
-    # Write route metadata as a note (optional - can be removed if not needed)
+    # Write metadata as a note
     if metadata:
         rutenavn = metadata.get('rutenavn', '')
         total_length = metadata.get('total_length_km', 0)
-        metadata_text = f"Rute: {metadata.get('rutenummer', rutenummer)}"
+        rutenummer = metadata.get('rutenummer', title)
+        metadata_text = f"Rute: {rutenummer}"
         if rutenavn:
             metadata_text += f" - {rutenavn}"
         metadata_text += f" | Total lengde: {total_length:.2f} km"
         ws.cell(row=2, column=1, value=metadata_text)
-        # Merge cells for metadata row
         ws.merge_cells(f'A2:G2')
         ws.cell(row=2, column=1).alignment = Alignment(horizontal="left", vertical="center")
         ws.row_dimensions[2].height = 20
@@ -104,7 +88,6 @@ def generate_owners_excel(rutenummer):
         ws.cell(row=idx, column=4, value=round(item.get('length_km', 0), 3))
         ws.cell(row=idx, column=5, value=item.get('matrikkelenhet', ''))
         ws.cell(row=idx, column=6, value=item.get('bruksnavn', ''))
-        # Get owner information from map using matrikkelenhet identifier as key
         key = (
             item.get('kommunenummer'),
             item.get('gardsnummer'),
@@ -116,35 +99,23 @@ def generate_owners_excel(rutenummer):
         ws.cell(row=idx, column=7, value=kontaktinformasjon)
 
     # Format columns
-    # Offset columns (meters and km)
     ws.column_dimensions['A'].width = 12
     ws.column_dimensions['B'].width = 12
-    # Length columns (meters and km)
     ws.column_dimensions['C'].width = 12
     ws.column_dimensions['D'].width = 12
-    # Matrikkelenhet
     ws.column_dimensions['E'].width = 20
-    # Bruksnavn
     ws.column_dimensions['F'].width = 30
-    # Kontaktinformasjon
     ws.column_dimensions['G'].width = 40
 
     # Format numeric columns
     for row in range(start_row, ws.max_row + 1):
-        # Offset meters - integer
         ws.cell(row=row, column=1).number_format = '#,##0'
-        # Offset km - 3 decimals
         ws.cell(row=row, column=2).number_format = '#,##0.000'
-        # Length meters - integer
         ws.cell(row=row, column=3).number_format = '#,##0'
-        # Length km - 3 decimals
         ws.cell(row=row, column=4).number_format = '#,##0.000'
 
     # Set header row height
     ws.row_dimensions[1].height = 30
-
-    # Freeze header row (and metadata row if present)
-    # freeze_panes freezes everything above the specified cell
     ws.freeze_panes = f'A{start_row}'
 
     # Save to bytes
@@ -153,3 +124,36 @@ def generate_owners_excel(rutenummer):
     output.seek(0)
 
     return output.getvalue()
+
+
+def generate_owners_excel(rutenummer):
+    """
+    Generate Excel report for route owners.
+
+    The report contains:
+    - Offset along the path (in meters and kilometers)
+    - Length of path within this matrikkelenhet (in meters and kilometers)
+    - Matrikkelenhet
+    - Bruksnavn
+    - Kontaktinformasjon (owner information from Matrikkel API, if credentials are configured)
+
+    Args:
+        rutenummer: Route identifier
+
+    Returns:
+        bytes: Excel file as bytes
+
+    Raises:
+        RouteNotFoundError: If the route is not found
+        RouteDataError: If route data cannot be processed
+    """
+    # Get route data including matrikkelenhet_vector
+    route_data = get_route_data(rutenummer, use_corrected_geometry=True)
+
+    # Extract matrikkelenhet vector
+    matrikkelenhet_vector = route_data.get('matrikkelenhet_vector', [])
+    metadata = route_data.get('metadata', {})
+
+    # Use the shared function
+    return generate_owners_excel_from_data(matrikkelenhet_vector, metadata, rutenummer)
+

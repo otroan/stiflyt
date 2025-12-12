@@ -480,21 +480,22 @@
 
         /* Link tooltip styling */
         .link-tooltip {
-            background: rgba(44, 62, 80, 0.95) !important;
-            color: white !important;
-            border: none !important;
+            background: white !important;
+            color: #333 !important;
+            border: 1px solid #ccc !important;
             border-radius: 4px !important;
             padding: 8px 12px !important;
-            font-size: 0.85rem !important;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+            font-size: 0.75rem !important;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
             white-space: normal !important;
-            max-width: 250px !important;
+            max-width: 400px !important;
+            min-width: 350px !important;
             z-index: 10000 !important;
             pointer-events: none !important;
         }
 
         .link-tooltip::before {
-            border-top-color: rgba(44, 62, 80, 0.95) !important;
+            border-top-color: #ccc !important;
         }
 
         /* Ensure Leaflet tooltip container has proper z-index */
@@ -1208,14 +1209,185 @@
             `;
 
             // Show download button and set up click handler
+            // Works for routes, drawn lines, and links
             const downloadBtn = document.getElementById('downloadExcelBtn');
             if (downloadBtn) {
-                downloadBtn.style.display = 'inline-flex';
-                downloadBtn.onclick = () => downloadExcelReport(meta.rutenummer);
+                if (data.matrikkelenhet_vector && data.matrikkelenhet_vector.length > 0) {
+                    downloadBtn.style.display = 'inline-flex';
+                    downloadBtn.onclick = () => downloadExcelReportFromData(data.matrikkelenhet_vector, meta);
+                } else {
+                    downloadBtn.style.display = 'none';
+                }
             }
         }
 
-        // Download Excel report for route owners
+        // Download Excel report from matrikkelenhet_vector data (for drawn lines, links, or routes)
+        async function downloadExcelReportFromData(matrikkelenhet_vector, metadata) {
+            if (!matrikkelenhet_vector || matrikkelenhet_vector.length === 0) {
+                alert('Ingen eiendomsdata tilgjengelig');
+                return;
+            }
+
+            const downloadBtn = document.getElementById('downloadExcelBtn');
+            const progressModal = document.getElementById('downloadProgressModal');
+            const progressBar = document.getElementById('progressBar');
+
+            // Show progress modal
+            if (progressModal) {
+                progressModal.classList.add('active');
+            }
+
+            // Disable button
+            if (downloadBtn) {
+                downloadBtn.disabled = true;
+            }
+
+            // Update progress steps
+            function updateProgressStep(stepNum, status) {
+                const step = document.getElementById(`step${stepNum}`);
+                if (!step) return;
+
+                step.classList.remove('active', 'completed');
+                const icon = step.querySelector('.progress-step-icon');
+
+                if (status === 'active') {
+                    step.classList.add('active');
+                    if (icon) icon.textContent = '⏳';
+                } else if (status === 'completed') {
+                    step.classList.add('completed');
+                    if (icon) icon.textContent = '✓';
+                } else if (status === 'pending') {
+                    if (icon) icon.textContent = '○';
+                }
+            }
+
+            // Update progress bar
+            function updateProgressBar(percent) {
+                if (progressBar) {
+                    progressBar.style.width = percent + '%';
+                }
+            }
+
+            // Initialize progress
+            updateProgressStep(1, 'pending');
+            updateProgressStep(2, 'pending');
+            updateProgressStep(3, 'pending');
+            updateProgressStep(4, 'pending');
+            updateProgressBar(0);
+
+            try {
+                // Step 1: Starting
+                updateProgressStep(1, 'active');
+                updateProgressBar(10);
+                await new Promise(resolve => setTimeout(resolve, 300));
+
+                const backendUrl = CommonConfig.getBackendUrl();
+                const url = backendUrl
+                    ? `${backendUrl}/api/v1/owners.xlsx`
+                    : `/api/v1/owners.xlsx`;
+
+                // Step 2: Generating Excel
+                updateProgressStep(1, 'completed');
+                updateProgressStep(2, 'active');
+                updateProgressBar(30);
+
+                // Determine title from metadata
+                const title = metadata?.rutenummer || metadata?.rutenavn || 'rapport';
+
+                // Prepare request body
+                const requestBody = {
+                    matrikkelenhet_vector: matrikkelenhet_vector,
+                    metadata: metadata || {},
+                    title: title
+                };
+
+                // Use fetch with credentials to handle basic auth
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify(requestBody)
+                });
+
+                if (!response.ok) {
+                    updateProgressStep(2, 'pending');
+                    updateProgressBar(0);
+                    if (progressModal) {
+                        progressModal.classList.remove('active');
+                    }
+                    if (downloadBtn) {
+                        downloadBtn.disabled = false;
+                    }
+
+                    if (response.status === 401) {
+                        alert('Autentisering påkrevd. Vennligst oppgi brukernavn og passord når nettleseren ber om det.');
+                    } else {
+                        const errorText = await response.text();
+                        let errorMessage = `Kunne ikke laste ned rapport: ${response.statusText}`;
+                        try {
+                            const errorJson = JSON.parse(errorText);
+                            errorMessage = errorJson.detail || errorMessage;
+                        } catch (e) {
+                            // Ignore JSON parse errors
+                        }
+                        alert(errorMessage);
+                    }
+                    return;
+                }
+
+                // Step 3: Processing blob
+                updateProgressStep(2, 'completed');
+                updateProgressStep(3, 'active');
+                updateProgressBar(70);
+
+                const blob = await response.blob();
+
+                // Step 4: Completing download
+                updateProgressStep(3, 'completed');
+                updateProgressStep(4, 'active');
+                updateProgressBar(90);
+
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = `${title}-owners.xlsx`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                window.URL.revokeObjectURL(downloadUrl);
+
+                // Complete
+                updateProgressStep(4, 'completed');
+                updateProgressBar(100);
+
+                await new Promise(resolve => setTimeout(resolve, 500));
+                if (progressModal) {
+                    progressModal.classList.remove('active');
+                }
+            } catch (error) {
+                console.error('Error downloading Excel report:', error);
+                updateProgressStep(1, 'pending');
+                updateProgressStep(2, 'pending');
+                updateProgressStep(3, 'pending');
+                updateProgressStep(4, 'pending');
+                updateProgressBar(0);
+                if (progressModal) {
+                    progressModal.classList.remove('active');
+                }
+                if (downloadBtn) {
+                    downloadBtn.disabled = false;
+                }
+                alert(`Feil ved nedlasting av Excel-rapport: ${error.message}`);
+            } finally {
+                if (downloadBtn) {
+                    downloadBtn.disabled = false;
+                }
+            }
+        }
+
+        // Download Excel report for route owners (legacy - uses rutenummer)
         async function downloadExcelReport(rutenummer) {
             if (!rutenummer) {
                 alert('Ingen rute valgt');
@@ -2399,20 +2571,26 @@
 
         // Display geometry owners (reuse route display logic)
         function displayGeometryOwners(data) {
+            // Determine title based on data source
+            let title = 'Tegnet linje';
+            if (data.links && data.links.length > 0) {
+                title = `${data.links.length} valgte lenker`;
+            }
+
             // Update sidebar header
             const routeNameEl = document.getElementById('routeName');
             if (routeNameEl) {
-                routeNameEl.textContent = `Tegnet linje (${data.total_length_km.toFixed(2)} km)`;
+                routeNameEl.textContent = `${title} (${data.total_length_km.toFixed(2)} km)`;
             }
 
             // Create metadata similar to route metadata
             const metadata = {
-                rutenummer: 'Tegnet linje',
-                rutenavn: 'Tegnet linje',
+                rutenummer: title,
+                rutenavn: title,
                 vedlikeholdsansvarlig: null,
                 total_length_meters: data.total_length_meters,
                 total_length_km: data.total_length_km,
-                segment_count: 0
+                segment_count: data.links ? data.links.length : 0
             };
 
             // Create route-like data structure
