@@ -1,5 +1,5 @@
 """Database connection module."""
-import psycopg2
+import psycopg
 import os
 from contextlib import contextmanager
 from dotenv import load_dotenv
@@ -39,7 +39,6 @@ def validate_schema_name(schema_name):
 def quote_identifier(identifier):
     """
     Safely quote a SQL identifier (table name, schema name, etc.).
-    Uses psycopg2's identifier quoting.
 
     Args:
         identifier: Identifier to quote
@@ -55,11 +54,18 @@ def quote_identifier(identifier):
 
 
 def get_db_connection():
-    """Get database connection."""
+    """Get database connection using psycopg3."""
+    # Try DATABASE_URL first
+    database_url = os.getenv("DATABASE_URL")
+
+    if database_url:
+        return psycopg.connect(database_url)
+
+    # Fall back to individual connection parameters
     if USE_UNIX_SOCKET:
         conn_params = {
             'host': SOCKET_DIR,
-            'database': DB_NAME,
+            'dbname': DB_NAME,
             'user': DB_USER,
         }
     else:
@@ -68,14 +74,14 @@ def get_db_connection():
         conn_params = {
             'host': parsed.hostname,
             'port': parsed.port or 5432,
-            'database': parsed.path.lstrip('/'),
+            'dbname': parsed.path.lstrip('/'),
             'user': parsed.username,
             'password': parsed.password
         }
 
     # Remove None values
     conn_params = {k: v for k, v in conn_params.items() if v is not None}
-    return psycopg2.connect(**conn_params)
+    return psycopg.connect(**conn_params)
 
 
 @contextmanager

@@ -530,6 +530,7 @@
             <input type="text" id="routeFilter" placeholder="Filtrer ruter (prefix, f.eks. bre)" style="width: 200px;" title="Filtrer visuelle ruter etter rutenummer (prefix)">
             <input type="text" id="routeInput" placeholder="Rutenummer (f.eks. bre10)" value="">
             <button id="loadRoute">Last rute</button>
+            <button id="toggleLinksBtn" style="background: #e74c3c; margin-left: 0.5rem;" title="Vis/skjul nettverkslenker">🔗 Lenker</button>
             <button id="getOwnersBtn" style="background: #9b59b6; display: none; margin-left: 0.5rem;">Hent eiere</button>
             <button id="clearDrawingBtn" style="background: #e74c3c; display: none; margin-left: 0.5rem;" title="Slett tegning og eiere">🗑️ Slett tegning</button>
         </div>
@@ -635,6 +636,9 @@
     <!-- Route viewer -->
     <script src="js/route-viewer.js"></script>
 
+    <!-- Links viewer -->
+    <script src="js/links-viewer.js"></script>
+
     <script>
         // Initialize map
         const map = initMap('map');
@@ -672,6 +676,9 @@
         // Initialize route viewer
         // Segments and components layers are disabled by default - only enabled in debug view
         const routeViewer = new RouteViewer(map, layerControl);
+
+        // Initialize links viewer (enabled by default)
+        const linksViewer = new LinksViewer(map, layerControl, { enabled: true });
 
         // Configuration
         const BACKEND_URL = CommonConfig.getBackendUrl();
@@ -1423,30 +1430,34 @@
             }
         });
 
-        // Initialize bounding box route loading with default DNT filter for better performance
+        // Initialize bounding box route loading (disabled by default)
+        // Routes can still be loaded manually via search or route input
         let bboxFilters = {
             prefix: null,
             organization: 'DNT'  // Default to DNT routes only for faster loading
         };
 
-        // Add event listeners for map move/zoom to load routes in bounding box
-        // The routeViewer will handle checking if a route is currently loading
+        // Add event listeners for map move/zoom to load links in bounding box
+        // Route loading is disabled - only links are loaded automatically
         map.on('moveend', () => {
-            routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+            // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
+            linksViewer.loadLinksInBboxDebounced();
         });
 
         map.on('zoomend', () => {
-            routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+            // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
+            linksViewer.loadLinksInBboxDebounced();
         });
 
-        // Load routes in initial view
-        routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+        // Load links in initial view (routes disabled)
+        linksViewer.loadLinksInBboxDebounced();
 
         // Optional: Add UI controls for filtering bounding box routes
         // This could be added to the header controls section
+        // Note: Route loading is disabled by default
         function updateBboxFilters(newFilters) {
             bboxFilters = { ...bboxFilters, ...newFilters };
-            routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+            // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
         }
 
         // Make updateBboxFilters available globally for potential UI controls
@@ -1455,7 +1466,29 @@
         // Make loadRoute available globally so bbox route click handlers can use it
         window.loadRoute = loadRoute;
 
-        // Route filter input handler (sends prefix to backend)
+        // Toggle links display (enabled by default)
+        const toggleLinksBtn = document.getElementById('toggleLinksBtn');
+        if (toggleLinksBtn) {
+            let linksEnabled = true; // Start enabled
+            // Set initial button state
+            toggleLinksBtn.style.background = '#27ae60'; // Green when enabled
+            toggleLinksBtn.textContent = '🔗 Lenker (på)';
+
+            toggleLinksBtn.addEventListener('click', () => {
+                linksEnabled = !linksEnabled;
+                if (linksEnabled) {
+                    linksViewer.enable();
+                    toggleLinksBtn.style.background = '#27ae60'; // Green when enabled
+                    toggleLinksBtn.textContent = '🔗 Lenker (på)';
+                } else {
+                    linksViewer.disable();
+                    toggleLinksBtn.style.background = '#e74c3c'; // Red when disabled
+                    toggleLinksBtn.textContent = '🔗 Lenker';
+                }
+            });
+        }
+
+        // Route filter input handler (disabled - routes not loaded automatically)
         // This must be after routeViewer and bboxFilters are defined
         const routeFilterInput = document.getElementById('routeFilter');
         if (routeFilterInput) {
@@ -1469,10 +1502,10 @@
                     clearTimeout(filterTimeout);
                 }
 
-                // Update filter and reload routes after 300ms delay
+                // Update filter but don't reload routes (disabled)
                 filterTimeout = setTimeout(() => {
                     bboxFilters.prefix = filter || null;
-                    routeViewer.loadRoutesInBboxDebounced(bboxFilters);
+                    // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
                 }, 300);
             });
         }

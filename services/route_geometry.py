@@ -3,7 +3,7 @@ Geometric route reconstruction - finds the actual geographic order of route segm
 by following connections between segments.
 """
 import json
-from psycopg2.extras import RealDictCursor
+from psycopg.rows import dict_row
 from .database import get_db_connection, ROUTE_SCHEMA
 from .route_connections import find_segment_connections
 from .route_service import parse_geojson_string, get_route_segments_with_points, get_segments_by_objids

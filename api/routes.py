@@ -1,18 +1,22 @@
 """API routes."""
 import secrets
 import traceback
+import json
 from functools import wraps
-from typing import Optional, Callable, Any
+from typing import Optional, Callable, Any, Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Path, Depends, Response, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem, GeometryOwnerRequest, GeometryOwnerResponse
 from services.route_service import get_route_data, search_routes, get_route_list, get_route_segments_data, get_routes_in_bbox, RouteNotFoundError, RouteDataError
 from services.route_debug import get_route_debug_info
 from services.route_geometry import get_corrected_route_geometry
-from services.database import get_db_connection
+from services.database import get_db_connection, db_connection, ROUTE_SCHEMA, quote_identifier
 from services.excel_report import generate_owners_excel
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
+import psycopg
+from psycopg.rows import dict_row
 
 router = APIRouter()
 security = HTTPBasic()
@@ -362,3 +366,146 @@ async def get_geometry_owners(request: GeometryOwnerRequest):
             status_code=500,
             detail=f"Error processing geometry: {str(e)}"
         )
+
+
+# Default SRID for links table - adjust if your links.geom uses a different SRID
+# Common values: 4326 (WGS84), 25833 (UTM 33N), 3857 (Web Mercator)
+LINKS_SRID = 25833
+
+
+def parse_bbox(bbox_str: str) -> tuple[float, float, float, float]:
+    """
+    Parse bbox string "xmin,ymin,xmax,ymax" into tuple of floats.
+
+    Args:
+        bbox_str: Bounding box string in format "xmin,ymin,xmax,ymax"
+
+    Returns:
+        Tuple of (xmin, ymin, xmax, ymax) as floats
+
+    Raises:
+        ValueError: If bbox string is invalid
+    """
+    try:
+        parts = bbox_str.split(',')
+        if len(parts) != 4:
+            raise ValueError("bbox must have exactly 4 values")
+        xmin, ymin, xmax, ymax = [float(p.strip()) for p in parts]
+
+        if xmin >= xmax:
+            raise ValueError("xmin must be less than xmax")
+        if ymin >= ymax:
+            raise ValueError("ymin must be less than ymax")
+
+        return xmin, ymin, xmax, ymax
+    except ValueError as e:
+        if "must have exactly" in str(e) or "must be less" in str(e):
+            raise
+        raise ValueError(f"Invalid bbox format: {e}")
+
+
+def clamp_limit(limit: int) -> int:
+    """Clamp limit to valid range [1, 5000]."""
+    return max(1, min(5000, limit))
+
+
+def parse_geometry(geom_data) -> dict:
+    """
+    Parse geometry from PostGIS ST_AsGeoJSON result.
+    Handles both string and already-parsed dict cases.
+
+    Args:
+        geom_data: Geometry data from database (string or dict)
+
+    Returns:
+        dict: Parsed geometry as dict
+    """
+    if isinstance(geom_data, str):
+        return json.loads(geom_data)
+    elif isinstance(geom_data, dict):
+        return geom_data
+    else:
+        # Fallback: try to convert to dict
+        return geom_data
+
+
+@router.get("/links")
+async def get_links(
+    bbox: Annotated[str, Query(description="Bounding box as 'xmin,ymin,xmax,ymax'")],
+    limit: Annotated[int, Query(ge=1, le=5000, description="Maximum number of results")] = 500,
+    offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0
+) -> JSONResponse:
+    """
+    Get links filtered by bounding box.
+
+    Returns GeoJSON FeatureCollection with link geometries and properties.
+
+    Example:
+    - /api/v1/links?bbox=10.0,59.0,11.0,60.0&limit=100
+    """
+    # Parse and validate bbox
+    try:
+        xmin, ymin, xmax, ymax = parse_bbox(bbox)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Clamp limit
+    limit = clamp_limit(limit)
+
+    # Query database
+    # Frontend sends bbox in WGS84 (4326), but links.geom is in LINKS_SRID (25833)
+    # Transform bbox to match links.geom SRID for efficient spatial index usage
+    # Links table is in ROUTE_SCHEMA (same schema as routes)
+    with db_connection() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Use quoted schema and table name for safety
+            schema_quoted = quote_identifier(ROUTE_SCHEMA)
+            table_quoted = quote_identifier("links")
+            full_table_name = f"{schema_quoted}.{table_quoted}"
+
+            query = f"""
+                SELECT
+                    link_id,
+                    a_node,
+                    b_node,
+                    length_m,
+                    ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
+                FROM {full_table_name}
+                WHERE geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)
+                    AND geom IS NOT NULL
+                ORDER BY link_id
+                LIMIT %s
+                OFFSET %s
+            """
+
+            # bbox is in WGS84 (4326), transform to LINKS_SRID for spatial index
+            cur.execute(query, (xmin, ymin, xmax, ymax, LINKS_SRID, limit, offset))
+            rows = cur.fetchall()
+
+    # Build GeoJSON FeatureCollection
+    features = []
+    for row in rows:
+        # Parse geometry (handles both string and dict from PostGIS)
+        geometry = parse_geometry(row["geometry"])
+
+        feature = {
+            "type": "Feature",
+            "id": row["link_id"],
+            "geometry": geometry,
+            "properties": {
+                "length_m": row["length_m"],
+                "a_node": row["a_node"],
+                "b_node": row["b_node"]
+            }
+        }
+        features.append(feature)
+
+    feature_collection = {
+        "type": "FeatureCollection",
+        "features": features
+    }
+
+    return JSONResponse(
+        content=feature_collection,
+        media_type="application/geo+json"
+    )

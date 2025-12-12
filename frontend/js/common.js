@@ -173,6 +173,45 @@ async function loadRoutesInBbox(bbox, filters = {}) {
 }
 
 /**
+ * Load links within a bounding box
+ * @param {Object} bbox - Bounding box {min_lat, min_lng, max_lat, max_lng}
+ * @param {Object} options - Optional options {limit, offset}
+ * @returns {Promise<Object>} GeoJSON FeatureCollection with links
+ */
+async function loadLinksInBbox(bbox, options = {}) {
+    const { min_lat, min_lng, max_lat, max_lng } = bbox;
+    const { limit = 500, offset = 0 } = options;
+
+    // Build bbox string as "xmin,ymin,xmax,ymax"
+    // Note: Links endpoint expects bbox in same SRID as links.geom (default 25833)
+    // But we receive bbox in WGS84 (4326) from map, so we need to transform
+    // For now, we'll pass WGS84 coordinates and let backend handle if needed
+    // (Backend should handle SRID conversion)
+    const bboxStr = `${min_lng},${min_lat},${max_lng},${max_lat}`;
+
+    // Build query string
+    const params = new URLSearchParams({
+        bbox: bboxStr,
+        limit: limit.toString(),
+        offset: offset.toString()
+    });
+
+    const response = await apiRequest(`/api/v1/links?${params.toString()}`);
+    if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = `Failed to load links: ${response.statusText}`;
+        try {
+            const errorJson = JSON.parse(errorText);
+            errorMessage = errorJson.detail || errorMessage;
+        } catch (e) {
+            // Ignore JSON parse errors
+        }
+        throw new Error(errorMessage);
+    }
+    return response.json();
+}
+
+/**
  * Display a route geometry on the map
  * @param {L.Map} map - Leaflet map instance
  * @param {Object} geometry - GeoJSON geometry
@@ -531,6 +570,7 @@ if (typeof module !== 'undefined' && module.exports) {
         loadRouteSegmentsData,
         loadRouteDebugData,
         loadRoutesInBbox,
+        loadLinksInBbox,
         displayRouteGeometry,
         createGeoJSONLayer,
         getColorForProperty,

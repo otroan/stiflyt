@@ -1,7 +1,7 @@
 """Route service for processing routes and matrikkelenhet."""
-import psycopg2
+import psycopg
 import json
-from psycopg2.extras import RealDictCursor
+from psycopg.rows import dict_row
 from .database import get_db_connection, db_connection, ROUTE_SCHEMA, TEIG_SCHEMA, validate_schema_name
 
 
@@ -64,7 +64,7 @@ def get_route_segments(conn, rutenummer):
         ORDER BY f.objid;
     """
 
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query, (rutenummer,))
         return cur.fetchall()
 
@@ -111,7 +111,7 @@ def get_route_segments_with_geometry(conn, rutenummer, include_geojson=True):
             ORDER BY f.objid;
         """
 
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query, (rutenummer,))
         return cur.fetchall()
 
@@ -146,7 +146,7 @@ def get_route_segments_with_points(conn, rutenummer):
         ORDER BY f.objid;
     """
 
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query, (rutenummer,))
         return cur.fetchall()
 
@@ -205,7 +205,7 @@ def get_segments_by_objids(conn, segment_objids, include_geojson=True):
             WHERE f.objid IN ({placeholders});
         """
 
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    with conn.cursor(row_factory=dict_row) as cur:
         # Use validated_objids (all values are parameterized, safe from injection)
         cur.execute(query, validated_objids)
         return cur.fetchall()
@@ -470,7 +470,7 @@ def find_matrikkelenhet_intersections(conn, route_geom):
         AND ST_GeometryType(ST_Intersection(t.omrade::geometry, %s::geometry)) IN ('ST_LineString', 'ST_MultiLineString');
     """
 
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query, (route_geom, route_geom, route_geom, route_geom))
         return cur.fetchall()
 
@@ -661,7 +661,7 @@ def search_routes(rutenummer_prefix=None, rutenavn_search=None, organization=Non
         query += " LIMIT %s"
         params.append(limit)
 
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(query, params)
             results = cur.fetchall()
 
@@ -824,7 +824,7 @@ def get_routes_in_bbox(min_lat, min_lng, max_lat, max_lng, rutenummer_prefix=Non
         query += " LIMIT %s"
         params.append(limit)
 
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(query, params)
             results = cur.fetchall()
 

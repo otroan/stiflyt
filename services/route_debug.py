@@ -1,7 +1,7 @@
 """Debugging utilities for route data quality issues."""
-import psycopg2
+import psycopg
 import json
-from psycopg2.extras import RealDictCursor
+from psycopg.rows import dict_row
 from .database import get_db_connection, db_connection, ROUTE_SCHEMA
 from .route_connections import find_segment_connections, find_sequential_connections
 from .route_service import parse_geojson_string, get_route_segments_with_geometry
@@ -26,7 +26,7 @@ def analyze_route_segments(conn, rutenummer):
         ORDER BY f.objid;
     """
 
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+    with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query, (rutenummer,))
         segments = cur.fetchall()
 
@@ -78,7 +78,7 @@ def analyze_route_segments(conn, rutenummer):
                 ST_StartPoint(%s::geometry) as start_point,
                 ST_EndPoint(%s::geometry) as end_point;
         """
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(points_query, (seg['senterlinje'], seg['senterlinje']))
             points = cur.fetchone()
             seg_with_points = seg.copy()

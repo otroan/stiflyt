@@ -2,7 +2,7 @@
 Shared module for finding connections between route segments.
 """
 import json
-from psycopg2.extras import RealDictCursor
+from psycopg.rows import dict_row
 from .database import ROUTE_SCHEMA, validate_schema_name
 from .route_service import parse_geojson_string
 
@@ -114,7 +114,7 @@ def find_segment_connections(conn, segment_objids, route_schema=ROUTE_SCHEMA):
 
     for conn_type in connection_types:
         query = _build_connection_query(conn_type, placeholders, route_schema)
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
             # Use validated_objids (all values are parameterized, safe from injection)
             cur.execute(query, validated_objids + validated_objids)
             results = cur.fetchall()
@@ -171,7 +171,7 @@ def find_sequential_connections(conn, segments, include_geo_json=False):
                     ST_AsGeoJSON(ST_Transform(%s::geometry, 4326)) as end_point_geojson,
                     ST_AsGeoJSON(ST_Transform(%s::geometry, 4326)) as start_point_geojson;
             """
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(distance_query, (
                     seg1['end_point'], seg2['start_point'],
                     seg1['end_point'], seg2['start_point']
