@@ -35,6 +35,14 @@
         .header h1 {
             font-size: 1.5rem;
             font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .header-logo {
+            height: 2rem;
+            width: auto;
         }
 
         .controls {
@@ -540,7 +548,10 @@
 </head>
 <body>
     <div class="header">
-        <h1>🗺️ Stiflyt Route Viewer</h1>
+        <h1>
+            <img src="/images/stiflyt.png" alt="Stiflyt Logo" class="header-logo">
+            Stiflyt Grunneiere
+        </h1>
         <div class="controls">
             <div class="search-container">
                 <input type="text" id="searchInput" placeholder="Søk etter rute (f.eks. bre, skjåk, DNT)" style="width: 250px;">
@@ -655,6 +666,7 @@
 
     <!-- Links viewer -->
     <script src="js/links-viewer.js"></script>
+    <script src="js/anchor-nodes-viewer.js"></script>
 
     <script>
         // Initialize map
@@ -696,6 +708,12 @@
 
         // Initialize links viewer (enabled by default)
         const linksViewer = new LinksViewer(map, layerControl, { enabled: true });
+
+        // Initialize anchor nodes viewer (enabled by default)
+        const anchorNodesViewer = new AnchorNodesViewer(map, layerControl, linksViewer, { enabled: true });
+
+        // Make linksViewer available globally for anchor nodes hover effects
+        window.linksViewer = linksViewer;
 
         // Configuration
         const BACKEND_URL = CommonConfig.getBackendUrl();
@@ -1040,6 +1058,7 @@
                             linkId: linkId,
                             aNode: prop.link_a_node,
                             bNode: prop.link_b_node,
+                            // Note: Node names are available from anchor_nodes, not from links
                             properties: []
                         });
                     }
@@ -1053,12 +1072,18 @@
                 );
 
                 for (const linkGroup of sortedLinks) {
+                    // Build endpoint display (node names come from anchor_nodes, not links)
+                    let endpointDisplay = '';
+                    if (linkGroup.aNode || linkGroup.bNode) {
+                        endpointDisplay = `(Node ${linkGroup.aNode} → Node ${linkGroup.bNode})`;
+                    }
+
                     // Link header row
                     html += `
                         <tr class="link-group-header" style="background-color: #e9ecef; font-weight: bold;">
                             <td colspan="5">
                                 🔗 Link ${linkGroup.linkId}
-                                ${linkGroup.aNode ? `(Node ${linkGroup.aNode} → ${linkGroup.bNode})` : ''}
+                                ${endpointDisplay}
                                 <small style="font-weight: normal; color: #6c757d;">
                                     (${linkGroup.properties.length} eiendommer)
                                 </small>
@@ -1691,15 +1716,18 @@
         map.on('moveend', () => {
             // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
             linksViewer.loadLinksInBboxDebounced();
+            anchorNodesViewer.loadAnchorNodesInBboxDebounced();
         });
 
         map.on('zoomend', () => {
             // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
             linksViewer.loadLinksInBboxDebounced();
+            anchorNodesViewer.loadAnchorNodesInBboxDebounced();
         });
 
-        // Load links in initial view (routes disabled)
+        // Load links and anchor nodes in initial view (routes disabled)
         linksViewer.loadLinksInBboxDebounced();
+        anchorNodesViewer.loadAnchorNodesInBboxDebounced();
 
         // Optional: Add UI controls for filtering bounding box routes
         // This could be added to the header controls section
@@ -1884,6 +1912,7 @@
                                     link_id: linkId,
                                     link_a_node: linkProps.a_node,
                                     link_b_node: linkProps.b_node
+                                    // Note: Node names are available from anchor_nodes, not from links
                                 }));
 
                                 console.log(`Link ${linkId} processed: ${matrikkelenhetVector.length} matrikkelenheter`);
@@ -1892,6 +1921,7 @@
                                     linkId: linkId,
                                     aNode: linkProps.a_node,
                                     bNode: linkProps.b_node,
+                                    // Note: Node names are available from anchor_nodes, not from links
                                     lengthM: linkProps.length_m || 0,
                                     geometry: geometry,
                                     matrikkelenhet_vector: matrikkelenhetVector
@@ -1979,6 +2009,7 @@
                             link_id: r.linkId,
                             a_node: r.aNode,
                             b_node: r.bNode,
+                            // Note: Node names are available from anchor_nodes, not from links
                             length_m: r.lengthM
                         }))
                     };

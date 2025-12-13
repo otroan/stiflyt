@@ -272,6 +272,16 @@ class LinksViewer {
 
                     // Create tooltip content with route information
                     let tooltipContent = null;
+
+                    // Build endpoint section (just node IDs - names come from anchor_nodes)
+                    const endpointSection = `
+                        <div style="margin: 5px 0; padding: 5px 0; border-top: 1px solid #ddd; border-bottom: 1px solid #ddd;">
+                            <small><strong>Endepunkter:</strong></small><br>
+                            <small>Fra: Node ${aNode}</small><br>
+                            <small>Til: Node ${bNode}</small>
+                        </div>
+                    `;
+
                     if (routes && routes.length > 0) {
                         // Build tooltip with route information
                         const routeList = routes.map(route => {
@@ -291,6 +301,7 @@ class LinksViewer {
                             <div style="max-width: 400px;">
                                 <strong>Link ${linkId}</strong><br>
                                 <small>Lengde: ${lengthKm.toFixed(2)} km</small>
+                                ${endpointSection}
                                 ${routes.length > 1 ? `<br><strong>Ruter (${routes.length}):</strong>` : '<br><strong>Rute:</strong>'}
                                 ${routeList}
                             </div>
@@ -300,7 +311,8 @@ class LinksViewer {
                         tooltipContent = `
                             <div style="max-width: 200px;">
                                 <strong>Link ${linkId}</strong><br>
-                                <small>Lengde: ${lengthKm.toFixed(2)} km</small><br>
+                                <small>Lengde: ${lengthKm.toFixed(2)} km</small>
+                                ${endpointSection}
                                 <small style="color: #999;">Ingen ruter</small>
                             </div>
                         `;

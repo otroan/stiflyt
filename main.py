@@ -32,6 +32,10 @@ if frontend_path.exists():
     js_path = frontend_path / "js"
     if js_path.exists():
         app.mount("/js", StaticFiles(directory=str(js_path)), name="js")
+    # Mount images directory for easier access
+    images_path = frontend_path / "images"
+    if images_path.exists():
+        app.mount("/images", StaticFiles(directory=str(images_path)), name="images")
 
     @app.get("/")
     async def serve_frontend():

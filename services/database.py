@@ -13,9 +13,13 @@ SOCKET_DIR = os.getenv("DB_SOCKET_DIR", "/var/run/postgresql")
 DB_NAME = os.getenv("DB_NAME", "matrikkel")
 DB_USER = os.getenv("DB_USER", os.getenv("USER"))
 
-# Schema names
-ROUTE_SCHEMA = "turogfriluftsruter_b9b25c7668da494b9894d492fc35290d"
-TEIG_SCHEMA = "matrikkeleneiendomskartteig_d56c3a44c39b43ae8081f08a97a28c7d"
+# Schema name prefixes (hash suffix changes on each download)
+ROUTE_SCHEMA_PREFIX = "turogfriluftsruter_"
+TEIG_SCHEMA_PREFIX = "matrikkeleneiendomskartteig_"
+
+# Cached schema names (will be discovered dynamically)
+_ROUTE_SCHEMA_CACHE = None
+_TEIG_SCHEMA_CACHE = None
 
 
 def validate_schema_name(schema_name):
@@ -34,6 +38,130 @@ def validate_schema_name(schema_name):
     # Allow alphanumeric, underscores, and hyphens (common in schema names)
     import re
     return bool(re.match(r'^[a-zA-Z0-9_-]+$', schema_name))
+
+
+def discover_schema(conn, prefix):
+    """
+    Dynamically discover a schema name by prefix.
+    The schema name contains a hash that can change on each download.
+
+    Args:
+        conn: Database connection
+        prefix: Schema name prefix (e.g., "turogfriluftsruter_")
+
+    Returns:
+        str: Schema name if found, None otherwise
+    """
+    query = """
+        SELECT schema_name
+        FROM information_schema.schemata
+        WHERE schema_name LIKE %s
+        ORDER BY schema_name
+        LIMIT 1;
+    """
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (f"{prefix}%",))
+            result = cur.fetchone()
+            if result:
+                schema_name = result[0]
+                # Validate schema name for safety
+                if validate_schema_name(schema_name):
+                    return schema_name
+    except Exception as e:
+        print(f"Error discovering schema with prefix '{prefix}': {str(e)}")
+
+    return None
+
+
+def get_route_schema(conn=None):
+    """
+    Get the route schema name, discovering it dynamically if needed.
+    Results are cached to avoid repeated database queries.
+
+    Args:
+        conn: Optional database connection. If None, a new connection is created.
+
+    Returns:
+        str: Route schema name
+    """
+    global _ROUTE_SCHEMA_CACHE
+
+    if _ROUTE_SCHEMA_CACHE is not None:
+        return _ROUTE_SCHEMA_CACHE
+
+    # Try to get from environment variable first
+    env_schema = os.getenv("ROUTE_SCHEMA")
+    if env_schema and validate_schema_name(env_schema):
+        _ROUTE_SCHEMA_CACHE = env_schema
+        return _ROUTE_SCHEMA_CACHE
+
+    # Discover dynamically
+    if conn is None:
+        with db_connection() as temp_conn:
+            _ROUTE_SCHEMA_CACHE = discover_schema(temp_conn, ROUTE_SCHEMA_PREFIX)
+    else:
+        _ROUTE_SCHEMA_CACHE = discover_schema(conn, ROUTE_SCHEMA_PREFIX)
+
+    if _ROUTE_SCHEMA_CACHE is None:
+        raise ValueError(f"Could not discover route schema with prefix '{ROUTE_SCHEMA_PREFIX}'. "
+                        "Please set ROUTE_SCHEMA environment variable or ensure schema exists.")
+
+    return _ROUTE_SCHEMA_CACHE
+
+
+def get_teig_schema(conn=None):
+    """
+    Get the teig schema name, discovering it dynamically if needed.
+    Results are cached to avoid repeated database queries.
+
+    Args:
+        conn: Optional database connection. If None, a new connection is created.
+
+    Returns:
+        str: Teig schema name
+    """
+    global _TEIG_SCHEMA_CACHE
+
+    if _TEIG_SCHEMA_CACHE is not None:
+        return _TEIG_SCHEMA_CACHE
+
+    # Try to get from environment variable first
+    env_schema = os.getenv("TEIG_SCHEMA")
+    if env_schema and validate_schema_name(env_schema):
+        _TEIG_SCHEMA_CACHE = env_schema
+        return _TEIG_SCHEMA_CACHE
+
+    # Discover dynamically
+    if conn is None:
+        with db_connection() as temp_conn:
+            _TEIG_SCHEMA_CACHE = discover_schema(temp_conn, TEIG_SCHEMA_PREFIX)
+    else:
+        _TEIG_SCHEMA_CACHE = discover_schema(conn, TEIG_SCHEMA_PREFIX)
+
+    if _TEIG_SCHEMA_CACHE is None:
+        raise ValueError(f"Could not discover teig schema with prefix '{TEIG_SCHEMA_PREFIX}'. "
+                        "Please set TEIG_SCHEMA environment variable or ensure schema exists.")
+
+    return _TEIG_SCHEMA_CACHE
+
+
+# For backward compatibility: provide module-level variables
+# These will be initialized lazily on first access using __getattr__
+def __getattr__(name):
+    """Lazy initialization of schema names for backward compatibility."""
+    if name == 'ROUTE_SCHEMA':
+        global _ROUTE_SCHEMA_CACHE
+        if _ROUTE_SCHEMA_CACHE is None:
+            _ROUTE_SCHEMA_CACHE = get_route_schema()
+        return _ROUTE_SCHEMA_CACHE
+    elif name == 'TEIG_SCHEMA':
+        global _TEIG_SCHEMA_CACHE
+        if _TEIG_SCHEMA_CACHE is None:
+            _TEIG_SCHEMA_CACHE = get_teig_schema()
+        return _TEIG_SCHEMA_CACHE
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
 def quote_identifier(identifier):
@@ -102,4 +230,3 @@ def db_connection():
     finally:
         if conn is not None:
             conn.close()
-

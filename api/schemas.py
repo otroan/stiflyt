@@ -220,3 +220,17 @@ class ExcelReportRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None  # Optional metadata (rutenummer, rutenavn, total_length_km, etc.)
     title: Optional[str] = "Rapport"  # Title for the report
 
+
+class AnchorNodeItem(BaseModel):
+    """Anchor node information."""
+    node_id: int
+    navn: Optional[str] = None
+    navn_kilde: Optional[str] = None
+    navn_distance_m: Optional[float] = None
+
+
+class AnchorNodeResponse(BaseModel):
+    """Response for anchor node lookup (without geometry)."""
+    nodes: List[AnchorNodeItem]
+    total: int
+

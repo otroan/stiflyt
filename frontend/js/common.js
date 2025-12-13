@@ -173,6 +173,52 @@ async function loadRoutesInBbox(bbox, filters = {}) {
 }
 
 /**
+ * Load anchor nodes by node IDs or bounding box
+ * @param {Object} options - Options object
+ * @param {Array<number>} options.nodeIds - Array of node IDs (optional)
+ * @param {Object} options.bbox - Bounding box {min_lat, min_lng, max_lat, max_lng} (optional)
+ * @returns {Promise<Object>} GeoJSON FeatureCollection with anchor nodes
+ */
+async function loadAnchorNodes(options = {}) {
+    const { nodeIds, bbox } = options;
+
+    if (nodeIds && nodeIds.length > 0) {
+        const nodeIdsStr = nodeIds.join(',');
+        const response = await apiRequest(`/api/v1/anchor-nodes?node_ids=${nodeIdsStr}`);
+        if (!response.ok) {
+            const errorText = await response.text();
+            let errorMessage = `Failed to load anchor nodes: ${response.statusText}`;
+            try {
+                const errorJson = JSON.parse(errorText);
+                errorMessage = errorJson.detail || errorMessage;
+            } catch (e) {
+                // Ignore JSON parse errors
+            }
+            throw new Error(errorMessage);
+        }
+        return response.json();
+    } else if (bbox) {
+        const { min_lat, min_lng, max_lat, max_lng } = bbox;
+        const bboxStr = `${min_lng},${min_lat},${max_lng},${max_lat}`;
+        const response = await apiRequest(`/api/v1/anchor-nodes?bbox=${bboxStr}`);
+        if (!response.ok) {
+            const errorText = await response.text();
+            let errorMessage = `Failed to load anchor nodes: ${response.statusText}`;
+            try {
+                const errorJson = JSON.parse(errorText);
+                errorMessage = errorJson.detail || errorMessage;
+            } catch (e) {
+                // Ignore JSON parse errors
+            }
+            throw new Error(errorMessage);
+        }
+        return response.json();
+    } else {
+        return { type: "FeatureCollection", features: [] };
+    }
+}
+
+/**
  * Load links within a bounding box
  * @param {Object} bbox - Bounding box {min_lat, min_lng, max_lat, max_lng}
  * @param {Object} options - Optional options {limit, offset}
@@ -571,6 +617,7 @@ if (typeof module !== 'undefined' && module.exports) {
         loadRouteDebugData,
         loadRoutesInBbox,
         loadLinksInBbox,
+        loadAnchorNodes,
         displayRouteGeometry,
         createGeoJSONLayer,
         getColorForProperty,

@@ -8,11 +8,11 @@ from typing import Optional, Callable, Any, Annotated
 from fastapi import APIRouter, HTTPException, Query, Path, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest
+from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, AnchorNodeItem, AnchorNodeResponse
 from services.route_service import get_route_data, search_routes, get_route_list, get_route_segments_data, get_routes_in_bbox, RouteNotFoundError, RouteDataError
 from services.route_debug import get_route_debug_info
 from services.route_geometry import get_corrected_route_geometry
-from services.database import get_db_connection, db_connection, ROUTE_SCHEMA, quote_identifier
+from services.database import get_db_connection, db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
 from services.excel_report import generate_owners_excel, generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
 import psycopg
@@ -513,10 +513,11 @@ async def get_links(
     with db_connection() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             # Use quoted schema and table name for safety
-            schema_quoted = quote_identifier(ROUTE_SCHEMA)
-            # Use links_with_routes view which includes route information
-            view_quoted = quote_identifier("links_with_routes")
-            full_view_name = f"{schema_quoted}.{view_quoted}"
+            route_schema = get_route_schema(conn)
+            schema_quoted = quote_identifier(route_schema)
+            # Use links_with_routes for route information (links only show data from underlying segments)
+            routes_view_quoted = quote_identifier("links_with_routes")
+            full_routes_view_name = f"{schema_quoted}.{routes_view_quoted}"
 
             query = f"""
                 SELECT
@@ -529,7 +530,7 @@ async def get_links(
                     l.rutetype_list,
                     l.vedlikeholdsansvarlig_list,
                     ST_AsGeoJSON(ST_Transform(l.geom, 4326))::json as geometry
-                FROM {full_view_name} l
+                FROM {full_routes_view_name} l
                 WHERE l.geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)
                     AND l.geom IS NOT NULL
                 ORDER BY l.link_id
@@ -615,3 +616,149 @@ async def get_links(
         content=feature_collection,
         media_type="application/geo+json"
     )
+
+
+@router.get("/anchor-nodes")
+async def get_anchor_nodes(
+    node_ids: Annotated[Optional[str], Query(description="Comma-separated list of node IDs")] = None,
+    bbox: Annotated[Optional[str], Query(description="Bounding box as 'xmin,ymin,xmax,ymax'")] = None,
+    limit: Annotated[int, Query(ge=1, le=1000, description="Maximum number of results")] = 100,
+    offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0
+) -> JSONResponse:
+    """
+    Get anchor nodes with their names and geometry.
+
+    Returns anchor nodes with navn, navn_kilde, navn_distance_m, and geometry.
+    Can filter by specific node_ids, bounding box, or return all nodes (up to limit).
+
+    Example:
+    - /api/v1/anchor-nodes?node_ids=1,2,3
+    - /api/v1/anchor-nodes?bbox=10.0,59.0,11.0,60.0
+    - /api/v1/anchor-nodes?limit=100
+    """
+    try:
+        with db_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                route_schema = get_route_schema(conn)
+                schema_quoted = quote_identifier(route_schema)
+                anchor_nodes_table_quoted = quote_identifier("anchor_nodes")
+                full_anchor_nodes_name = f"{schema_quoted}.{anchor_nodes_table_quoted}"
+
+                # Test if table/view exists by trying a simple query
+                # This works for both tables and materialized views
+                try:
+                    test_query = f"SELECT 1 FROM {full_anchor_nodes_name} LIMIT 1"
+                    cur.execute(test_query)
+                except Exception as test_error:
+                    # Table/view doesn't exist or is not accessible
+                    print(f"Anchor nodes table/view not found: {str(test_error)}")
+                    feature_collection = {
+                        "type": "FeatureCollection",
+                        "features": []
+                    }
+                    return JSONResponse(
+                        content=feature_collection,
+                        media_type="application/geo+json"
+                    )
+
+                if node_ids:
+                    # Filter by specific node IDs
+                    node_id_list = [int(nid.strip()) for nid in node_ids.split(',') if nid.strip().isdigit()]
+                    if not node_id_list:
+                        raise HTTPException(status_code=400, detail="Invalid node_ids format")
+
+                    placeholders = ','.join(['%s'] * len(node_id_list))
+                    query = f"""
+                        SELECT
+                            node_id,
+                            navn,
+                            navn_kilde,
+                            navn_distance_m,
+                            ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
+                        FROM {full_anchor_nodes_name}
+                        WHERE node_id IN ({placeholders})
+                        ORDER BY node_id
+                        LIMIT %s
+                        OFFSET %s
+                    """
+                    cur.execute(query, (*node_id_list, limit, offset))
+                elif bbox:
+                    # Filter by bounding box
+                    try:
+                        xmin, ymin, xmax, ymax = parse_bbox(bbox)
+                    except ValueError as e:
+                        raise HTTPException(status_code=400, detail=str(e))
+
+                    query = f"""
+                        SELECT
+                            node_id,
+                            navn,
+                            navn_kilde,
+                            navn_distance_m,
+                            ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
+                        FROM {full_anchor_nodes_name}
+                        WHERE geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)
+                            AND geom IS NOT NULL
+                        ORDER BY node_id
+                        LIMIT %s
+                        OFFSET %s
+                    """
+                    cur.execute(query, (xmin, ymin, xmax, ymax, LINKS_SRID, limit, offset))
+                else:
+                    # Get all nodes (up to limit)
+                    query = f"""
+                        SELECT
+                            node_id,
+                            navn,
+                            navn_kilde,
+                            navn_distance_m,
+                            ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
+                        FROM {full_anchor_nodes_name}
+                        ORDER BY node_id
+                        LIMIT %s
+                        OFFSET %s
+                    """
+                    cur.execute(query, (limit, offset))
+
+                rows = cur.fetchall()
+
+        # Build GeoJSON FeatureCollection
+        features = []
+        for row in rows:
+            geometry = parse_geometry(row.get("geometry"))
+            if not geometry:
+                continue  # Skip nodes without geometry
+
+            feature = {
+                "type": "Feature",
+                "id": row["node_id"],
+                "geometry": geometry,
+                "properties": {
+                    "node_id": row["node_id"],
+                    "navn": row.get("navn"),
+                    "navn_kilde": row.get("navn_kilde"),
+                    "navn_distance_m": row.get("navn_distance_m")
+                }
+            }
+            features.append(feature)
+
+        feature_collection = {
+            "type": "FeatureCollection",
+            "features": features
+        }
+
+        return JSONResponse(
+            content=feature_collection,
+            media_type="application/geo+json"
+        )
+    except Exception as e:
+        # If table doesn't exist or any other error, return empty FeatureCollection
+        print(f"Error loading anchor nodes: {str(e)}")
+        feature_collection = {
+            "type": "FeatureCollection",
+            "features": []
+        }
+        return JSONResponse(
+            content=feature_collection,
+            media_type="application/geo+json"
+        )
