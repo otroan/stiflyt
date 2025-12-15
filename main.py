@@ -57,13 +57,7 @@ if frontend_path.exists():
             return FileResponse(str(index_path))
         return {"message": "Stiflyt Route API", "version": "0.1.0", "docs": "/docs"}
 
-    @app.get("/debug.html")
-    async def serve_debug():
-        """Serve debug.html."""
-        debug_path = frontend_path / "debug.html"
-        if debug_path.exists():
-            return FileResponse(str(debug_path))
-        return {"error": "debug.html not found"}, 404
+    # debug.html route removed - debug functionality no longer used
 
 
 @app.get("/health")
