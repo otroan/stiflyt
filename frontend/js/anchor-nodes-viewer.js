@@ -215,60 +215,7 @@ class AnchorNodesViewer {
                     offset: [0, -5]
                 });
 
-                // Add hover effects
-                const self = this; // Store reference to AnchorNodesViewer
-                marker.on('mouseover', function(e) {
-                    this.setStyle({
-                        radius: 8,
-                        fillOpacity: 0.8,
-                        weight: 3
-                    });
-                    // Highlight connected links if available
-                    if (self.linksViewer && this._connectedLinks) {
-                        this._connectedLinks.forEach(linkInfo => {
-                            const linkLayer = self.linksViewer.links.get(linkInfo.linkId);
-                            if (linkLayer) {
-                                if (linkLayer.eachLayer) {
-                                    linkLayer.eachLayer(layer => {
-                                        layer.setStyle({ weight: 6, opacity: 1.0 });
-                                    });
-                                } else {
-                                    linkLayer.setStyle({ weight: 6, opacity: 1.0 });
-                                }
-                            }
-                        });
-                    }
-                });
-
-                marker.on('mouseout', function(e) {
-                    this.setStyle({
-                        radius: 6,
-                        fillOpacity: 0.6,
-                        weight: 2
-                    });
-                    // Restore connected links style
-                    if (self.linksViewer && this._connectedLinks) {
-                        this._connectedLinks.forEach(linkInfo => {
-                            const linkLayer = self.linksViewer.links.get(linkInfo.linkId);
-                            if (linkLayer) {
-                                const isSelected = self.linksViewer.selectedLinks.has(linkInfo.linkId);
-                                if (linkLayer.eachLayer) {
-                                    linkLayer.eachLayer(layer => {
-                                        layer.setStyle({
-                                            weight: isSelected ? 5 : 3,
-                                            opacity: isSelected ? 1.0 : 0.7
-                                        });
-                                    });
-                                } else {
-                                    linkLayer.setStyle({
-                                        weight: isSelected ? 5 : 3,
-                                        opacity: isSelected ? 1.0 : 0.7
-                                    });
-                                }
-                            }
-                        });
-                    }
-                });
+                // No hover effects - tooltip only
 
                 // Store connected links on marker for hover effects
                 marker._connectedLinks = connectedLinks;

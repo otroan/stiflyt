@@ -153,6 +153,41 @@ class LinksViewer {
     }
 
     /**
+     * Find all links connected to the same anchor points as a given link
+     * Returns array of linkIds (excluding the given linkId itself)
+     */
+    getConnectedLinks(linkId) {
+        const linkFeature = this.linkData.get(linkId);
+        if (!linkFeature || !linkFeature.properties) {
+            return [];
+        }
+
+        const props = linkFeature.properties;
+        const aNode = props.a_node;
+        const bNode = props.b_node;
+
+        if (aNode === undefined && bNode === undefined) {
+            return [];
+        }
+
+        const connectedLinks = [];
+        for (const [otherLinkId, otherLinkFeature] of this.linkData.entries()) {
+            if (otherLinkId === linkId) {
+                continue; // Skip the link itself
+            }
+
+            const otherProps = otherLinkFeature.properties || {};
+            // Check if this link shares either anchor point
+            if ((otherProps.a_node === aNode || otherProps.b_node === aNode) ||
+                (otherProps.a_node === bNode || otherProps.b_node === bNode)) {
+                connectedLinks.push(otherLinkId);
+            }
+        }
+
+        return connectedLinks;
+    }
+
+    /**
      * Remove links layer group from map and layer control
      */
     remove() {
@@ -341,10 +376,12 @@ class LinksViewer {
                     if (linkLayer) {
                         this.links.set(linkId, linkLayer);
 
-                        // Add click handler for selection and bind tooltips
+                        // Add hover effects and bind tooltips to individual layers after adding to map
                         // Tooltips must be bound AFTER layer is on map to work properly
+                        const self = this;
                         setTimeout(() => {
                             if (linkLayer.eachLayer) {
+                                // MultiLineString - FeatureGroup with multiple layers
                                 linkLayer.eachLayer((layer) => {
                                     // Bind tooltip if pending
                                     if (layer._pendingTooltipContent && layer.bindTooltip) {
@@ -356,33 +393,35 @@ class LinksViewer {
                                                 opacity: 0.95,
                                                 offset: [0, -5]
                                             });
-
-                                            // Manually open/close tooltip on hover
-                                            layer.on('mouseover', function(e) {
-                                                if (this.openTooltip) {
-                                                    this.openTooltip(e.latlng);
-                                                }
-                                            });
-                                            layer.on('mouseout', function(e) {
-                                                if (this.closeTooltip) {
-                                                    this.closeTooltip();
-                                                }
-                                            });
-
                                             delete layer._pendingTooltipContent;
                                         } catch (error) {
                                             console.error('Error binding tooltip to link layer:', error);
                                         }
                                     }
 
-                                    // Click handler for selection only (no popup)
+                                    // Attach tooltip handlers only (no highlighting)
+                                    if (layer.bindTooltip) {
+                                        layer.on('mouseover', function(e) {
+                                            if (this.openTooltip) {
+                                                this.openTooltip(e.latlng);
+                                            }
+                                        });
+                                        layer.on('mouseout', function(e) {
+                                            if (this.closeTooltip) {
+                                                this.closeTooltip();
+                                            }
+                                        });
+                                    }
+
+                                    // Click handler for selection
                                     layer.on('click', (e) => {
                                         L.DomEvent.stopPropagation(e);
-                                        this.toggleLinkSelection(linkId);
+                                        self.toggleLinkSelection(linkId);
                                     });
                                 });
                             } else {
-                                // Single layer
+                                // Single LineString - direct layer
+                                // Bind tooltip if pending
                                 if (linkLayer._pendingTooltipContent && linkLayer.bindTooltip) {
                                     try {
                                         linkLayer.bindTooltip(linkLayer._pendingTooltipContent, {
@@ -392,27 +431,29 @@ class LinksViewer {
                                             opacity: 0.95,
                                             offset: [0, -5]
                                         });
-
-                                        linkLayer.on('mouseover', function(e) {
-                                            if (this.openTooltip) {
-                                                this.openTooltip(e.latlng);
-                                            }
-                                        });
-                                        linkLayer.on('mouseout', function(e) {
-                                            if (this.closeTooltip) {
-                                                this.closeTooltip();
-                                            }
-                                        });
-
                                         delete linkLayer._pendingTooltipContent;
                                     } catch (error) {
                                         console.error('Error binding tooltip to single link layer:', error);
                                     }
                                 }
 
+                                // Attach tooltip handlers only (no highlighting)
+                                if (linkLayer.bindTooltip) {
+                                    linkLayer.on('mouseover', function(e) {
+                                        if (this.openTooltip) {
+                                            this.openTooltip(e.latlng);
+                                        }
+                                    });
+                                    linkLayer.on('mouseout', function(e) {
+                                        if (this.closeTooltip) {
+                                            this.closeTooltip();
+                                        }
+                                    });
+                                }
+
                                 linkLayer.on('click', (e) => {
                                     L.DomEvent.stopPropagation(e);
-                                    this.toggleLinkSelection(linkId);
+                                    self.toggleLinkSelection(linkId);
                                 });
                             }
                         }, 50);
