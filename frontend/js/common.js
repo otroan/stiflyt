@@ -80,6 +80,25 @@ async function searchRoutes(params = {}) {
 }
 
 /**
+ * Search for places (stedsnavn, rutepunkt, rute) with coordinates
+ * @param {string} query - Free text query
+ * @param {number} limit - Max number of results
+ * @returns {Promise<Object>} Search results
+ */
+async function searchPlaces(query, limit = 20) {
+    const params = new URLSearchParams({
+        q: query,
+        limit: limit.toString(),
+    });
+
+    const response = await apiRequest(`/api/v1/search/places?${params.toString()}`);
+    if (!response.ok) {
+        throw new Error(`Place search failed: ${response.statusText}`);
+    }
+    return response.json();
+}
+
+/**
  * Load route data
  * @param {string} rutenummer - Route identifier
  * @returns {Promise<Object>} Route data
@@ -612,6 +631,7 @@ if (typeof module !== 'undefined' && module.exports) {
         initMap,
         apiRequest,
         searchRoutes,
+        searchPlaces,
         loadRouteData,
         loadRouteSegmentsData,
         loadRouteDebugData,

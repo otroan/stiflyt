@@ -65,6 +65,23 @@ class RouteSearchResponse(BaseModel):
     total: int
 
 
+class PlaceSearchResult(BaseModel):
+    """Generic place/route search result with coordinates for map zoom."""
+    id: str
+    type: str  # ruteinfopunkt | stedsnavn | rute
+    title: str
+    subtitle: Optional[str] = None
+    lon: float
+    lat: float
+    rutenummer: Optional[str] = None
+
+
+class PlaceSearchResponse(BaseModel):
+    """Response for place search."""
+    results: List[PlaceSearchResult]
+    total: int
+
+
 class BboxRouteItem(BaseModel):
     """Route item in bounding box response."""
     rutenummer: str

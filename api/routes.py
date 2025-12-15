@@ -8,8 +8,8 @@ from typing import Optional, Callable, Any, Annotated
 from fastapi import APIRouter, HTTPException, Query, Path, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, AnchorNodeItem, AnchorNodeResponse
-from services.route_service import get_route_data, search_routes, get_route_list, get_route_segments_data, get_routes_in_bbox, RouteNotFoundError, RouteDataError
+from .schemas import RouteResponse, ErrorResponse, RouteSearchResponse, RouteListItem, RouteSegmentsResponse, RouteDebugResponse, CorrectedRouteResponse, BboxRouteResponse, BboxRouteItem, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, AnchorNodeItem, AnchorNodeResponse, PlaceSearchResponse
+from services.route_service import get_route_data, search_routes, search_places, get_route_list, get_route_segments_data, get_routes_in_bbox, RouteNotFoundError, RouteDataError
 from services.route_debug import get_route_debug_info
 from services.route_geometry import get_corrected_route_geometry
 from services.database import get_db_connection, db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
@@ -126,6 +126,16 @@ async def search_routes_endpoint(
         routes=route_items,
         total=len(route_items)
     )
+
+
+@router.get("/search/places", response_model=PlaceSearchResponse)
+async def search_places_endpoint(
+    q: str = Query(..., min_length=2, description="Søkestreng for stedsnavn, rutepunkt eller rute"),
+    limit: int = Query(20, ge=1, le=200, description="Maks antall resultater")
+):
+    """Combined search across ruteinfopunkt, stedsnavn og ruter."""
+    results = search_places(q, limit=limit)
+    return PlaceSearchResponse(results=results, total=len(results))
 
 
 @router.get("/routes/bbox", response_model=BboxRouteResponse)
@@ -515,8 +525,27 @@ async def get_links(
             # Use quoted schema and table name for safety
             route_schema = get_route_schema(conn)
             schema_quoted = quote_identifier(route_schema)
-            # Use links_with_routes for route information (links only show data from underlying segments)
-            routes_view_quoted = quote_identifier("links_with_routes")
+            # Discover links table/view (schema hash changes on import)
+            cur.execute(
+                """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = %s
+                      AND table_name IN ('links_with_routes', 'links')
+                    ORDER BY CASE WHEN table_name = 'links_with_routes' THEN 0 ELSE 1 END
+                    LIMIT 1
+                """,
+                (route_schema,),
+            )
+            table_row = cur.fetchone()
+            if not table_row:
+                # No links table present; return empty GeoJSON
+                return JSONResponse(
+                    content={"type": "FeatureCollection", "features": []},
+                    media_type="application/geo+json"
+                )
+
+            routes_view_quoted = quote_identifier(table_row[0])
             full_routes_view_name = f"{schema_quoted}.{routes_view_quoted}"
 
             query = f"""
@@ -641,17 +670,20 @@ async def get_anchor_nodes(
             with conn.cursor(row_factory=dict_row) as cur:
                 route_schema = get_route_schema(conn)
                 schema_quoted = quote_identifier(route_schema)
-                anchor_nodes_table_quoted = quote_identifier("anchor_nodes")
-                full_anchor_nodes_name = f"{schema_quoted}.{anchor_nodes_table_quoted}"
-
-                # Test if table/view exists by trying a simple query
-                # This works for both tables and materialized views
-                try:
-                    test_query = f"SELECT 1 FROM {full_anchor_nodes_name} LIMIT 1"
-                    cur.execute(test_query)
-                except Exception as test_error:
-                    # Table/view doesn't exist or is not accessible
-                    print(f"Anchor nodes table/view not found: {str(test_error)}")
+                # Discover anchor_nodes table/view (schema hash changes on import)
+                cur.execute(
+                    """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = %s
+                          AND table_name = 'anchor_nodes'
+                        LIMIT 1
+                    """,
+                    (route_schema,),
+                )
+                table_row = cur.fetchone()
+                if not table_row:
+                    print("Anchor nodes table/view not found in discovered route schema")
                     feature_collection = {
                         "type": "FeatureCollection",
                         "features": []
@@ -660,6 +692,9 @@ async def get_anchor_nodes(
                         content=feature_collection,
                         media_type="application/geo+json"
                     )
+
+                anchor_nodes_table_quoted = quote_identifier(table_row[0])
+                full_anchor_nodes_name = f"{schema_quoted}.{anchor_nodes_table_quoted}"
 
                 if node_ids:
                     # Filter by specific node IDs

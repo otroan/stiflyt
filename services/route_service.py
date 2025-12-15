@@ -2,7 +2,14 @@
 import psycopg
 import json
 from psycopg.rows import dict_row
-from .database import get_db_connection, db_connection, ROUTE_SCHEMA, TEIG_SCHEMA, validate_schema_name
+from .database import (
+    get_db_connection,
+    db_connection,
+    ROUTE_SCHEMA,
+    TEIG_SCHEMA,
+    validate_schema_name,
+    get_route_schema,
+)
 
 
 class RouteNotFoundError(Exception):
@@ -676,6 +683,202 @@ def search_routes(rutenummer_prefix=None, rutenavn_search=None, organization=Non
                     unique_results.append(row)
 
             return unique_results
+
+
+def _choose_first_available(columns, candidates):
+    """Return the first column from candidates that exists in columns."""
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def search_places(query: str, limit: int = 20):
+    """
+    Search across ruteinfopunkt, stedsnavn and routes to support map zoom.
+
+    Returns items with coordinates so the frontend can pan/zoom immediately.
+    """
+    if not isinstance(limit, int) or limit < 1 or limit > 200:
+        raise ValueError(f"Invalid limit: {limit}. Must be between 1 and 200.")
+
+    if not query or not isinstance(query, str):
+        return []
+
+    results = []
+    seen_ids = set()
+
+    with db_connection() as conn:
+        route_schema = get_route_schema(conn)
+        if not validate_schema_name(route_schema):
+            raise ValueError(f"Invalid ROUTE_SCHEMA: {route_schema}")
+
+        # 1) Search ruteinfopunkt (names stored with geometry)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = %s AND table_name = 'ruteinfopunkt'
+                    """,
+                    (route_schema,),
+                )
+                columns = [row[0] for row in cur.fetchall()]
+
+            name_col = _choose_first_available(
+                columns, ['navn', 'name', 'stedsnavn', 'punktnavn', 'beskrivelse', 'tekst']
+            )
+            geom_col = _choose_first_available(
+                columns, ['geom', 'geometry', 'posisjon', 'location', 'punkt']
+            )
+
+            if name_col and geom_col:
+                sub_limit = max(5, min(limit, 10))
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        f"""
+                            SELECT
+                                objid,
+                                {name_col} AS name,
+                                ST_X(ST_Centroid(ST_Transform({geom_col}::geometry, 4326))) AS lon,
+                                ST_Y(ST_Centroid(ST_Transform({geom_col}::geometry, 4326))) AS lat
+                            FROM {route_schema}.ruteinfopunkt
+                            WHERE {name_col} ILIKE %s
+                            ORDER BY {name_col}
+                            LIMIT %s
+                        """,
+                        (f"%{query}%", sub_limit),
+                    )
+                    for row in cur.fetchall():
+                        if row['objid'] in seen_ids:
+                            continue
+                        seen_ids.add(row['objid'])
+                        if row['lon'] is None or row['lat'] is None:
+                            continue
+                        results.append(
+                            {
+                                'id': f"ruteinfopunkt-{row['objid']}",
+                                'type': 'ruteinfopunkt',
+                                'title': str(row['name']) if row['name'] else 'Uten navn',
+                                'lon': float(row['lon']),
+                                'lat': float(row['lat']),
+                            }
+                        )
+        except Exception as e:
+            print(f"Ruteinfopunkt search failed: {e}")
+
+        # 2) Search stedsnavn (schema/table discovered dynamically)
+        try:
+            stedsnavn_schema = None
+            stedsnavn_table = None
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                        SELECT table_schema, table_name
+                        FROM information_schema.tables
+                        WHERE (table_schema LIKE '%stedsnavn%' OR table_name LIKE '%stedsnavn%' OR table_name LIKE '%place%name%')
+                        AND table_type = 'BASE TABLE'
+                        ORDER BY table_schema, table_name
+                        LIMIT 1;
+                    """
+                )
+                result = cur.fetchone()
+                if result:
+                    stedsnavn_schema, stedsnavn_table = result
+
+            if stedsnavn_schema and stedsnavn_table and validate_schema_name(stedsnavn_schema) and validate_schema_name(stedsnavn_table):
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                            SELECT column_name
+                            FROM information_schema.columns
+                            WHERE table_schema = %s AND table_name = %s
+                        """,
+                        (stedsnavn_schema, stedsnavn_table),
+                    )
+                    columns = [row[0] for row in cur.fetchall()]
+
+                name_col = _choose_first_available(columns, ['navn', 'name', 'stedsnavn'])
+                geom_col = _choose_first_available(columns, ['geom', 'geometry', 'posisjon', 'punkt'])
+
+                if name_col and geom_col:
+                    sub_limit = max(5, min(limit, 10))
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(
+                            f"""
+                                SELECT
+                                    objid,
+                                    {name_col} AS name,
+                                    ST_X(ST_Centroid(ST_Transform({geom_col}::geometry, 4326))) AS lon,
+                                    ST_Y(ST_Centroid(ST_Transform({geom_col}::geometry, 4326))) AS lat
+                                FROM "{stedsnavn_schema}"."{stedsnavn_table}"
+                                WHERE {name_col} ILIKE %s
+                                ORDER BY {name_col}
+                                LIMIT %s
+                            """,
+                            (f"%{query}%", sub_limit),
+                        )
+                        for row in cur.fetchall():
+                            if row['objid'] in seen_ids:
+                                continue
+                            seen_ids.add(row['objid'])
+                            if row['lon'] is None or row['lat'] is None:
+                                continue
+                            results.append(
+                                {
+                                    'id': f"stedsnavn-{row['objid']}",
+                                    'type': 'stedsnavn',
+                                    'title': str(row['name']) if row['name'] else 'Uten navn',
+                                    'lon': float(row['lon']),
+                                    'lat': float(row['lat']),
+                                }
+                            )
+        except Exception as e:
+            print(f"Stedsnavn search failed: {e}")
+
+        # 3) Search routes (by rutenummer or name) and return centroid
+        try:
+            sub_limit = max(5, min(limit, 10))
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    f"""
+                        SELECT
+                            fi.rutenummer,
+                            fi.rutenavn,
+                            ST_X(ST_Centroid(ST_Transform(f.senterlinje::geometry, 4326))) AS lon,
+                            ST_Y(ST_Centroid(ST_Transform(f.senterlinje::geometry, 4326))) AS lat
+                        FROM {route_schema}.fotrute f
+                        JOIN {route_schema}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+                        WHERE fi.rutenummer ILIKE %s OR fi.rutenavn ILIKE %s
+                        ORDER BY fi.rutenummer
+                        LIMIT %s
+                    """,
+                    (f"%{query}%", f"%{query}%", sub_limit),
+                )
+                for row in cur.fetchall():
+                    result_id = f"rute-{row['rutenummer']}"
+                    if result_id in seen_ids:
+                        continue
+                    seen_ids.add(result_id)
+                    if row['lon'] is None or row['lat'] is None:
+                        continue
+                    results.append(
+                        {
+                            'id': result_id,
+                            'type': 'rute',
+                            'title': row['rutenavn'] or row['rutenummer'],
+                            'subtitle': row['rutenummer'],
+                            'lon': float(row['lon']),
+                            'lat': float(row['lat']),
+                            'rutenummer': row['rutenummer'],
+                        }
+                    )
+        except Exception as e:
+            print(f"Route centroid search failed: {e}")
+
+    # Preserve insertion order, respect limit
+    return results[:limit]
 
 
 def get_route_list(limit=1000):

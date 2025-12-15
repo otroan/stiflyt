@@ -550,18 +550,13 @@
     <div class="header">
         <h1>
             <img src="/images/stiflyt.png" alt="Stiflyt Logo" class="header-logo">
-            Stiflyt Grunneiere
+            Grunneier
         </h1>
         <div class="controls">
             <div class="search-container">
-                <input type="text" id="searchInput" placeholder="Søk etter rute (f.eks. bre, skjåk, DNT)" style="width: 250px;">
-                <button id="searchBtn">Søk</button>
+                <input type="text" id="searchInput" placeholder="Søk etter sted, rutepunkt eller rute" style="width: 270px;">
                 <div class="search-results" id="searchResults"></div>
             </div>
-            <input type="text" id="routeFilter" placeholder="Filtrer ruter (prefix, f.eks. bre)" style="width: 200px;" title="Filtrer visuelle ruter etter rutenummer (prefix)">
-            <input type="text" id="routeInput" placeholder="Rutenummer (f.eks. bre10)" value="">
-            <button id="loadRoute">Last rute</button>
-            <button id="toggleLinksBtn" style="background: #e74c3c; margin-left: 0.5rem;" title="Vis/skjul nettverkslenker">🔗 Lenker</button>
             <button id="getLinkOwnersBtn" style="background: #9b59b6; display: none; margin-left: 0.5rem;" title="Hent eiere for valgte lenker">👥 Hent eiere (lenker)</button>
             <button id="clearLinkSelectionBtn" style="background: #e74c3c; display: none; margin-left: 0.5rem;" title="Fjern valg av lenker">🗑️ Fjern valg</button>
             <button id="getOwnersBtn" style="background: #9b59b6; display: none; margin-left: 0.5rem;">Hent eiere</button>
@@ -677,30 +672,8 @@
         const overlayMaps = {};
         const layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
 
-        // Add box zoom control using Leaflet.ZoomBox plugin
-        if (typeof L.control.zoomBox === 'function') {
-            const zoomBoxControl = L.control.zoomBox({
-                modal: false,
-                title: 'Tegn rektangel for å zoome inn',
-                position: 'topright', // Try topright to see if it's a positioning issue
-                content: '📐' // Add visible icon
-            });
-            zoomBoxControl.addTo(map);
-            console.log('Box zoom control added successfully');
-
-            // Debug: Check if control is in DOM
-            setTimeout(() => {
-                const zoomBoxElement = document.querySelector('.leaflet-zoom-box-icon');
-                const allControls = document.querySelectorAll('.leaflet-control');
-                console.log('All leaflet controls:', allControls.length);
-                console.log('Zoom box element found:', zoomBoxElement);
-                if (zoomBoxElement) {
-                    console.log('Zoom box element styles:', window.getComputedStyle(zoomBoxElement));
-                }
-            }, 200);
-        } else {
-            console.error('Leaflet.ZoomBox plugin not loaded. Check CDN links.');
-        }
+        // Use built-in Leaflet boxZoom (Shift + drag) — no plugin needed
+        map.boxZoom.enable();
 
         // Initialize route viewer
         // Segments and components layers are disabled by default - only enabled in debug view
@@ -1594,50 +1567,51 @@
             });
         }
 
-        // Search routes function (using common utility)
-        async function performSearch(query) {
-            console.log('performSearch called with query:', query);
+        // Search places (stedsnavn, rutepunkt, rute) for map zoom
+        async function performPlaceSearch(query) {
             if (!query || query.length < 2) {
                 document.getElementById('searchResults').classList.remove('active');
                 return;
             }
 
             try {
-                const data = await searchRoutes({ prefix: query, limit: 20 });
-                console.log('Search results:', data);
-                displaySearchResults(data.routes || []);
+                const data = await searchPlaces(query, 20);
+                displayPlaceResults(data.results || []);
             } catch (error) {
-                console.error('Search error:', error);
+                console.error('Søkefeil:', error);
                 alert(`Søkefeil: ${error.message}`);
             }
         }
 
-        // Display search results
-        function displaySearchResults(routes) {
+        // Display place search results
+        function displayPlaceResults(results) {
             const resultsDiv = document.getElementById('searchResults');
 
-            if (routes.length === 0) {
-                resultsDiv.innerHTML = '<div class="search-result-item">Ingen ruter funnet</div>';
+            if (results.length === 0) {
+                resultsDiv.innerHTML = '<div class="search-result-item">Ingen treff</div>';
                 resultsDiv.classList.add('active');
                 return;
             }
 
-            resultsDiv.innerHTML = routes.map(route => `
-                <div class="search-result-item" onclick="selectRoute('${route.rutenummer}')">
-                    <strong>${route.rutenummer}</strong> - ${route.rutenavn || 'Ukjent'}
-                    ${route.vedlikeholdsansvarlig ? `<small>${route.vedlikeholdsansvarlig}</small>` : ''}
+            resultsDiv.innerHTML = results.map(result => `
+                <div class="search-result-item" onclick='selectPlace(${JSON.stringify(result)})'>
+                    <strong>${result.title || 'Uten navn'}</strong>
+                    ${result.subtitle ? `<small>${result.subtitle}</small>` : ''}
+                    ${result.type ? `<small>${result.type}</small>` : ''}
                 </div>
             `).join('');
 
             resultsDiv.classList.add('active');
         }
 
-        // Select route from search results
-        function selectRoute(rutenummer) {
-            document.getElementById('routeInput').value = rutenummer;
+        // Select place and zoom map
+        function selectPlace(result) {
             document.getElementById('searchResults').classList.remove('active');
-            document.getElementById('searchInput').value = '';
-            loadRoute(rutenummer);
+            document.getElementById('searchInput').value = result.title || '';
+
+            if (result.lat && result.lon) {
+                map.setView([result.lat, result.lon], 14);
+            }
         }
 
         // Close search results when clicking outside
@@ -1649,41 +1623,10 @@
         });
 
         // Event listeners - ensure elements exist before adding listeners
-        const loadRouteBtn = document.getElementById('loadRoute');
-        const searchBtn = document.getElementById('searchBtn');
-
-        if (loadRouteBtn) {
-            loadRouteBtn.addEventListener('click', () => {
-                const rutenummer = document.getElementById('routeInput').value.trim();
-                if (rutenummer) {
-                    console.log('Loading route:', rutenummer);
-                    loadRoute(rutenummer);
-                } else {
-                    console.warn('No route number entered');
-                }
-            });
-        } else {
-            console.error('loadRoute button not found!');
-        }
-
-        if (searchBtn) {
-            searchBtn.addEventListener('click', () => {
-                const query = document.getElementById('searchInput').value.trim();
-                if (query) {
-                    console.log('Searching for:', query);
-                    performSearch(query);
-                } else {
-                    console.warn('No search query entered');
-                }
-            });
-        } else {
-            console.error('searchBtn button not found!');
-        }
-
         document.getElementById('searchInput').addEventListener('input', (e) => {
             const query = e.target.value.trim();
             if (query.length >= 2) {
-                performSearch(query);
+                performPlaceSearch(query);
             } else {
                 document.getElementById('searchResults').classList.remove('active');
             }
@@ -1693,14 +1636,8 @@
             if (e.key === 'Enter') {
                 const query = e.target.value.trim();
                 if (query) {
-                    performSearch(query);
+                    performPlaceSearch(query);
                 }
-            }
-        });
-
-        document.getElementById('routeInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                document.getElementById('loadRoute').click();
             }
         });
 
@@ -1743,36 +1680,7 @@
         // Make loadRoute available globally so bbox route click handlers can use it
         window.loadRoute = loadRoute;
 
-        // Toggle links display (enabled by default)
-        const toggleLinksBtn = document.getElementById('toggleLinksBtn');
-        if (toggleLinksBtn) {
-            let linksEnabled = true; // Start enabled
-            // Set initial button state
-            toggleLinksBtn.style.background = '#27ae60'; // Green when enabled
-            toggleLinksBtn.textContent = '🔗 Lenker (på)';
-
-            toggleLinksBtn.addEventListener('click', () => {
-                linksEnabled = !linksEnabled;
-                if (linksEnabled) {
-                    linksViewer.enable();
-                    toggleLinksBtn.style.background = '#27ae60'; // Green when enabled
-                    toggleLinksBtn.textContent = '🔗 Lenker (på)';
-                    // Selection is always enabled, no button needed
-                } else {
-                    linksViewer.disable();
-                    toggleLinksBtn.style.background = '#e74c3c'; // Red when disabled
-                    toggleLinksBtn.textContent = '🔗 Lenker';
-                    // Hide selection controls when links are disabled
-                    const getLinkOwnersBtn = document.getElementById('getLinkOwnersBtn');
-                    const clearLinkSelectionBtn = document.getElementById('clearLinkSelectionBtn');
-                    if (getLinkOwnersBtn) getLinkOwnersBtn.style.display = 'none';
-                    if (clearLinkSelectionBtn) clearLinkSelectionBtn.style.display = 'none';
-                }
-            });
-        }
-
-        // Link selection is now always enabled by default
-        // No toggle button needed - links can always be selected
+        // Link selection is always enabled by default (no toggle button)
 
         // Selection change callback
         linksViewer.onSelectionChange = (selectedLinkIds) => {
@@ -2312,6 +2220,7 @@
             map.pm.addControls({
                 position: 'topleft',
                 drawCircle: false,
+                drawCircleMarker: false,
                 drawRectangle: false,
                 drawPolygon: false,
                 drawPolyline: false,
@@ -2357,7 +2266,7 @@
 
         // Add the control to the map
         const drawLineControl = new DrawLineControl({
-            position: 'topleft'
+            position: 'topright'
         });
         drawLineControl.addTo(map);
 
