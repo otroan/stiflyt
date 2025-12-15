@@ -151,7 +151,6 @@
         const BACKEND_URL = CommonConfig.getBackendUrl();
 
         // State (for UI functionality)
-        let currentRouteData = null;
         let propertyLayers = []; // Keep for highlightProperty function
         let markers = []; // Keep for highlightProperty function
 
@@ -179,297 +178,19 @@
             });
         });
 
-        // Load route function
-        async function loadRoute(rutenummer) {
-            console.log('loadRoute called with rutenummer:', rutenummer);
-            if (!rutenummer) {
-                console.error('No rutenummer provided to loadRoute');
-                alert('Vennligst velg eller tegn en linje');
-                return;
-            }
-
-            const loading = document.getElementById('loading');
-            if (loading) {
-                loading.classList.add('active');
-            }
-
-            try {
-                // Clear previous layers using RouteViewer
-                routeViewer.clear();
-                propertyLayers.forEach(layer => map.removeLayer(layer));
-                markers.forEach(marker => map.removeLayer(marker));
-                propertyLayers = [];
-                markers = [];
-
-                // Clear drawing if active
-                if (drawnLine) {
-                    drawingLayerGroup.removeLayer(drawnLine);
-                    drawnLine = null;
-                }
-                if (drawingMode && map.pm) {
-                    map.pm.disableDraw('Line');
-                    drawingMode = false;
-                }
-                // Hide owners button when loading a new route
-                getOwnersBtn.classList.add('hidden');
-                getOwnersBtn.style.display = 'none';
-                if (drawLineControl && drawLineControl._button) {
-                    updateDrawButton(drawLineControl._button, false);
-                }
-
-                // Hide download button while loading
-                const downloadBtn = document.getElementById('downloadExcelBtn');
-                if (downloadBtn) {
-                    // Hide download button while loading
-                    downloadBtn.classList.add('hidden');
-                    downloadBtn.style.display = 'none';
-                }
-
-                // Load route using RouteViewer (this handles route, segments, and matrikkelenhet layers)
-                const routeData = await routeViewer.loadRoute(rutenummer);
-                currentRouteData = routeData;
-
-                // Update route name first
-        const selectionTitleEl = document.getElementById('selectionTitle');
-        if (selectionTitleEl) {
-            selectionTitleEl.textContent = `${routeData.metadata.rutenummer} - ${routeData.metadata.rutenavn}`;
-                }
-
-                // Display route info and properties in UI
-                displayRouteInfo(routeData);
-                displayProperties(routeData);
-
-                // Show download button now that route is loaded (displayRouteInfo also sets this, but ensure it's shown)
-                if (downloadBtn && routeData && routeData.metadata) {
-                    downloadBtn.classList.remove('hidden');
-                    downloadBtn.style.display = 'inline-flex';
-                }
-
-                // Activate the first tab (route info) to ensure content is visible
-                const firstTab = document.querySelector('.tab[data-tab="info"]');
-                if (firstTab) {
-                    firstTab.click(); // This will trigger tab switching
-                }
-
-                // Zoom to route after a short delay to ensure all layers are rendered
-                setTimeout(() => {
-                    zoomToRoute();
-                }, 200);
-
-            } catch (error) {
-                let errorMessage = `Feil ved lasting av data: ${error.message}`;
-                console.error('Route loading error:', error);
-
-                // Check for network errors
-                if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-                    const backendUrl = BACKEND_URL || window.location.origin;
-                    errorMessage = `Kunne ikke koble til backend på ${backendUrl}. Sjekk at backend kjører og at URL er korrekt.`;
-                }
-
-                alert(errorMessage);
-
-                // Show error in UI
-                const errorDiv = document.createElement('div');
-                errorDiv.className = 'error';
-                errorDiv.textContent = errorMessage;
-                document.querySelector('.tab-content').prepend(errorDiv);
-
-                // Remove error after 5 seconds
-                setTimeout(() => errorDiv.remove(), 5000);
-            } finally {
-                loading.classList.remove('active');
-            }
-        }
+        // loadRoute function removed - routes are not loaded in this part of the tool
 
         // Note: Route loading and segment display is now handled by RouteViewer class
         // Debug functionality has been moved to debug.html
 
-        // Split route by properties and add markers
-        function splitRouteByProperties(data, routeCoords) {
-            const properties = data.matrikkelenhet_vector || [];
-            if (!properties || properties.length === 0) return;
-
-            // Group consecutive properties
-            const propertyGroups = [];
-            let currentGroup = {
-                matrikkelenhet: properties[0].matrikkelenhet,
-                bruksnavn: properties[0].bruksnavn,
-                startOffset: properties[0].offset_meters,
-                endOffset: properties[0].offset_meters + properties[0].length_meters,
-                color: getColorForPropertyLocal(properties[0].matrikkelenhet)
-            };
-
-            for (let i = 1; i < properties.length; i++) {
-                const prop = properties[i];
-                const gap = prop.offset_meters - (currentGroup.endOffset);
-
-                // If gap is small (< 10m), merge with current group
-                if (gap < 10 && prop.matrikkelenhet === currentGroup.matrikkelenhet) {
-                    currentGroup.endOffset = prop.offset_meters + prop.length_meters;
-                } else {
-                    propertyGroups.push(currentGroup);
-                    currentGroup = {
-                        matrikkelenhet: prop.matrikkelenhet,
-                        bruksnavn: prop.bruksnavn,
-                        startOffset: prop.offset_meters,
-                        endOffset: prop.offset_meters + prop.length_meters,
-                        color: getColorForPropertyLocal(prop.matrikkelenhet)
-                    };
-                }
-            }
-            propertyGroups.push(currentGroup);
-
-            // Calculate total route length
-            const totalLength = data.metadata.total_length_meters;
-
-            // Draw segments and add markers
-            propertyGroups.forEach((group, index) => {
-                const startFraction = group.startOffset / totalLength;
-                const endFraction = group.endOffset / totalLength;
-
-                const startIdx = Math.floor(startFraction * routeCoords.length);
-                const endIdx = Math.ceil(endFraction * routeCoords.length);
-
-                const segmentCoords = routeCoords.slice(startIdx, endIdx + 1);
-
-                if (segmentCoords.length > 1) {
-                    // Draw colored segment
-                    const segment = L.polyline(segmentCoords, {
-                        color: group.color,
-                        weight: 6,
-                        opacity: 0.8
-                    }).addTo(map);
-
-                    segment.bindPopup(`
-                        <strong>${group.matrikkelenhet}</strong><br>
-                        ${group.bruksnavn || 'Ingen navn'}<br>
-                        ${(group.endOffset - group.startOffset).toFixed(0)} m
-                    `);
-
-                    propertyLayers.push(segment);
-
-                    // Add circular marker at start of property (except first)
-                    if (index > 0 && segmentCoords.length > 0) {
-                        const marker = L.circleMarker(segmentCoords[0], {
-                            radius: 8,
-                            fillColor: group.color,
-                            color: '#fff',
-                            weight: 2,
-                            fillOpacity: 1
-                        }).addTo(map);
-
-                        marker.bindPopup(`
-                            <strong>Start: ${group.matrikkelenhet}</strong><br>
-                            ${group.bruksnavn || 'Ingen navn'}<br>
-                            ${(group.startOffset / 1000).toFixed(2)} km
-                        `);
-
-                        markers.push(marker);
-                    }
-                }
-            });
-
-        }
+        // splitRouteByProperties function removed - unused
 
         // Get color for property (using common utility)
         function getColorForPropertyLocal(matrikkelenhet) {
             return getColorForProperty(matrikkelenhet, colors);
         }
 
-        /**
-         * Zoom to route and all loaded layers
-         */
-        function zoomToRoute() {
-            const bounds = L.latLngBounds([]);
-            let hasBounds = false;
-
-            // Helper function to safely get bounds from a layer
-            function tryGetBounds(layer, layerName) {
-                if (!layer) {
-                    return null;
-                }
-
-                if (typeof layer.getBounds !== 'function') {
-                    return null;
-                }
-
-                // Check if it's a layer group with layers
-                if (layer.getLayers && typeof layer.getLayers === 'function') {
-                    const layers = layer.getLayers();
-                    if (layers.length === 0) {
-                        return null;
-                    }
-                }
-
-                try {
-                    const layerBounds = layer.getBounds();
-                    if (layerBounds && isValidBounds(layerBounds)) {
-                        return layerBounds;
-                    }
-                } catch (error) {
-                    console.warn(`Could not get bounds from ${layerName}:`, error);
-                }
-                return null;
-            }
-
-            // Collect bounds from route layer
-            const routeBounds = tryGetBounds(routeViewer.routeLayer, 'routeLayer');
-            if (routeBounds) {
-                bounds.extend(routeBounds);
-                hasBounds = true;
-            }
-
-            // Collect bounds from route layer group
-            const routeGroupBounds = tryGetBounds(routeViewer.routeLayerGroup, 'routeLayerGroup');
-            if (routeGroupBounds) {
-                bounds.extend(routeGroupBounds);
-                hasBounds = true;
-            }
-
-            // Collect bounds from property layer group
-            const propertyBounds = tryGetBounds(routeViewer.propertyLayerGroup, 'propertyLayerGroup');
-            if (propertyBounds) {
-                bounds.extend(propertyBounds);
-                hasBounds = true;
-            }
-
-            // Fit map to all bounds
-            if (hasBounds && isValidBounds(bounds)) {
-                console.log('Fitting map to bounds:', bounds);
-                try {
-                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
-                } catch (error) {
-                    console.error('Error fitting bounds:', error);
-                    // Fallback: try to zoom using geometry from data
-                    zoomToRouteFromGeometry();
-                }
-            } else {
-                console.warn('No valid bounds found from any layer, trying geometry fallback');
-                // Fallback: try to zoom using geometry from data
-                zoomToRouteFromGeometry();
-            }
-        }
-
-        /**
-         * Fallback zoom using geometry directly from route data
-         */
-        function zoomToRouteFromGeometry() {
-            if (!currentRouteData || !currentRouteData.geometry) {
-                console.warn('No route data available for geometry-based zoom');
-                return;
-            }
-
-            try {
-                const geoJsonLayer = L.geoJSON(currentRouteData.geometry);
-                const bounds = geoJsonLayer.getBounds();
-                if (bounds && isValidBounds(bounds)) {
-                    console.log('Fitting map to bounds from geometry:', bounds);
-                    map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
-                }
-            } catch (error) {
-                console.error('Error fitting bounds from geometry:', error);
-            }
-        }
+        // zoomToRoute and zoomToRouteFromGeometry functions removed - unused
 
         // Display properties table
         function displayProperties(data) {
@@ -855,161 +576,7 @@
         }
 
         // Download Excel report for eiere (legacy - bruker rutenummer)
-        async function downloadExcelReport(rutenummer) {
-            if (!rutenummer) {
-                alert('Ingen utvalg tilgjengelig');
-                return;
-            }
-
-            const downloadBtn = document.getElementById('downloadExcelBtn');
-            const progressModal = document.getElementById('downloadProgressModal');
-            const progressBar = document.getElementById('progressBar');
-
-            // Show progress modal
-            if (progressModal) {
-                progressModal.classList.add('active');
-            }
-
-            // Disable button
-            if (downloadBtn) {
-                downloadBtn.disabled = true;
-            }
-
-            // Update progress steps
-            function updateProgressStep(stepNum, status) {
-                const step = document.getElementById(`step${stepNum}`);
-                if (!step) return;
-
-                step.classList.remove('active', 'completed');
-                const icon = step.querySelector('.progress-step-icon');
-
-                if (status === 'active') {
-                    step.classList.add('active');
-                    if (icon) icon.textContent = '⏳';
-                } else if (status === 'completed') {
-                    step.classList.add('completed');
-                    if (icon) icon.textContent = '✓';
-                } else if (status === 'pending') {
-                    if (icon) icon.textContent = '○';
-                }
-            }
-
-            // Update progress bar
-            function updateProgressBar(percent) {
-                if (progressBar) {
-                    progressBar.style.width = percent + '%';
-                }
-            }
-
-            // Initialize progress
-            updateProgressStep(1, 'pending');
-            updateProgressStep(2, 'pending');
-            updateProgressStep(3, 'pending');
-            updateProgressStep(4, 'pending');
-            updateProgressBar(0);
-
-            try {
-                // Step 1: Starting
-                updateProgressStep(1, 'active');
-                updateProgressBar(10);
-                await new Promise(resolve => setTimeout(resolve, 300)); // Small delay for visual feedback
-
-                const backendUrl = CommonConfig.getBackendUrl();
-                const url = backendUrl
-                    ? `${backendUrl}/api/v1/routes/${rutenummer}/owners.xlsx`
-                    : `/api/v1/routes/${rutenummer}/owners.xlsx`;
-
-                // Step 2: Fetching data (this includes Matrikkel API calls)
-                updateProgressStep(1, 'completed');
-                updateProgressStep(2, 'active');
-                updateProgressBar(30);
-
-                // Use fetch with credentials to handle basic auth
-                // Browser will prompt for username/password if not already authenticated
-                const response = await fetch(url, {
-                    method: 'GET',
-                    credentials: 'include', // Include credentials for basic auth
-                });
-
-                if (!response.ok) {
-                    updateProgressStep(2, 'pending');
-                    updateProgressBar(0);
-                    if (progressModal) {
-                        progressModal.classList.remove('active');
-                    }
-                    if (downloadBtn) {
-                        downloadBtn.disabled = false;
-                    }
-
-                    if (response.status === 401) {
-                        alert('Autentisering påkrevd. Vennligst oppgi brukernavn og passord når nettleseren ber om det.');
-                    } else {
-                        const errorText = await response.text();
-                        let errorMessage = `Kunne ikke laste ned rapport: ${response.statusText}`;
-                        try {
-                            const errorJson = JSON.parse(errorText);
-                            errorMessage = errorJson.detail || errorMessage;
-                        } catch (e) {
-                            // Ignore JSON parse errors
-                        }
-                        alert(errorMessage);
-                    }
-                    return;
-                }
-
-                // Step 3: Processing blob
-                updateProgressStep(2, 'completed');
-                updateProgressStep(3, 'active');
-                updateProgressBar(70);
-
-                // Get the blob and create download link
-                const blob = await response.blob();
-
-                // Step 4: Completing download
-                updateProgressStep(3, 'completed');
-                updateProgressStep(4, 'active');
-                updateProgressBar(90);
-
-                const downloadUrl = window.URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = downloadUrl;
-                link.download = `utvalg-${rutenummer}-eiere.xlsx`;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-                window.URL.revokeObjectURL(downloadUrl);
-
-                // Complete
-                updateProgressStep(4, 'completed');
-                updateProgressBar(100);
-
-                // Hide modal after a short delay
-                await new Promise(resolve => setTimeout(resolve, 500));
-                if (progressModal) {
-                    progressModal.classList.remove('active');
-                }
-            } catch (error) {
-                console.error('Error downloading Excel report:', error);
-
-                // Reset progress
-                updateProgressStep(1, 'pending');
-                updateProgressStep(2, 'pending');
-                updateProgressStep(3, 'pending');
-                updateProgressStep(4, 'pending');
-                updateProgressBar(0);
-
-                if (progressModal) {
-                    progressModal.classList.remove('active');
-                }
-
-                alert(`Feil ved nedlasting: ${error.message}`);
-            } finally {
-                // Re-enable button
-                if (downloadBtn) {
-                    downloadBtn.disabled = false;
-                }
-            }
-        }
+        // downloadExcelReport(rutenummer) function removed - unused (replaced by downloadExcelReportFromData)
 
         // Highlight property on map
         function highlightProperty(matrikkelenhet) {
@@ -1110,12 +677,7 @@
             }
         });
 
-        // Initialize bounding box route loading (disabled by default)
-        // Route loading removed - this part only uses links/segments
-        let bboxFilters = {
-            prefix: null,
-            organization: 'DNT'  // Default to DNT routes only for faster loading
-        };
+        // bboxFilters removed - route loading is not used in this part of the tool
 
         // Add event listeners for map move/zoom to load links in bounding box
         // Route loading is disabled - only links are loaded automatically
@@ -1133,15 +695,7 @@
         linksViewer.loadLinksInBboxDebounced();
         anchorNodesViewer.loadAnchorNodesInBboxDebounced();
 
-        // Optional: Add UI controls for filtering bounding box routes
-        // This could be added to the header controls section
-        // Note: Route loading is disabled by default
-        function updateBboxFilters(newFilters) {
-            bboxFilters = { ...bboxFilters, ...newFilters };
-        }
-
-        // Make updateBboxFilters available globally for potential UI controls
-        window.updateBboxFilters = updateBboxFilters;
+        // updateBboxFilters function removed - route loading is not used
 
         // loadRoute removed - routes are not loaded in this part of the tool
 
