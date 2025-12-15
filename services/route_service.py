@@ -768,74 +768,170 @@ def search_places(query: str, limit: int = 20):
         except Exception as e:
             print(f"Ruteinfopunkt search failed: {e}")
 
-        # 2) Search stedsnavn (schema/table discovered dynamically)
+        # 2) Search stedsnavn
+        #
+        # Uses explicit query against public.stedsnavn / public.skrivemate +
+        # sted_* geometry tables and kommune, and exposes kommunenavn/fylkesnavn
+        # in the result (frontend shows as subtitle).
+        #
+        # Geometry strategy:
+        #   - Prefer punkt (sted_posisjon)
+        #   - Fallback til multipunkt, område, senterlinje via COALESCE
         try:
-            stedsnavn_schema = None
-            stedsnavn_table = None
-            with conn.cursor() as cur:
+            sub_limit = max(5, min(limit, 10))
+            with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """
-                        SELECT table_schema, table_name
-                        FROM information_schema.tables
-                        WHERE (table_schema LIKE '%stedsnavn%' OR table_name LIKE '%stedsnavn%' OR table_name LIKE '%place%name%')
-                        AND table_type = 'BASE TABLE'
-                        ORDER BY table_schema, table_name
-                        LIMIT 1;
-                    """
+                        SELECT
+                            sn.objid,
+                            sm.komplettskrivemate AS navn,
+                            k.kommunenavn,
+                            k.kommunenummer,
+                            k.fylkesnavn,
+                            k.fylkesnummer,
+                            ST_X(
+                                ST_Centroid(
+                                    ST_Transform(
+                                        COALESCE(
+                                            sp.geom,          -- punkt
+                                            smp.geom,         -- multipunkt
+                                            so.geom,          -- område
+                                            ssl.geom          -- senterlinje
+                                        ),
+                                        4326
+                                    )
+                                )
+                            ) AS lon,
+                            ST_Y(
+                                ST_Centroid(
+                                    ST_Transform(
+                                        COALESCE(
+                                            sp.geom,
+                                            smp.geom,
+                                            so.geom,
+                                            ssl.geom
+                                        ),
+                                        4326
+                                    )
+                                )
+                            ) AS lat
+                        FROM public.stedsnavn sn
+                        JOIN public.skrivemate sm ON sn.objid = sm.stedsnavn_fk
+                        LEFT JOIN public.sted_posisjon   sp  ON sn.sted_fk = sp.stedsnummer
+                        LEFT JOIN public.sted_multipunkt smp ON sn.sted_fk = smp.stedsnummer
+                        LEFT JOIN public.sted_omrade    so  ON sn.sted_fk = so.stedsnummer
+                        LEFT JOIN public.sted_senterlinje ssl ON sn.sted_fk = ssl.stedsnummer
+                        LEFT JOIN public.kommune k ON sn.sted_fk = k.sted_fk
+                        WHERE sm.komplettskrivemate ILIKE %s
+                        ORDER BY
+                            CASE
+                                WHEN LOWER(sm.komplettskrivemate) = LOWER(%s) THEN 0
+                                WHEN sm.komplettskrivemate ILIKE %s THEN 1
+                                ELSE 2
+                            END,
+                            sm.komplettskrivemate
+                        LIMIT %s;
+                    """,
+                    (f"%{query}%", query, f"{query}%", sub_limit),
                 )
-                result = cur.fetchone()
-                if result:
-                    stedsnavn_schema, stedsnavn_table = result
+                for row in cur.fetchall():
+                    objid = row.get('objid')
+                    if objid in seen_ids:
+                        continue
+                    lon = row.get('lon')
+                    lat = row.get('lat')
+                    if lon is None or lat is None:
+                        continue
+                    seen_ids.add(objid)
+                    title = row.get('navn') or 'Uten navn'
+                    kommunenavn = row.get('kommunenavn')
+                    fylkesnavn = row.get('fylkesnavn')
+                    subtitle_parts = []
+                    if kommunenavn:
+                        subtitle_parts.append(str(kommunenavn))
+                    if fylkesnavn:
+                        subtitle_parts.append(str(fylkesnavn))
+                    subtitle = ", ".join(subtitle_parts) if subtitle_parts else None
 
-            if stedsnavn_schema and stedsnavn_table and validate_schema_name(stedsnavn_schema) and validate_schema_name(stedsnavn_table):
+                    results.append(
+                        {
+                            'id': f"stedsnavn-{objid}",
+                            'type': 'stedsnavn',
+                            'title': str(title),
+                            'subtitle': subtitle,
+                            'lon': float(lon),
+                            'lat': float(lat),
+                        }
+                    )
+        except Exception as e:
+            # Fallback: keep old auto-discovery behaviour for backwards compatibility
+            print(f"Explicit stedsnavn search failed, trying dynamic discovery: {e}")
+            try:
+                stedsnavn_schema = None
+                stedsnavn_table = None
                 with conn.cursor() as cur:
                     cur.execute(
                         """
-                            SELECT column_name
-                            FROM information_schema.columns
-                            WHERE table_schema = %s AND table_name = %s
-                        """,
-                        (stedsnavn_schema, stedsnavn_table),
+                            SELECT table_schema, table_name
+                            FROM information_schema.tables
+                            WHERE (table_schema LIKE '%stedsnavn%' OR table_name LIKE '%stedsnavn%' OR table_name LIKE '%place%name%')
+                            AND table_type = 'BASE TABLE'
+                            ORDER BY table_schema, table_name
+                            LIMIT 1;
+                        """
                     )
-                    columns = [row[0] for row in cur.fetchall()]
+                    result = cur.fetchone()
+                    if result:
+                        stedsnavn_schema, stedsnavn_table = result
 
-                name_col = _choose_first_available(columns, ['navn', 'name', 'stedsnavn'])
-                geom_col = _choose_first_available(columns, ['geom', 'geometry', 'posisjon', 'punkt'])
-
-                if name_col and geom_col:
-                    sub_limit = max(5, min(limit, 10))
-                    with conn.cursor(row_factory=dict_row) as cur:
+                if stedsnavn_schema and stedsnavn_table and validate_schema_name(stedsnavn_schema) and validate_schema_name(stedsnavn_table):
+                    with conn.cursor() as cur:
                         cur.execute(
-                            f"""
-                                SELECT
-                                    objid,
-                                    {name_col} AS name,
-                                    ST_X(ST_Centroid(ST_Transform({geom_col}::geometry, 4326))) AS lon,
-                                    ST_Y(ST_Centroid(ST_Transform({geom_col}::geometry, 4326))) AS lat
-                                FROM "{stedsnavn_schema}"."{stedsnavn_table}"
-                                WHERE {name_col} ILIKE %s
-                                ORDER BY {name_col}
-                                LIMIT %s
+                            """
+                                SELECT column_name
+                                FROM information_schema.columns
+                                WHERE table_schema = %s AND table_name = %s
                             """,
-                            (f"%{query}%", sub_limit),
+                            (stedsnavn_schema, stedsnavn_table),
                         )
-                        for row in cur.fetchall():
-                            if row['objid'] in seen_ids:
-                                continue
-                            seen_ids.add(row['objid'])
-                            if row['lon'] is None or row['lat'] is None:
-                                continue
-                            results.append(
-                                {
-                                    'id': f"stedsnavn-{row['objid']}",
-                                    'type': 'stedsnavn',
-                                    'title': str(row['name']) if row['name'] else 'Uten navn',
-                                    'lon': float(row['lon']),
-                                    'lat': float(row['lat']),
-                                }
+                        columns = [row[0] for row in cur.fetchall()]
+
+                    name_col = _choose_first_available(columns, ['navn', 'name', 'stedsnavn'])
+                    geom_col = _choose_first_available(columns, ['geom', 'geometry', 'posisjon', 'punkt'])
+
+                    if name_col and geom_col:
+                        with conn.cursor(row_factory=dict_row) as cur:
+                            cur.execute(
+                                f"""
+                                    SELECT
+                                        objid,
+                                        {name_col} AS name,
+                                        ST_X(ST_Centroid(ST_Transform({geom_col}::geometry, 4326))) AS lon,
+                                        ST_Y(ST_Centroid(ST_Transform({geom_col}::geometry, 4326))) AS lat
+                                    FROM "{stedsnavn_schema}"."{stedsnavn_table}"
+                                    WHERE {name_col} ILIKE %s
+                                    ORDER BY {name_col}
+                                    LIMIT %s
+                                """,
+                                (f"%{query}%", sub_limit),
                             )
-        except Exception as e:
-            print(f"Stedsnavn search failed: {e}")
+                            for row in cur.fetchall():
+                                if row['objid'] in seen_ids:
+                                    continue
+                                seen_ids.add(row['objid'])
+                                if row['lon'] is None or row['lat'] is None:
+                                    continue
+                                results.append(
+                                    {
+                                        'id': f"stedsnavn-{row['objid']}",
+                                        'type': 'stedsnavn',
+                                        'title': str(row['name']) if row['name'] else 'Uten navn',
+                                        'lon': float(row['lon']),
+                                        'lat': float(row['lat']),
+                                    }
+                                )
+            except Exception as e2:
+                print(f"Stedsnavn dynamic search failed: {e2}")
 
         # 3) Search routes (by rutenummer or name) and return centroid
         try:
