@@ -545,20 +545,49 @@ async def get_links(
                     media_type="application/geo+json"
                 )
 
-            routes_view_quoted = quote_identifier(table_row[0])
+            routes_view_quoted = quote_identifier(table_row['table_name'])
             full_routes_view_name = f"{schema_quoted}.{routes_view_quoted}"
+
+            # Check which columns exist in the table
+            cur.execute(
+                """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = %s
+                      AND table_name = %s
+                """,
+                (route_schema, table_row['table_name']),
+            )
+            existing_columns = {row['column_name'] for row in cur.fetchall()}
+
+            # Build SELECT clause with only existing columns
+            select_parts = [
+                "l.link_id",
+                "l.a_node",
+                "l.b_node",
+                "l.length_m",
+            ]
+
+            # Add route list columns only if they exist
+            has_rutenavn_list = 'rutenavn_list' in existing_columns
+            has_rutenummer_list = 'rutenummer_list' in existing_columns
+            has_rutetype_list = 'rutetype_list' in existing_columns
+            has_vedlikeholdsansvarlig_list = 'vedlikeholdsansvarlig_list' in existing_columns
+
+            if has_rutenavn_list:
+                select_parts.append("l.rutenavn_list")
+            if has_rutenummer_list:
+                select_parts.append("l.rutenummer_list")
+            if has_rutetype_list:
+                select_parts.append("l.rutetype_list")
+            if has_vedlikeholdsansvarlig_list:
+                select_parts.append("l.vedlikeholdsansvarlig_list")
+
+            select_parts.append("ST_AsGeoJSON(ST_Transform(l.geom, 4326))::json as geometry")
 
             query = f"""
                 SELECT
-                    l.link_id,
-                    l.a_node,
-                    l.b_node,
-                    l.length_m,
-                    l.rutenavn_list,
-                    l.rutenummer_list,
-                    l.rutetype_list,
-                    l.vedlikeholdsansvarlig_list,
-                    ST_AsGeoJSON(ST_Transform(l.geom, 4326))::json as geometry
+                    {', '.join(select_parts)}
                 FROM {full_routes_view_name} l
                 WHERE l.geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)
                     AND l.geom IS NOT NULL
@@ -578,7 +607,7 @@ async def get_links(
         geometry = parse_geometry(row["geometry"])
 
         # Build route information from arrays
-        # Arrays might be None if link has no routes
+        # Arrays might be None if link has no routes or columns don't exist
         rutenavn_list = row.get("rutenavn_list")
         rutenummer_list = row.get("rutenummer_list")
         rutetype_list = row.get("rutetype_list")
@@ -670,20 +699,23 @@ async def get_anchor_nodes(
             with conn.cursor(row_factory=dict_row) as cur:
                 route_schema = get_route_schema(conn)
                 schema_quoted = quote_identifier(route_schema)
-                # Discover anchor_nodes table/view (schema hash changes on import)
+                # Discover anchor_nodes relation (table, view or materialized view).
+                # We use pg_class/pg_namespace so this works even if anchor_nodes is a MATERIALIZED VIEW.
                 cur.execute(
                     """
-                        SELECT table_name
-                        FROM information_schema.tables
-                        WHERE table_schema = %s
-                          AND table_name = 'anchor_nodes'
+                        SELECT c.relname AS relname
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = %s
+                          AND c.relname = 'anchor_nodes'
+                          AND c.relkind IN ('r', 'v', 'm')  -- table, view, materialized view
                         LIMIT 1
                     """,
                     (route_schema,),
                 )
                 table_row = cur.fetchone()
                 if not table_row:
-                    print("Anchor nodes table/view not found in discovered route schema")
+                    print("Anchor nodes relation not found in discovered route schema")
                     feature_collection = {
                         "type": "FeatureCollection",
                         "features": []
@@ -693,7 +725,7 @@ async def get_anchor_nodes(
                         media_type="application/geo+json"
                     )
 
-                anchor_nodes_table_quoted = quote_identifier(table_row[0])
+                anchor_nodes_table_quoted = quote_identifier(table_row["relname"])
                 full_anchor_nodes_name = f"{schema_quoted}.{anchor_nodes_table_quoted}"
 
                 if node_ids:

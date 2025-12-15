@@ -5,12 +5,24 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
 from api.routes import router
+from services.startup_checks import run_startup_checks
 
 app = FastAPI(
     title="Stiflyt Route API",
     description="Backend API for processing routes from turrutebasen and mapping matrikkelenhet",
-    version="0.1.0"
+    version="0.1.0",
 )
+
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    """
+    Run database validation on startup and abort if required tables are missing.
+
+    This ensures we fail fast if the database import is incomplete or inconsistent.
+    """
+    # This function raises RuntimeError if validation fails, which prevents the app from starting
+    run_startup_checks()
 
 # Add CORS middleware
 app.add_middleware(

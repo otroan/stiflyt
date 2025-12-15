@@ -52,11 +52,14 @@ def discover_schema(conn, prefix):
     Returns:
         str: Schema name if found, None otherwise
     """
+    # We want the *latest* imported schema. The hash suffix changes per import,
+    # so we sort descending and pick the first one, matching the docs:
+    #   ORDER BY nspname DESC LIMIT 1
     query = """
         SELECT schema_name
         FROM information_schema.schemata
         WHERE schema_name LIKE %s
-        ORDER BY schema_name
+        ORDER BY schema_name DESC
         LIMIT 1;
     """
 

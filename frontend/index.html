@@ -7,544 +7,7 @@
 
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .header {
-            background: #2c3e50;
-            color: white;
-            padding: 1rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-
-        .header h1 {
-            font-size: 1.5rem;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-        }
-
-        .header-logo {
-            height: 2rem;
-            width: auto;
-        }
-
-        .controls {
-            display: flex;
-            gap: 1rem;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-
-        .search-container {
-            position: relative;
-            display: flex;
-            gap: 0.5rem;
-            align-items: center;
-        }
-
-        .search-results {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            right: 0;
-            background: white;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            max-height: 300px;
-            overflow-y: auto;
-            z-index: 1000;
-            margin-top: 0.25rem;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            display: none;
-        }
-
-        .search-results.active {
-            display: block;
-        }
-
-        .search-result-item {
-            padding: 0.75rem;
-            cursor: pointer;
-            border-bottom: 1px solid #e9ecef;
-        }
-
-        .search-result-item:hover {
-            background: #f8f9fa;
-        }
-
-        .search-result-item:last-child {
-            border-bottom: none;
-        }
-
-        .search-result-item strong {
-            color: #2c3e50;
-        }
-
-        .search-result-item small {
-            color: #6c757d;
-            display: block;
-            margin-top: 0.25rem;
-        }
-
-        input[type="text"] {
-            padding: 0.5rem 1rem;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 1rem;
-            width: 200px;
-        }
-
-        button {
-            padding: 0.5rem 1rem;
-            background: #3498db;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 1rem;
-            transition: background 0.2s;
-        }
-
-        button:hover {
-            background: #2980b9;
-        }
-
-        button:disabled {
-            background: #95a5a6;
-            cursor: not-allowed;
-        }
-
-        .main-container {
-            display: flex;
-            flex: 1;
-            overflow: hidden;
-        }
-
-        .sidebar {
-            width: 400px;
-            background: #f8f9fa;
-            border-right: 1px solid #dee2e6;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .sidebar-header {
-            padding: 1rem;
-            background: #e9ecef;
-            border-bottom: 1px solid #dee2e6;
-        }
-
-        .sidebar-tabs {
-            display: flex;
-            border-bottom: 1px solid #dee2e6;
-        }
-
-        .tab {
-            flex: 1;
-            padding: 0.75rem;
-            background: #f8f9fa;
-            border: none;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: background 0.2s;
-            color: #2c3e50;
-        }
-
-        .tab.active {
-            background: white;
-            border-bottom: 2px solid #3498db;
-            font-weight: 600;
-            color: #2c3e50;
-        }
-
-        .tab-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1rem;
-        }
-
-        .tab-pane {
-            display: none;
-        }
-
-        .tab-pane.active {
-            display: block;
-        }
-
-        .route-info {
-            margin-bottom: 1.5rem;
-        }
-
-        .route-info h3 {
-            margin-bottom: 0.5rem;
-            color: #2c3e50;
-        }
-
-        .download-button {
-            margin-top: 1rem;
-            padding: 0.75rem 1.5rem;
-            background: #28a745;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            font-size: 0.95rem;
-            font-weight: 600;
-            cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: background-color 0.2s;
-        }
-
-        .download-button:hover {
-            background: #218838;
-        }
-
-        .download-button:active {
-            background: #1e7e34;
-        }
-
-        .download-button:disabled {
-            background: #6c757d;
-            cursor: not-allowed;
-        }
-
-        .download-button .icon {
-            font-size: 1.1rem;
-        }
-
-        /* Progress modal for Excel download */
-        .download-progress-modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 10000;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .download-progress-modal.active {
-            display: flex;
-        }
-
-        .download-progress-content {
-            background: white;
-            padding: 2rem;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            min-width: 400px;
-            max-width: 500px;
-        }
-
-        .download-progress-content h3 {
-            margin: 0 0 1.5rem 0;
-            color: #2c3e50;
-            font-size: 1.25rem;
-        }
-
-        .progress-steps {
-            list-style: none;
-            padding: 0;
-            margin: 0 0 1.5rem 0;
-        }
-
-        .progress-step {
-            display: flex;
-            align-items: center;
-            padding: 0.75rem 0;
-            color: #6c757d;
-            transition: color 0.3s;
-        }
-
-        .progress-step.active {
-            color: #2c3e50;
-            font-weight: 600;
-        }
-
-        .progress-step.completed {
-            color: #28a745;
-        }
-
-        .progress-step-icon {
-            margin-right: 0.75rem;
-            font-size: 1.2rem;
-            width: 24px;
-            text-align: center;
-        }
-
-        .progress-step.active .progress-step-icon {
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-        }
-
-        .progress-bar-container {
-            width: 100%;
-            height: 8px;
-            background: #e9ecef;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-bottom: 1rem;
-        }
-
-        .progress-bar {
-            height: 100%;
-            background: #28a745;
-            width: 0%;
-            transition: width 0.3s ease;
-            border-radius: 4px;
-        }
-
-        .progress-bar.animated {
-            animation: progress-pulse 2s ease-in-out infinite;
-        }
-
-        @keyframes progress-pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
-        }
-
-        .info-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 0.5rem 0;
-            border-bottom: 1px solid #e9ecef;
-        }
-
-        .info-label {
-            font-weight: 600;
-            color: #6c757d;
-        }
-
-        .property-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.9rem;
-        }
-
-        .property-table th {
-            background: #e9ecef;
-            padding: 0.75rem;
-            text-align: left;
-            font-weight: 600;
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-
-        .property-table td {
-            padding: 0.75rem;
-            border-bottom: 1px solid #e9ecef;
-        }
-
-        .property-table tr:hover {
-            background: #f8f9fa;
-            cursor: pointer;
-        }
-
-        .property-table tr.highlighted {
-            background: #fff3cd;
-        }
-
-        .property-color {
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 0.5rem;
-            border: 2px solid #333;
-        }
-
-        .map-container {
-            flex: 1;
-            position: relative;
-        }
-
-        #map {
-            width: 100%;
-            height: 100%;
-        }
-
-        .loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            padding: 2rem;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            z-index: 1000;
-            display: none;
-        }
-
-        .loading.active {
-            display: block;
-        }
-
-        .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #3498db;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 1rem;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        .report-section {
-            margin-bottom: 1.5rem;
-        }
-
-        .report-section h4 {
-            margin-bottom: 0.75rem;
-            color: #2c3e50;
-            font-size: 1.1rem;
-        }
-
-        .component-item {
-            margin-bottom: 0.75rem;
-        }
-
-        .error {
-            background: #f8d7da;
-            color: #721c24;
-            padding: 1rem;
-            border-radius: 4px;
-            margin: 1rem;
-        }
-
-        /* Box zoom control styling - ensure visibility */
-        .leaflet-zoom-box-icon {
-            background: white !important;
-            border: 2px solid rgba(0,0,0,0.2) !important;
-            border-radius: 4px !important;
-            width: 30px !important;
-            height: 30px !important;
-            line-height: 30px !important;
-            text-align: center !important;
-            font-size: 18px !important;
-            display: block !important;
-            cursor: pointer !important;
-            box-shadow: 0 1px 5px rgba(0,0,0,0.4) !important;
-        }
-
-        .leaflet-zoom-box-icon:hover {
-            background: #f4f4f4 !important;
-        }
-
-        .leaflet-zoom-box-icon.active {
-            background: #3498db !important;
-            color: white !important;
-        }
-
-        /* Route tooltip styling */
-        .route-tooltip {
-            background: rgba(44, 62, 80, 0.95) !important;
-            color: white !important;
-            border: none !important;
-            border-radius: 4px !important;
-            padding: 6px 10px !important;
-            font-size: 0.9rem !important;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
-            white-space: nowrap !important;
-            z-index: 10000 !important;
-            pointer-events: none !important;
-        }
-
-        .route-tooltip::before {
-            border-top-color: rgba(44, 62, 80, 0.95) !important;
-        }
-
-        /* Link tooltip styling */
-        .link-tooltip {
-            background: white !important;
-            color: #333 !important;
-            border: 1px solid #ccc !important;
-            border-radius: 4px !important;
-            padding: 8px 12px !important;
-            font-size: 0.75rem !important;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2) !important;
-            white-space: normal !important;
-            max-width: 400px !important;
-            min-width: 350px !important;
-            z-index: 10000 !important;
-            pointer-events: none !important;
-        }
-
-        .link-tooltip::before {
-            border-top-color: #ccc !important;
-        }
-
-        /* Ensure Leaflet tooltip container has proper z-index */
-        .leaflet-tooltip {
-            z-index: 10000 !important;
-        }
-
-        /* Ensure Leaflet interactive layers have pointer events enabled */
-        .leaflet-interactive {
-            pointer-events: auto !important;
-        }
-
-        .leaflet-overlay-pane svg {
-            pointer-events: none;
-        }
-
-        .leaflet-overlay-pane svg path.leaflet-interactive {
-            pointer-events: auto !important;
-        }
-
-        /* Route selector popup styling */
-        .route-selector-popup .leaflet-popup-content-wrapper {
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-        }
-
-        .route-selector-popup .leaflet-popup-content {
-            margin: 0;
-            padding: 0;
-        }
-
-        /* Custom draw line control styling */
-        .leaflet-control-draw-line {
-            transition: background-color 0.2s, color 0.2s;
-        }
-
-        .leaflet-control-draw-line:hover {
-            background-color: #f4f4f4 !important;
-        }
-
-    </style>
+    <link rel="stylesheet" href="/static/css/app.css" />
 </head>
 <body>
     <div class="header">
@@ -554,20 +17,20 @@
         </h1>
         <div class="controls">
             <div class="search-container">
-                <input type="text" id="searchInput" placeholder="Søk etter sted, rutepunkt eller rute" style="width: 270px;">
+                <input type="text" id="searchInput" class="input-wide" placeholder="Søk etter sted, rutepunkt eller rute" aria-label="Søk etter sted, rutepunkt eller rute">
                 <div class="search-results" id="searchResults"></div>
             </div>
-            <button id="getLinkOwnersBtn" style="background: #9b59b6; display: none; margin-left: 0.5rem;" title="Hent eiere for valgte lenker">👥 Hent eiere (lenker)</button>
-            <button id="clearLinkSelectionBtn" style="background: #e74c3c; display: none; margin-left: 0.5rem;" title="Fjern valg av lenker">🗑️ Fjern valg</button>
-            <button id="getOwnersBtn" style="background: #9b59b6; display: none; margin-left: 0.5rem;">Hent eiere</button>
-            <button id="clearDrawingBtn" style="background: #e74c3c; display: none; margin-left: 0.5rem;" title="Slett tegning og eiere">🗑️ Slett tegning</button>
+            <button id="getLinkOwnersBtn" class="btn-purple hidden" title="Hent eiere for valgte lenker" aria-label="Hent eiere for valgte lenker">👥 Hent eiere (lenker)</button>
+            <button id="clearLinkSelectionBtn" class="btn-red hidden" title="Fjern valg av lenker" aria-label="Fjern valg av lenker">🗑️ Fjern valg</button>
+            <button id="getOwnersBtn" class="btn-purple hidden" aria-label="Hent eiere for valgt linje">Hent eiere</button>
+            <button id="clearDrawingBtn" class="btn-red hidden" title="Slett tegning og eiere" aria-label="Slett tegning og eiere">🗑️ Slett tegning</button>
         </div>
     </div>
 
     <div class="main-container">
         <div class="sidebar">
             <div class="sidebar-header">
-                <h2 id="routeName">Velg en rute</h2>
+                <h2 id="selectionTitle">Utvalg og eiendommer</h2>
             </div>
             <div class="sidebar-tabs">
                 <button class="tab active" data-tab="info">Info</button>
@@ -576,16 +39,16 @@
             <div class="tab-content">
                 <div id="infoTab" class="tab-pane active">
                     <div class="route-info">
-                        <h3>Ruteinformasjon</h3>
+                        <h3>Utvalgsinformasjon</h3>
                         <div id="routeInfo"></div>
-                        <button id="downloadExcelBtn" class="download-button" style="display: none;">
+                        <button id="downloadExcelBtn" class="download-button hidden">
                             <span class="icon">📥</span>
                             <span>Last ned Excel-rapport (eiere)</span>
                         </button>
                     </div>
                 </div>
                 <div id="propertiesTab" class="tab-pane">
-                    <h3>Eiendommer langs ruten</h3>
+                    <h3>Eiendommer langs valgt linje</h3>
                     <table class="property-table">
                         <thead>
                             <tr>
@@ -606,7 +69,7 @@
             <div id="map"></div>
             <div class="loading" id="loading">
                 <div class="spinner"></div>
-                <div>Laster rute...</div>
+                <div>Laster data...</div>
             </div>
         </div>
     </div>
@@ -641,10 +104,6 @@
 
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-    <!-- Leaflet ZoomBox Plugin -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet-zoombox@0.5.2/L.Control.ZoomBox.css" />
-    <script src="https://unpkg.com/leaflet-zoombox@0.5.2/L.Control.ZoomBox.min.js"></script>
 
     <!-- Leaflet Geoman (for drawing) -->
     <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.css" />
@@ -725,7 +184,7 @@
             console.log('loadRoute called with rutenummer:', rutenummer);
             if (!rutenummer) {
                 console.error('No rutenummer provided to loadRoute');
-                alert('Vennligst skriv inn et rutenummer');
+                alert('Vennligst velg eller tegn en linje');
                 return;
             }
 
@@ -751,6 +210,8 @@
                     map.pm.disableDraw('Line');
                     drawingMode = false;
                 }
+                // Hide owners button when loading a new route
+                getOwnersBtn.classList.add('hidden');
                 getOwnersBtn.style.display = 'none';
                 if (drawLineControl && drawLineControl._button) {
                     updateDrawButton(drawLineControl._button, false);
@@ -759,6 +220,8 @@
                 // Hide download button while loading
                 const downloadBtn = document.getElementById('downloadExcelBtn');
                 if (downloadBtn) {
+                    // Hide download button while loading
+                    downloadBtn.classList.add('hidden');
                     downloadBtn.style.display = 'none';
                 }
 
@@ -767,9 +230,9 @@
                 currentRouteData = routeData;
 
                 // Update route name first
-                const routeNameEl = document.getElementById('routeName');
-                if (routeNameEl) {
-                    routeNameEl.textContent = `${routeData.metadata.rutenummer} - ${routeData.metadata.rutenavn}`;
+        const selectionTitleEl = document.getElementById('selectionTitle');
+        if (selectionTitleEl) {
+            selectionTitleEl.textContent = `${routeData.metadata.rutenummer} - ${routeData.metadata.rutenavn}`;
                 }
 
                 // Display route info and properties in UI
@@ -778,6 +241,7 @@
 
                 // Show download button now that route is loaded (displayRouteInfo also sets this, but ensure it's shown)
                 if (downloadBtn && routeData && routeData.metadata) {
+                    downloadBtn.classList.remove('hidden');
                     downloadBtn.style.display = 'inline-flex';
                 }
 
@@ -793,7 +257,7 @@
                 }, 200);
 
             } catch (error) {
-                let errorMessage = `Feil ved lasting av rute: ${error.message}`;
+                let errorMessage = `Feil ved lasting av data: ${error.message}`;
                 console.error('Route loading error:', error);
 
                 // Check for network errors
@@ -1053,11 +517,11 @@
 
                     // Link header row
                     html += `
-                        <tr class="link-group-header" style="background-color: #e9ecef; font-weight: bold;">
+                        <tr class="link-group-header">
                             <td colspan="5">
                                 🔗 Link ${linkGroup.linkId}
                                 ${endpointDisplay}
-                                <small style="font-weight: normal; color: #6c757d;">
+                                <small class="muted-text">
                                     (${linkGroup.properties.length} eiendommer)
                                 </small>
                             </td>
@@ -1096,7 +560,7 @@
                     // Properties for this link
                     html += grouped.map(prop => {
                         return `
-                            <tr onclick="highlightProperty('${prop.matrikkelenhet}')" style="background-color: #f8f9fa;">
+                        <tr onclick="highlightProperty('${prop.matrikkelenhet}')" class="property-row">
                                 <td>${(prop.offset_km || 0).toFixed(2)} km</td>
                                 <td>${((prop.offset_km || 0) + (prop.length_km || 0)).toFixed(2)} km</td>
                                 <td>
@@ -1145,6 +609,7 @@
                         <td>${((prop.offset_km + prop.length_km)).toFixed(2)} km</td>
                         <td>
                             <span class="property-color" style="background-color: ${prop.color}"></span>
+                            <span class="property-color" style="background-color: ${prop.color}"></span>
                             ${prop.matrikkelenhet}
                         </td>
                         <td>${prop.bruksnavn || '-'}</td>
@@ -1166,18 +631,18 @@
                 if (!endpoint || !endpoint.name) {
                     return 'Ukjent';
                 }
-                const sourceLabel = endpoint.source === 'ruteinfopunkt' ? ' (ruteinfopunkt)' :
+                const sourceLabel = endpoint.source === 'ruteinfopunkt' ? ' (rutepunkt)' :
                                    endpoint.source === 'stedsnavn' ? ' (stedsnavn)' : '';
                 return `${endpoint.name}${sourceLabel}`;
             }
 
             info.innerHTML = `
                 <div class="info-item">
-                    <span class="info-label">Rutenummer:</span>
+                    <span class="info-label">ID:</span>
                     <span>${meta.rutenummer}</span>
                 </div>
                 <div class="info-item">
-                    <span class="info-label">Rutenavn:</span>
+                    <span class="info-label">Navn:</span>
                     <span>${meta.rutenavn}</span>
                 </div>
                 <div class="info-item">
@@ -1211,9 +676,13 @@
             const downloadBtn = document.getElementById('downloadExcelBtn');
             if (downloadBtn) {
                 if (data.matrikkelenhet_vector && data.matrikkelenhet_vector.length > 0) {
+                    // Show download button when we have owner data
+                    downloadBtn.classList.remove('hidden');
                     downloadBtn.style.display = 'inline-flex';
                     downloadBtn.onclick = () => downloadExcelReportFromData(data.matrikkelenhet_vector, meta);
                 } else {
+                    // Hide download button when there is no data
+                    downloadBtn.classList.add('hidden');
                     downloadBtn.style.display = 'none';
                 }
             }
@@ -1385,10 +854,10 @@
             }
         }
 
-        // Download Excel report for route owners (legacy - uses rutenummer)
+        // Download Excel report for eiere (legacy - bruker rutenummer)
         async function downloadExcelReport(rutenummer) {
             if (!rutenummer) {
-                alert('Ingen rute valgt');
+                alert('Ingen utvalg tilgjengelig');
                 return;
             }
 
@@ -1504,7 +973,7 @@
                 const downloadUrl = window.URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = downloadUrl;
-                link.download = `route-${rutenummer}-owners.xlsx`;
+                link.download = `utvalg-${rutenummer}-eiere.xlsx`;
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
@@ -1689,15 +1158,24 @@
 
             if (selectedLinkIds.length > 0) {
                 if (getLinkOwnersBtn) {
+                    // Show "Hent eiere (lenker)" when at least one link is selected
+                    getLinkOwnersBtn.classList.remove('hidden');
                     getLinkOwnersBtn.style.display = 'inline-block';
                     getLinkOwnersBtn.textContent = `👥 Hent eiere (${selectedLinkIds.length} lenker)`;
                 }
                 if (clearLinkSelectionBtn) {
+                    clearLinkSelectionBtn.classList.remove('hidden');
                     clearLinkSelectionBtn.style.display = 'inline-block';
                 }
             } else {
-                if (getLinkOwnersBtn) getLinkOwnersBtn.style.display = 'none';
-                if (clearLinkSelectionBtn) clearLinkSelectionBtn.style.display = 'none';
+                if (getLinkOwnersBtn) {
+                    getLinkOwnersBtn.classList.add('hidden');
+                    getLinkOwnersBtn.style.display = 'none';
+                }
+                if (clearLinkSelectionBtn) {
+                    clearLinkSelectionBtn.classList.add('hidden');
+                    clearLinkSelectionBtn.style.display = 'none';
+                }
             }
         };
 
@@ -2202,7 +1680,7 @@
         window.addEventListener('load', () => {
             const backendUrl = BACKEND_URL || '(relativ path)';
             console.log(`Backend URL: ${backendUrl}`);
-            // No default route - user must search or enter route number
+            // Ingen forhåndsvalg - bruk søk eller tegning
         });
 
         // ===== Drawing functionality with Leaflet Geoman =====
@@ -2286,7 +1764,9 @@
             routeViewer.clear();
 
             // Hide buttons
+            getOwnersBtn.classList.add('hidden');
             getOwnersBtn.style.display = 'none';
+            clearDrawingBtn.classList.add('hidden');
             clearDrawingBtn.style.display = 'none';
 
             // Reset drawing mode
@@ -2301,9 +1781,9 @@
             }
 
             // Reset sidebar
-            const routeNameEl = document.getElementById('routeName');
-            if (routeNameEl) {
-                routeNameEl.textContent = 'Velg en rute';
+            const selectionTitleEl = document.getElementById('selectionTitle');
+            if (selectionTitleEl) {
+                selectionTitleEl.textContent = 'Utvalg og eiendommer';
             }
 
             // Clear sidebar content
@@ -2313,6 +1793,7 @@
             // Hide download button
             const downloadBtn = document.getElementById('downloadExcelBtn');
             if (downloadBtn) {
+                downloadBtn.classList.add('hidden');
                 downloadBtn.style.display = 'none';
             }
         }
@@ -2351,6 +1832,7 @@
                 }
                 drawingMode = true;
                 updateDrawButton(button, true);
+                getOwnersBtn.classList.add('hidden');
                 getOwnersBtn.style.display = 'none';
             }
         }
@@ -2396,6 +1878,7 @@
                     }
 
                     // Show get owners button
+                    getOwnersBtn.classList.remove('hidden');
                     getOwnersBtn.style.display = 'inline-block';
 
                     // Fit map to drawn line
@@ -2470,6 +1953,7 @@
                     displayGeometryOwners(data);
 
                     // Show clear button after owners are loaded
+                    clearDrawingBtn.classList.remove('hidden');
                     clearDrawingBtn.style.display = 'inline-block';
 
                     // Make the drawn line clickable to delete (after owners are loaded)
@@ -2518,9 +2002,9 @@
             }
 
             // Update sidebar header
-            const routeNameEl = document.getElementById('routeName');
-            if (routeNameEl) {
-                routeNameEl.textContent = `${title} (${data.total_length_km.toFixed(2)} km)`;
+        const selectionTitleEl = document.getElementById('selectionTitle');
+        if (selectionTitleEl) {
+            selectionTitleEl.textContent = `${title} (${data.total_length_km.toFixed(2)} km)`;
             }
 
             // Create metadata similar to route metadata
