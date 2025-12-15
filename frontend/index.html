@@ -1111,7 +1111,7 @@
         });
 
         // Initialize bounding box route loading (disabled by default)
-        // Routes can still be loaded manually via search or route input
+        // Route loading removed - this part only uses links/segments
         let bboxFilters = {
             prefix: null,
             organization: 'DNT'  // Default to DNT routes only for faster loading
@@ -1120,13 +1120,11 @@
         // Add event listeners for map move/zoom to load links in bounding box
         // Route loading is disabled - only links are loaded automatically
         map.on('moveend', () => {
-            // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
             linksViewer.loadLinksInBboxDebounced();
             anchorNodesViewer.loadAnchorNodesInBboxDebounced();
         });
 
         map.on('zoomend', () => {
-            // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
             linksViewer.loadLinksInBboxDebounced();
             anchorNodesViewer.loadAnchorNodesInBboxDebounced();
         });
@@ -1140,14 +1138,12 @@
         // Note: Route loading is disabled by default
         function updateBboxFilters(newFilters) {
             bboxFilters = { ...bboxFilters, ...newFilters };
-            // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
         }
 
         // Make updateBboxFilters available globally for potential UI controls
         window.updateBboxFilters = updateBboxFilters;
 
-        // Make loadRoute available globally so bbox route click handlers can use it
-        window.loadRoute = loadRoute;
+        // loadRoute removed - routes are not loaded in this part of the tool
 
         // Link selection is always enabled by default (no toggle button)
 
@@ -1654,27 +1650,7 @@
             };
         }
 
-        // Route filter input handler (disabled - routes not loaded automatically)
-        // This must be after routeViewer and bboxFilters are defined
-        const routeFilterInput = document.getElementById('routeFilter');
-        if (routeFilterInput) {
-            // Debounce the filter input to avoid too many API calls
-            let filterTimeout = null;
-            routeFilterInput.addEventListener('input', (e) => {
-                const filter = e.target.value.trim();
-
-                // Clear existing timeout
-                if (filterTimeout) {
-                    clearTimeout(filterTimeout);
-                }
-
-                // Update filter but don't reload routes (disabled)
-                filterTimeout = setTimeout(() => {
-                    bboxFilters.prefix = filter || null;
-                    // routeViewer.loadRoutesInBboxDebounced(bboxFilters); // Disabled
-                }, 300);
-            });
-        }
+        // Route filter input handler removed - routes are not loaded
 
         // Initialize on page load
         window.addEventListener('load', () => {
