@@ -11,10 +11,15 @@
 </head>
 <body>
     <div class="header">
-        <h1>
-            <img src="/images/stiflyt.png" alt="Stiflyt Logo" class="header-logo">
-            Grunneier
-        </h1>
+        <div class="header-left">
+            <h1>
+                <img src="/images/stiflyt.png" alt="Stiflyt Logo" class="header-logo">
+                Grunneier
+            </h1>
+            <nav class="main-nav">
+                <a href="#" class="nav-link" id="aboutLink">Om</a>
+            </nav>
+        </div>
         <div class="controls">
             <div class="search-container">
                 <input type="text" id="searchInput" class="input-wide" placeholder="Søk etter sted, rutepunkt eller rute" aria-label="Søk etter sted, rutepunkt eller rute">
@@ -70,6 +75,33 @@
             <div class="loading" id="loading">
                 <div class="spinner"></div>
                 <div>Laster data...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- About Modal -->
+    <div id="aboutModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Om Stiflyt Grunneier</h2>
+                <button class="modal-close" id="closeAboutModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>
+                    Stiflyt Grunneier er et verktøy for å visualisere og analysere grunneiere langs ruter og lenker.
+                </p>
+                <h3>Funksjoner</h3>
+                <ul>
+                    <li>Søk etter steder, rutepunkter og ruter</li>
+                    <li>Visualiser lenker og ankernoder på kartet</li>
+                    <li>Velg lenker og hent grunneierinformasjon</li>
+                    <li>Tegn egendefinerte linjer for å analysere spesifikke områder</li>
+                    <li>Last ned Excel-rapporter med eierinformasjon</li>
+                </ul>
+                <h3>Teknisk informasjon</h3>
+                <p>
+                    Verktøyet bruker data fra Matrikkel for å hente grunneierinformasjon langs valgte geometrier.
+                </p>
             </div>
         </div>
     </div>
@@ -1204,6 +1236,44 @@
         }
 
         // Route filter input handler removed - routes are not loaded
+
+        // About modal functionality
+        const aboutLink = document.getElementById('aboutLink');
+        const aboutModal = document.getElementById('aboutModal');
+        const closeAboutModal = document.getElementById('closeAboutModal');
+
+        if (aboutLink) {
+            aboutLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (aboutModal) {
+                    aboutModal.classList.add('active');
+                }
+            });
+        }
+
+        if (closeAboutModal) {
+            closeAboutModal.addEventListener('click', () => {
+                if (aboutModal) {
+                    aboutModal.classList.remove('active');
+                }
+            });
+        }
+
+        // Close modal when clicking outside
+        if (aboutModal) {
+            aboutModal.addEventListener('click', (e) => {
+                if (e.target === aboutModal) {
+                    aboutModal.classList.remove('active');
+                }
+            });
+        }
+
+        // Close modal with Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && aboutModal && aboutModal.classList.contains('active')) {
+                aboutModal.classList.remove('active');
+            }
+        });
 
         // Initialize on page load
         window.addEventListener('load', () => {
