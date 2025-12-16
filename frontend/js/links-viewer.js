@@ -308,15 +308,6 @@ class LinksViewer {
                     // Create tooltip content with route information
                     let tooltipContent = null;
 
-                    // Build endpoint section (just node IDs - names come from anchor_nodes)
-                    const endpointSection = `
-                        <div style="margin: 5px 0; padding: 5px 0; border-top: 1px solid #ddd; border-bottom: 1px solid #ddd;">
-                            <small><strong>Endepunkter:</strong></small><br>
-                            <small>Fra: Node ${aNode}</small><br>
-                            <small>Til: Node ${bNode}</small>
-                        </div>
-                    `;
-
                     if (routes && routes.length > 0) {
                         // Build tooltip with route information
                         const routeList = routes.map(route => {
@@ -327,28 +318,24 @@ class LinksViewer {
                             const typeLabel = rutetype ? ` (${rutetype})` : '';
                             const ansvarligLabel = vedlikeholdsansvarlig ? `<br><small style="color: #666;">${vedlikeholdsansvarlig}</small>` : '';
                             return `<div style="margin: 3px 0; padding-bottom: 3px; border-bottom: 1px solid #eee;">
-                                <strong>${rutenummer}</strong>${typeLabel}<br>
-                                <small>${rutenavn}</small>${ansvarligLabel}
+                                <strong>Rute: ${rutenavn}</strong>${typeLabel}<br>
+                                <small>${rutenummer}</small>${ansvarligLabel}
                             </div>`;
                         }).join('');
 
                         tooltipContent = `
                             <div style="max-width: 400px;">
-                                <strong>Link ${linkId}</strong><br>
-                                <small>Lengde: ${lengthKm.toFixed(2)} km</small>
-                                ${endpointSection}
-                                ${routes.length > 1 ? `<br><strong>Ruter (${routes.length}):</strong>` : '<br><strong>Rute:</strong>'}
+                                ${routes.length > 1 ? `<strong>Ruter (${routes.length}):</strong>` : ''}
                                 ${routeList}
+                                <small>Lengde: ${lengthKm.toFixed(2)} km</small>
                             </div>
                         `;
                     } else {
                         // No routes, show basic info
                         tooltipContent = `
                             <div style="max-width: 200px;">
-                                <strong>Link ${linkId}</strong><br>
+                                <small style="color: #999;">Ingen ruter</small><br>
                                 <small>Lengde: ${lengthKm.toFixed(2)} km</small>
-                                ${endpointSection}
-                                <small style="color: #999;">Ingen ruter</small>
                             </div>
                         `;
                     }
