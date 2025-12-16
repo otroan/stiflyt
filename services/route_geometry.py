@@ -124,7 +124,6 @@ def get_corrected_route_geometry(conn, rutenummer):
     connections = find_segment_connections(conn, segment_objids, ROUTE_SCHEMA)
 
     # Find connected components by following connections
-    import json
     components = []
     visited = set()
 

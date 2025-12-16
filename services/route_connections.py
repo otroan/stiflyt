@@ -152,7 +152,6 @@ def find_sequential_connections(conn, segments, include_geo_json=False):
               - 'is_connected': True if distance <= 1.0
               - 'end_point', 'start_point': GeoJSON points (if include_geo_json=True)
     """
-    import json
     connection_info = []
 
     if len(segments) < 2:
