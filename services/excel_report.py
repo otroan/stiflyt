@@ -4,7 +4,6 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
-from .route_service import get_route_data, RouteNotFoundError, RouteDataError
 from .matrikkel_owner_service import fetch_owners_for_matrikkelenheter
 from .database import db_connection, get_teig_schema
 
@@ -206,36 +205,4 @@ def generate_owners_excel_from_data(matrikkelenhet_vector, metadata=None, title=
     output.seek(0)
 
     return output.getvalue()
-
-
-def generate_owners_excel(rutenummer):
-    """
-    Generate Excel report for route owners.
-
-    The report contains:
-    - Offset along the path (in meters and kilometers)
-    - Length of path within this matrikkelenhet (in meters and kilometers)
-    - Matrikkelenhet
-    - Bruksnavn
-    - Kontaktinformasjon (owner information from Matrikkel API, if credentials are configured)
-
-    Args:
-        rutenummer: Route identifier
-
-    Returns:
-        bytes: Excel file as bytes
-
-    Raises:
-        RouteNotFoundError: If the route is not found
-        RouteDataError: If route data cannot be processed
-    """
-    # Get route data including matrikkelenhet_vector
-    route_data = get_route_data(rutenummer, use_corrected_geometry=True)
-
-    # Extract matrikkelenhet vector
-    matrikkelenhet_vector = route_data.get('matrikkelenhet_vector', [])
-    metadata = route_data.get('metadata', {})
-
-    # Use the shared function
-    return generate_owners_excel_from_data(matrikkelenhet_vector, metadata, rutenummer)
 

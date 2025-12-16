@@ -130,3 +130,4 @@ def get_owners_for_linestring(geometry_geojson):
 
 
 
+

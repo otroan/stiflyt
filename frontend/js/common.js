@@ -99,99 +99,6 @@ async function searchPlaces(query, limit = 20) {
 }
 
 /**
- * Load route data
- * @param {string} rutenummer - Route identifier
- * @returns {Promise<Object>} Route data
- */
-async function loadRouteData(rutenummer) {
-    const response = await apiRequest(`/api/v1/routes/${rutenummer}`);
-    if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = `Rute ikke funnet: ${response.statusText}`;
-        try {
-            const errorJson = JSON.parse(errorText);
-            errorMessage = errorJson.detail || errorMessage;
-        } catch (e) {
-            // Ignore JSON parse errors
-        }
-        throw new Error(errorMessage);
-    }
-    return response.json();
-}
-
-/**
- * Load route segments
- * @param {string} rutenummer - Route identifier
- * @returns {Promise<Object>} Segments data
- */
-async function loadRouteSegmentsData(rutenummer) {
-    const response = await apiRequest(`/api/v1/routes/${rutenummer}/segments`);
-    if (!response.ok) {
-        throw new Error(`Failed to load segments: ${response.statusText}`);
-    }
-    return response.json();
-}
-
-/**
- * Load route debug information
- * @param {string} rutenummer - Route identifier
- * @returns {Promise<Object>} Debug data
- */
-async function loadRouteDebugData(rutenummer) {
-    const response = await apiRequest(`/api/v1/routes/${rutenummer}/debug`);
-    if (!response.ok) {
-        throw new Error(`Failed to load debug info: ${response.statusText}`);
-    }
-    return response.json();
-}
-
-/**
- * Load routes within a bounding box
- * @param {Object} bbox - Bounding box {min_lat, min_lng, max_lat, max_lng}
- * @param {Object} filters - Optional filters {prefix, organization, limit}
- * @returns {Promise<Object>} Routes data with geometry
- */
-async function loadRoutesInBbox(bbox, filters = {}) {
-    const { min_lat, min_lng, max_lat, max_lng } = bbox;
-    const { prefix, organization, limit = 1000, zoom } = filters;
-
-    // Build query string
-    const params = new URLSearchParams({
-        min_lat: min_lat.toString(),
-        min_lng: min_lng.toString(),
-        max_lat: max_lat.toString(),
-        max_lng: max_lng.toString(),
-        limit: limit.toString()
-    });
-
-    if (prefix) {
-        params.append('prefix', prefix);
-    }
-
-    if (organization) {
-        params.append('organization', organization);
-    }
-
-    if (zoom !== undefined) {
-        params.append('zoom', zoom.toString());
-    }
-
-    const response = await apiRequest(`/api/v1/routes/bbox?${params.toString()}`);
-    if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = `Failed to load routes: ${response.statusText}`;
-        try {
-            const errorJson = JSON.parse(errorText);
-            errorMessage = errorJson.detail || errorMessage;
-        } catch (e) {
-            // Ignore JSON parse errors
-        }
-        throw new Error(errorMessage);
-    }
-    return response.json();
-}
-
-/**
  * Load anchor nodes by node IDs or bounding box
  * @param {Object} options - Options object
  * @param {Array<number>} options.nodeIds - Array of node IDs (optional)
@@ -632,10 +539,6 @@ if (typeof module !== 'undefined' && module.exports) {
         apiRequest,
         searchRoutes,
         searchPlaces,
-        loadRouteData,
-        loadRouteSegmentsData,
-        loadRouteDebugData,
-        loadRoutesInBbox,
         loadLinksInBbox,
         loadAnchorNodes,
         displayRouteGeometry,

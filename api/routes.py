@@ -1,53 +1,31 @@
 """API routes."""
+import os
 import secrets
 import traceback
 import json
-from functools import wraps
-from typing import Optional, Callable, Any, Annotated
+from typing import Optional, Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Path, Depends, Response, status
+from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, AnchorNodeItem, AnchorNodeResponse, PlaceSearchResponse
+from dotenv import load_dotenv
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse
 from services.route_service import search_places
-from services.database import get_db_connection, db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
-from services.excel_report import generate_owners_excel, generate_owners_excel_from_data
+from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
+from services.excel_report import generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
 import psycopg
 from psycopg.rows import dict_row
 
+# Load environment variables from .env file (if present)
+load_dotenv()
+
 router = APIRouter()
 security = HTTPBasic()
 
-
-def handle_route_errors(operation_name: str):
-    """
-    Decorator to handle common error patterns (simplified - no longer route-specific).
-
-    Note: This decorator is kept for compatibility but route-specific error handling
-    has been removed since route endpoints are no longer used.
-    """
-    def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            try:
-                result = await func(*args, **kwargs)
-                return result
-            except HTTPException:
-                raise
-            except Exception as e:
-                error_detail = str(e)
-                print(f"Error {operation_name}: {error_detail}")
-                print(traceback.format_exc())
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Error {operation_name}: {error_detail}"
-                )
-        return wrapper
-    return decorator
-
-
-# Route-related endpoints removed - routes are not loaded in this part of the tool
+# Shared authentication credentials from environment variables
+SHARED_USERNAME = os.getenv("SHARED_USERNAME", "dnt")
+SHARED_PASSWORD = os.getenv("SHARED_PASSWORD", "dnt")
 
 
 @router.get("/search/places", response_model=PlaceSearchResponse)
@@ -59,16 +37,6 @@ async def search_places_endpoint(
     results = search_places(q, limit=limit)
     return PlaceSearchResponse(results=results, total=len(results))
 
-
-# Route bbox endpoint removed - routes are not loaded in this part of the tool
-
-
-# Route endpoints removed - routes are not loaded in this part of the tool
-# Removed endpoints:
-# - GET /routes/{rutenummer}
-# - GET /routes/{rutenummer}/segments
-# - GET /routes/{rutenummer}/debug
-# - GET /routes/{rutenummer}/corrected
 
 def require_shared_login(credentials: HTTPBasicCredentials = Depends(security)):
     """
@@ -87,17 +55,13 @@ def require_shared_login(credentials: HTTPBasicCredentials = Depends(security)):
             headers={"WWW-Authenticate": "Basic"},
         )
 
-    # Hvis du vil, kan du returnere en “user”-struktur, men her er det bare fellesbruker
+    # Hvis du vil, kan du returnere en "user"-struktur, men her er det bare fellesbruker
     return {"username": SHARED_USERNAME}
-
-SHARED_USERNAME = "dnt"
-SHARED_PASSWORD = "dnt"
 
 # GET /routes/{rutenummer}/owners.xlsx endpoint removed - replaced by POST /owners.xlsx
 
 
 @router.post("/owners.xlsx")
-@handle_route_errors("generating owners Excel report")
 async def download_owners_excel(
     request: ExcelReportRequest,
     user=Depends(require_shared_login),
@@ -114,13 +78,10 @@ async def download_owners_excel(
     """
     try:
         # Convert matrikkelenhet_vector items to dict format if needed
-        matrikkelenhet_vector = []
-        for item in request.matrikkelenhet_vector:
-            if isinstance(item, dict):
-                matrikkelenhet_vector.append(item)
-            else:
-                # Convert Pydantic model to dict
-                matrikkelenhet_vector.append(item.dict())
+        matrikkelenhet_vector = [
+            item if isinstance(item, dict) else item.dict()
+            for item in request.matrikkelenhet_vector
+        ]
 
         # Generate Excel file
         excel_bytes = generate_owners_excel_from_data(
@@ -255,6 +216,48 @@ def parse_geometry(geom_data) -> dict:
         return geom_data
 
 
+def build_routes_info_from_arrays(rutenummer_list, rutenavn_list, rutetype_list, vedlikeholdsansvarlig_list):
+    """
+    Build route info objects from parallel arrays, deduplicating by rutenummer.
+
+    Args:
+        rutenummer_list: List of route numbers
+        rutenavn_list: List of route names
+        rutetype_list: List of route types
+        vedlikeholdsansvarlig_list: List of organizations
+
+    Returns:
+        List of route info dicts, deduplicated by rutenummer
+    """
+    seen_rutenummer = set()
+    routes_info = []
+    for rutenummer, rutenavn, rutetype, vedlikeholdsansvarlig in zip(
+        rutenummer_list, rutenavn_list, rutetype_list, vedlikeholdsansvarlig_list
+    ):
+        if rutenummer and rutenummer not in seen_rutenummer:
+            seen_rutenummer.add(rutenummer)
+            routes_info.append({
+                "rutenummer": rutenummer,
+                "rutenavn": rutenavn,
+                "rutetype": rutetype,
+                "vedlikeholdsansvarlig": vedlikeholdsansvarlig
+            })
+    return routes_info
+
+
+def create_empty_feature_collection() -> dict:
+    """Create an empty GeoJSON FeatureCollection."""
+    return {"type": "FeatureCollection", "features": []}
+
+
+def create_feature_collection_response(features: list) -> JSONResponse:
+    """Create a GeoJSON FeatureCollection JSONResponse."""
+    return JSONResponse(
+        content={"type": "FeatureCollection", "features": features},
+        media_type="application/geo+json"
+    )
+
+
 @router.get("/links")
 async def get_links(
     bbox: Annotated[str, Query(description="Bounding box as 'xmin,ymin,xmax,ymax'")],
@@ -301,11 +304,7 @@ async def get_links(
             )
             table_row = cur.fetchone()
             if not table_row:
-                # No links table present; return empty GeoJSON
-                return JSONResponse(
-                    content={"type": "FeatureCollection", "features": []},
-                    media_type="application/geo+json"
-                )
+                return create_feature_collection_response([])
 
             routes_view_quoted = quote_identifier(table_row['table_name'])
             full_routes_view_name = f"{schema_quoted}.{routes_view_quoted}"
@@ -331,19 +330,15 @@ async def get_links(
             ]
 
             # Add route list columns only if they exist
-            has_rutenavn_list = 'rutenavn_list' in existing_columns
-            has_rutenummer_list = 'rutenummer_list' in existing_columns
-            has_rutetype_list = 'rutetype_list' in existing_columns
-            has_vedlikeholdsansvarlig_list = 'vedlikeholdsansvarlig_list' in existing_columns
-
-            if has_rutenavn_list:
-                select_parts.append("l.rutenavn_list")
-            if has_rutenummer_list:
-                select_parts.append("l.rutenummer_list")
-            if has_rutetype_list:
-                select_parts.append("l.rutetype_list")
-            if has_vedlikeholdsansvarlig_list:
-                select_parts.append("l.vedlikeholdsansvarlig_list")
+            route_list_columns = [
+                'rutenavn_list',
+                'rutenummer_list',
+                'rutetype_list',
+                'vedlikeholdsansvarlig_list'
+            ]
+            for col in route_list_columns:
+                if col in existing_columns:
+                    select_parts.append(f"l.{col}")
 
             select_parts.append("ST_AsGeoJSON(ST_Transform(l.geom, 4326))::json as geometry")
 
@@ -368,51 +363,17 @@ async def get_links(
         # Parse geometry (handles both string and dict from PostGIS)
         geometry = parse_geometry(row["geometry"])
 
-        # Build route information from arrays
+        # Build route information from arrays (parallel arrays from database)
         # Arrays might be None if link has no routes or columns don't exist
-        rutenavn_list = row.get("rutenavn_list")
-        rutenummer_list = row.get("rutenummer_list")
-        rutetype_list = row.get("rutetype_list")
-        vedlikeholdsansvarlig_list = row.get("vedlikeholdsansvarlig_list")
+        rutenummer_list = row.get("rutenummer_list") or []
+        rutenavn_list = row.get("rutenavn_list") or []
+        rutetype_list = row.get("rutetype_list") or []
+        vedlikeholdsansvarlig_list = row.get("vedlikeholdsansvarlig_list") or []
 
-        # Ensure we have lists (handle None and ensure they're iterable)
-        if rutenavn_list is None:
-            rutenavn_list = []
-        if rutenummer_list is None:
-            rutenummer_list = []
-        if rutetype_list is None:
-            rutetype_list = []
-        if vedlikeholdsansvarlig_list is None:
-            vedlikeholdsansvarlig_list = []
-
-        # Create list of route info objects (deduplicate by rutenummer)
-        routes_info = []
-        seen_rutenummer = set()
-
-        # Combine arrays into route info objects
-        # Use the longest array as reference, but handle cases where arrays have different lengths
-        max_len = max(
-            len(rutenavn_list) if rutenavn_list else 0,
-            len(rutenummer_list) if rutenummer_list else 0,
-            len(rutetype_list) if rutetype_list else 0,
-            len(vedlikeholdsansvarlig_list) if vedlikeholdsansvarlig_list else 0
+        # Build route information from parallel arrays
+        routes_info = build_routes_info_from_arrays(
+            rutenummer_list, rutenavn_list, rutetype_list, vedlikeholdsansvarlig_list
         )
-
-        for i in range(max_len):
-            rutenummer = rutenummer_list[i] if rutenummer_list and i < len(rutenummer_list) else None
-            rutenavn = rutenavn_list[i] if rutenavn_list and i < len(rutenavn_list) else None
-            rutetype = rutetype_list[i] if rutetype_list and i < len(rutetype_list) else None
-            vedlikeholdsansvarlig = vedlikeholdsansvarlig_list[i] if vedlikeholdsansvarlig_list and i < len(vedlikeholdsansvarlig_list) else None
-
-            # Only add if we have at least rutenummer and haven't seen it before
-            if rutenummer and rutenummer not in seen_rutenummer:
-                seen_rutenummer.add(rutenummer)
-                routes_info.append({
-                    "rutenummer": rutenummer,
-                    "rutenavn": rutenavn,
-                    "rutetype": rutetype,
-                    "vedlikeholdsansvarlig": vedlikeholdsansvarlig
-                })
 
         feature = {
             "type": "Feature",
@@ -427,15 +388,7 @@ async def get_links(
         }
         features.append(feature)
 
-    feature_collection = {
-        "type": "FeatureCollection",
-        "features": features
-    }
-
-    return JSONResponse(
-        content=feature_collection,
-        media_type="application/geo+json"
-    )
+    return create_feature_collection_response(features)
 
 
 @router.get("/anchor-nodes")
@@ -478,76 +431,43 @@ async def get_anchor_nodes(
                 table_row = cur.fetchone()
                 if not table_row:
                     print("Anchor nodes relation not found in discovered route schema")
-                    feature_collection = {
-                        "type": "FeatureCollection",
-                        "features": []
-                    }
-                    return JSONResponse(
-                        content=feature_collection,
-                        media_type="application/geo+json"
-                    )
+                    return create_feature_collection_response([])
 
                 anchor_nodes_table_quoted = quote_identifier(table_row["relname"])
                 full_anchor_nodes_name = f"{schema_quoted}.{anchor_nodes_table_quoted}"
 
+                # Common SELECT clause (table name is safe - validated via quote_identifier)
+                select_clause = f"""
+                    SELECT
+                        node_id,
+                        navn,
+                        navn_kilde,
+                        navn_distance_m,
+                        ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
+                    FROM {full_anchor_nodes_name}
+                """
+
+                # Build WHERE clause and parameters based on filter type
                 if node_ids:
-                    # Filter by specific node IDs
                     node_id_list = [int(nid.strip()) for nid in node_ids.split(',') if nid.strip().isdigit()]
                     if not node_id_list:
                         raise HTTPException(status_code=400, detail="Invalid node_ids format")
-
                     placeholders = ','.join(['%s'] * len(node_id_list))
-                    query = f"""
-                        SELECT
-                            node_id,
-                            navn,
-                            navn_kilde,
-                            navn_distance_m,
-                            ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
-                        FROM {full_anchor_nodes_name}
-                        WHERE node_id IN ({placeholders})
-                        ORDER BY node_id
-                        LIMIT %s
-                        OFFSET %s
-                    """
-                    cur.execute(query, (*node_id_list, limit, offset))
+                    where_clause = f"WHERE node_id IN ({placeholders})"
+                    params = (*node_id_list, limit, offset)
                 elif bbox:
-                    # Filter by bounding box
                     try:
                         xmin, ymin, xmax, ymax = parse_bbox(bbox)
                     except ValueError as e:
                         raise HTTPException(status_code=400, detail=str(e))
-
-                    query = f"""
-                        SELECT
-                            node_id,
-                            navn,
-                            navn_kilde,
-                            navn_distance_m,
-                            ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
-                        FROM {full_anchor_nodes_name}
-                        WHERE geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)
-                            AND geom IS NOT NULL
-                        ORDER BY node_id
-                        LIMIT %s
-                        OFFSET %s
-                    """
-                    cur.execute(query, (xmin, ymin, xmax, ymax, LINKS_SRID, limit, offset))
+                    where_clause = "WHERE geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s) AND geom IS NOT NULL"
+                    params = (xmin, ymin, xmax, ymax, LINKS_SRID, limit, offset)
                 else:
-                    # Get all nodes (up to limit)
-                    query = f"""
-                        SELECT
-                            node_id,
-                            navn,
-                            navn_kilde,
-                            navn_distance_m,
-                            ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
-                        FROM {full_anchor_nodes_name}
-                        ORDER BY node_id
-                        LIMIT %s
-                        OFFSET %s
-                    """
-                    cur.execute(query, (limit, offset))
+                    where_clause = ""
+                    params = (limit, offset)
+
+                query = f"{select_clause}{where_clause} ORDER BY node_id LIMIT %s OFFSET %s"
+                cur.execute(query, params)
 
                 rows = cur.fetchall()
 
@@ -571,23 +491,8 @@ async def get_anchor_nodes(
             }
             features.append(feature)
 
-        feature_collection = {
-            "type": "FeatureCollection",
-            "features": features
-        }
-
-        return JSONResponse(
-            content=feature_collection,
-            media_type="application/geo+json"
-        )
+        return create_feature_collection_response(features)
     except Exception as e:
         # If table doesn't exist or any other error, return empty FeatureCollection
         print(f"Error loading anchor nodes: {str(e)}")
-        feature_collection = {
-            "type": "FeatureCollection",
-            "features": []
-        }
-        return JSONResponse(
-            content=feature_collection,
-            media_type="application/geo+json"
-        )
+        return create_feature_collection_response([])

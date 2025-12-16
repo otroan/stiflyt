@@ -25,25 +25,13 @@ backend: ## Start FastAPI backend server
 	@echo "API docs: http://localhost:$(BACKEND_PORT)/docs"
 	@export DB_USER=$(DB_USER) && \
 	. $(VENV)/bin/activate && \
-	uvicorn main:app --reload --host 0.0.0.0 --port $(BACKEND_PORT)
+	uvicorn main:app --reload --host 127.0.0.1 --port $(BACKEND_PORT)
 
 backend-prod: ## Start FastAPI backend server in production mode
 	@echo "Starting backend in production mode on http://localhost:$(BACKEND_PORT)"
 	@export DB_USER=$(DB_USER) && \
 	. $(VENV)/bin/activate && \
-	uvicorn main:app --host 0.0.0.0 --port $(BACKEND_PORT) --workers 4
-
-frontend: ## Start frontend HTTP server
-	@echo "Starting frontend on http://localhost:$(FRONTEND_PORT)"
-	@echo "Open http://localhost:$(FRONTEND_PORT) in your browser"
-	cd frontend && $(PYTHON) server.py $(FRONTEND_PORT)
-
-start: ## Start both backend and frontend (requires two terminals)
-	@echo "To start both services, run:"
-	@echo "  Terminal 1: make backend"
-	@echo "  Terminal 2: make frontend"
-	@echo ""
-	@echo "Or use: make backend & make frontend"
+	uvicorn main:app --host 127.0.0.1 --port $(BACKEND_PORT) --workers 4
 
 test: ## Run tests
 	. $(VENV)/bin/activate && pytest
