@@ -46,6 +46,7 @@
                     <div class="route-info">
                         <h3>Utvalgsinformasjon</h3>
                         <div id="routeInfo"></div>
+                        <div id="errorSummaryBanner" class="error-banner hidden"></div>
                         <button id="downloadExcelBtn" class="download-button hidden">
                             <span class="icon">📥</span>
                             <span>Last ned Excel-rapport (eiere)</span>
@@ -373,10 +374,39 @@
         }
 
 
+        // Display error summary banner
+        function displayErrorSummary(errorSummary) {
+            const banner = document.getElementById('errorSummaryBanner');
+            if (!banner) return;
+
+            if (errorSummary) {
+                banner.innerHTML = `
+                    <div class="error-banner-content">
+                        <span class="error-icon">⚠️</span>
+                        <span class="error-text">${errorSummary}</span>
+                    </div>
+                `;
+                banner.classList.remove('hidden');
+            } else {
+                banner.classList.add('hidden');
+            }
+        }
+
         // Display route info
         function displayRouteInfo(data) {
             const info = document.getElementById('routeInfo');
             const meta = data.metadata;
+
+            // Display error summary if present
+            if (data.error_summary) {
+                displayErrorSummary(data.error_summary);
+            } else {
+                // Hide error banner if no errors
+                const banner = document.getElementById('errorSummaryBanner');
+                if (banner) {
+                    banner.classList.add('hidden');
+                }
+            }
 
             // Format endpoint name with source indicator
             function formatEndpointName(endpoint) {
@@ -1620,12 +1650,18 @@
             const routeData = {
                 geometry: data.geometry,
                 metadata: metadata,
-                matrikkelenhet_vector: data.matrikkelenhet_vector || []
+                matrikkelenhet_vector: data.matrikkelenhet_vector || [],
+                error_summary: data.error_summary || null
             };
 
             // Display using existing functions
             displayRouteInfo(routeData);
             displayProperties(routeData);
+
+            // Display error summary banner if present
+            if (data.error_summary) {
+                displayErrorSummary(data.error_summary);
+            }
 
             // Display geometry on map (similar to route)
             if (data.geometry) {

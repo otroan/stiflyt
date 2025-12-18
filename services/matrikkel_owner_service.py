@@ -114,6 +114,62 @@ def format_owner_info(owners: List[OwnerInfo]) -> str:
     return "; ".join(owner_strings) if owner_strings else ""
 
 
+def analyze_owner_fetch_errors(owner_results: List[Tuple[Dict, Optional[str], Optional[Exception]]]) -> Dict[str, Any]:
+    """
+    Analyze errors from fetch_owners_for_matrikkelenheter results.
+
+    Args:
+        owner_results: List of tuples from fetch_owners_for_matrikkelenheter
+
+    Returns:
+        dict with:
+            - has_errors: bool - True if any errors found
+            - error_count: int - Number of items with errors
+            - total_count: int - Total number of items
+            - error_summary: str - Human-readable error summary
+            - error_details: List[str] - List of error messages (first 10)
+    """
+    total_count = len(owner_results)
+    errors = []
+    error_items = []
+
+    for item, owner_info, error in owner_results:
+        if error is not None:
+            matrikkel_str = item.get('matrikkelenhet', 'Ukjent matrikkelenhet')
+            error_msg = str(error)
+            errors.append(f"{matrikkel_str}: {error_msg}")
+            error_items.append({
+                'matrikkelenhet': matrikkel_str,
+                'error': error_msg
+            })
+
+    error_count = len(errors)
+    has_errors = error_count > 0
+
+    # Create summary message
+    if has_errors:
+        if error_count == total_count:
+            error_summary = f"Kunne ikke hente eierinformasjon for noen av {total_count} eiendommer."
+        else:
+            error_summary = f"Kunne ikke hente eierinformasjon for {error_count} av {total_count} eiendommer."
+
+        # Add details (limit to first 10 to avoid overwhelming the user)
+        if error_count <= 10:
+            error_summary += f" Detaljer: {'; '.join(errors)}"
+        else:
+            error_summary += f" Første 10 feil: {'; '.join(errors[:10])} (og {error_count - 10} flere)"
+    else:
+        error_summary = None
+
+    return {
+        'has_errors': has_errors,
+        'error_count': error_count,
+        'total_count': total_count,
+        'error_summary': error_summary,
+        'error_details': errors[:10]  # Limit to first 10 for display
+    }
+
+
 def fetch_owners_for_matrikkelenheter(
     matrikkelenhet_items: List[Dict],
     config: Optional[MatrikkelConfig] = None

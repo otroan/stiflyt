@@ -8,7 +8,7 @@ from .route_service import (
     geometry_to_geojson,
     format_matrikkelenhet
 )
-from .matrikkel_owner_service import fetch_owners_for_matrikkelenheter
+from .matrikkel_owner_service import fetch_owners_for_matrikkelenheter, analyze_owner_fetch_errors
 
 
 class GeometryOwnerError(Exception):
@@ -94,6 +94,9 @@ def get_owners_for_linestring(geometry_geojson):
             # This will gracefully handle missing credentials by returning None for owner info
             owner_results = fetch_owners_for_matrikkelenheter(matrikkelenhet_vector)
 
+            # Analyze errors for summary
+            error_analysis = analyze_owner_fetch_errors(owner_results)
+
             # Add owner information to matrikkelenhet_vector
             # Create a mapping from matrikkelenhet identifier to owner info
             owner_info_map = {}
@@ -120,7 +123,8 @@ def get_owners_for_linestring(geometry_geojson):
                 'geometry': geometry_geojson,
                 'total_length_meters': total_length,
                 'total_length_km': total_length_km,
-                'matrikkelenhet_vector': matrikkelenhet_vector
+                'matrikkelenhet_vector': matrikkelenhet_vector,
+                'error_summary': error_analysis['error_summary'] if error_analysis['has_errors'] else None
             }
 
         except Exception as e:

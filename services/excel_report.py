@@ -4,7 +4,7 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
-from .matrikkel_owner_service import fetch_owners_for_matrikkelenheter
+from .matrikkel_owner_service import fetch_owners_for_matrikkelenheter, analyze_owner_fetch_errors
 from .database import db_connection, get_teig_schema
 
 
@@ -80,6 +80,11 @@ def generate_owners_excel_from_data(matrikkelenhet_vector, metadata=None, title=
 
     # Fetch owner information from Matrikkel API (if credentials are available)
     owner_results = fetch_owners_for_matrikkelenheter(matrikkelenhet_vector)
+
+    # Check for errors - if any errors found, do not generate Excel report
+    error_analysis = analyze_owner_fetch_errors(owner_results)
+    if error_analysis['has_errors']:
+        raise ValueError(error_analysis['error_summary'])
 
     # Create a mapping from matrikkelenhet identifier to owner info for quick lookup
     owner_info_map = {}

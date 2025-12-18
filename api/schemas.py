@@ -55,6 +55,7 @@ class GeometryOwnerResponse(BaseModel):
     total_length_meters: float
     total_length_km: float
     matrikkelenhet_vector: List[MatrikkelenhetItemWithOwners]
+    error_summary: Optional[str] = None  # Summary of errors when fetching owner information
 
 
 class ExcelReportRequest(BaseModel):

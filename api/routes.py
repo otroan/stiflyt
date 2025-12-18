@@ -84,6 +84,7 @@ async def download_owners_excel(
         ]
 
         # Generate Excel file
+        # This will raise ValueError if any Matrikkel API errors occur
         excel_bytes = generate_owners_excel_from_data(
             matrikkelenhet_vector,
             request.metadata,
@@ -101,6 +102,14 @@ async def download_owners_excel(
             content=excel_bytes,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers=headers,
+        )
+    except ValueError as e:
+        # This is raised when Matrikkel API errors are detected
+        # Return 400 Bad Request with error summary
+        print(f"Matrikkel API errors detected, Excel report not generated: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
         )
     except Exception as e:
         print(f"Error generating Excel report: {str(e)}")

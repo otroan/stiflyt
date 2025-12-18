@@ -264,6 +264,32 @@ button:disabled {
     font-size: 1.1rem;
 }
 
+.error-banner {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 4px;
+    border-left: 4px solid #ffc107;
+}
+
+.error-banner-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+.error-icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+}
+
+.error-text {
+    color: #856404;
+    font-size: 0.9rem;
+    line-height: 1.4;
+}
+
 /* Progress modal for Excel download */
 .download-progress-modal {
     display: none;
