@@ -441,33 +441,60 @@ def find_matrikkelenhet_intersections(conn, route_geom):
     Find all intersections between route and teig polygons.
 
     All schema names are validated constants. Route geometry is parameterized.
+
+    Optimized to calculate ST_Intersection only once per row using CTE,
+    and uses bounding box filter (&&) for faster initial filtering.
     """
     # Validate schema names (should always be valid, but check for safety)
     if not validate_schema_name(TEIG_SCHEMA):
         raise ValueError(f"Invalid TEIG_SCHEMA: {TEIG_SCHEMA}")
 
+    # Optimized query: Calculate ST_Intersection once using CTE
+    # Use bounding box filter (&&) first for faster filtering
     query = f"""
+        WITH intersections AS (
+            SELECT
+                t.matrikkelnummertekst,
+                t.kommunenummer,
+                t.kommunenavn,
+                t.arealmerknadtekst,
+                t.lagretberegnetareal,
+                t.teigid,
+                m.bruksnavn,
+                m.gardsnummer,
+                m.bruksnummer,
+                m.festenummer,
+                ST_Intersection(t.omrade::geometry, %s::geometry) as intersection_geom
+            FROM {TEIG_SCHEMA}.teig t
+            LEFT JOIN {TEIG_SCHEMA}.matrikkelenhet m ON m.teig_fk = t.teigid
+            WHERE t.omrade::geometry && %s::geometry  -- Fast bounding box filter first
+            AND ST_Intersects(t.omrade::geometry, %s::geometry)  -- Precise intersection check
+        )
         SELECT
-            t.matrikkelnummertekst,
-            t.kommunenummer,
-            t.kommunenavn,
-            t.arealmerknadtekst,
-            t.lagretberegnetareal,
-            t.teigid,
-            m.bruksnavn,
-            m.gardsnummer,
-            m.bruksnummer,
-            m.festenummer,
-            ST_Intersection(t.omrade::geometry, %s::geometry) as intersection_geom,
-            ST_Length(ST_Transform(ST_Intersection(t.omrade::geometry, %s::geometry), 4326)::geography) as length_meters
-        FROM {TEIG_SCHEMA}.teig t
-        LEFT JOIN {TEIG_SCHEMA}.matrikkelenhet m ON m.teig_fk = t.teigid
-        WHERE ST_Intersects(t.omrade::geometry, %s::geometry)
-        AND ST_GeometryType(ST_Intersection(t.omrade::geometry, %s::geometry)) IN ('ST_LineString', 'ST_MultiLineString');
+            matrikkelnummertekst,
+            kommunenummer,
+            kommunenavn,
+            arealmerknadtekst,
+            lagretberegnetareal,
+            teigid,
+            bruksnavn,
+            gardsnummer,
+            bruksnummer,
+            festenummer,
+            intersection_geom,
+            CASE
+                WHEN intersection_geom IS NOT NULL
+                THEN ST_Length(ST_Transform(intersection_geom, 4326)::geography)
+                ELSE 0
+            END as length_meters
+        FROM intersections
+        WHERE intersection_geom IS NOT NULL
+        AND ST_GeometryType(intersection_geom) IN ('ST_LineString', 'ST_MultiLineString');
     """
 
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(query, (route_geom, route_geom, route_geom, route_geom))
+        # Only need route_geom 3 times now (was 4): &&, ST_Intersects, and ST_Intersection
+        cur.execute(query, (route_geom, route_geom, route_geom))
         return cur.fetchall()
 
 

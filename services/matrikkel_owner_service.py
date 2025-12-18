@@ -23,15 +23,23 @@ def get_matrikkel_config() -> Optional[MatrikkelConfig]:
     if not username or not password:
         return None
 
-    base_url = os.getenv('MATRIKKEL_BASE_URL', 'https://prodtest.matrikkel.no/matrikkelapi/wsapi/v1')
-    klient_identifikasjon = os.getenv('MATRIKKEL_KLIENT_IDENTIFIKASJON', 'stiflyt3')
+    # Build config, using dataclass defaults if env vars are not set
+    config_kwargs = {
+        'username': username,
+        'password': password,
+    }
 
-    return MatrikkelConfig(
-        username=username,
-        password=password,
-        base_url=base_url,
-        klient_identifikasjon=klient_identifikasjon
-    )
+    # Only override base_url if explicitly set in environment
+    base_url = os.getenv('MATRIKKEL_BASE_URL')
+    if base_url:
+        config_kwargs['base_url'] = base_url
+
+    # Only override klient_identifikasjon if explicitly set in environment
+    klient_identifikasjon = os.getenv('MATRIKKEL_KLIENT_IDENTIFIKASJON')
+    if klient_identifikasjon:
+        config_kwargs['klient_identifikasjon'] = klient_identifikasjon
+
+    return MatrikkelConfig(**config_kwargs)
 
 
 def parse_matrikkelenhet_string(matrikkel_str: str) -> Optional[MatrikkelIdent]:

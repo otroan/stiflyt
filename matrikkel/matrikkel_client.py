@@ -17,8 +17,9 @@ class MatrikkelConfig:
     """Configuration for Matrikkel API client."""
     username: str
     password: str
-    base_url: str = "https://prodtest.matrikkel.no/matrikkelapi/wsapi/v1"
-    klient_identifikasjon: str = "stiflyt3"
+    # base_url: str = "https://prodtest.matrikkel.no/matrikkelapi/wsapi/v1"
+    base_url: str = "https://www.matrikkel.no/matrikkelapi/wsapi/v1"
+    klient_identifikasjon: str = "stiflyt.dnt.no"
     system_version: str = "1.0"
     locale: str = "nb_NO"
     koordinatsystem_kode_id: int = 25833
