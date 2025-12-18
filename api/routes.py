@@ -121,6 +121,9 @@ async def download_owners_excel(
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers=headers,
         )
+    except HTTPException:
+        # Re-raise HTTPException - don't catch these
+        raise
     except ValueError as e:
         # This is raised when Matrikkel API errors are detected
         # Return 400 Bad Request with error summary
@@ -168,6 +171,9 @@ async def get_geometry_owners(request: GeometryOwnerRequest):
     try:
         result = get_owners_for_linestring(request.geometry)
         return GeometryOwnerResponse(**result)
+    except HTTPException:
+        # Re-raise HTTPException - don't catch these
+        raise
     except GeometryOwnerError as e:
         raise HTTPException(
             status_code=400,
@@ -222,6 +228,9 @@ async def get_point_matrikkelenhet(
             )
 
         return PointMatrikkelResponse(**result)
+    except HTTPException:
+        # Re-raise HTTPException (404, etc.) - don't catch these
+        raise
     except PointMatrikkelError as e:
         raise HTTPException(
             status_code=400,

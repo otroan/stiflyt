@@ -103,6 +103,11 @@
                 <p>
                     Verktøyet bruker data fra Matrikkel for å hente grunneierinformasjon langs valgte geometrier.
                 </p>
+                <h3>Rapporter feil</h3>
+                <p>
+                    Har du funnet en feil eller har du forslag til forbedringer?
+                    <a href="mailto:otroan@employees.org?subject=Feilrapport%20-%20Stiflyt%20Grunneier" style="color: #3498db; text-decoration: underline;">Send e-post til otroan@employees.org</a>.
+                </p>
             </div>
         </div>
     </div>
@@ -1873,12 +1878,25 @@
 
                 if (!response.ok) {
                     if (response.status === 404) {
-                        alert('Ingen matrikkelenhet funnet på dette punktet.');
+                        // No matrikkelenhet found - this is a normal case, not an error
+                        alert('Ingen matrikkelenhet funnet på dette punktet.\n\nDette kan skje hvis punktet er:\n- I sjø eller vann\n- Utenfor Norge\n- I et område uten registrerte teiger');
+                        return;
+                    } else if (response.status === 400) {
+                        // Bad request - invalid coordinates or other client error
+                        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+                        alert(`Ugyldig forespørsel: ${errorData.detail || response.statusText}`);
+                        return;
+                    } else if (response.status === 500) {
+                        // Server error
+                        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+                        console.error('Server error:', errorData);
+                        alert(`Serverfeil: ${errorData.detail || response.statusText}\n\nVennligst prøv igjen senere.`);
+                        return;
                     } else {
+                        // Other errors
                         const errorData = await response.json().catch(() => ({ detail: response.statusText }));
                         throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
                     }
-                    return;
                 }
 
                 const data = await response.json();
