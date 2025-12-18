@@ -107,6 +107,24 @@
         </div>
     </div>
 
+    <!-- Filename Dialog Modal -->
+    <div id="filenameDialogModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Velg filnavn</h2>
+                <button class="modal-close" id="closeFilenameDialog">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>Velg navn for Excel-rapporten:</p>
+                <input type="text" id="filenameInput" class="filename-input" placeholder="eierliste_rute_20241215.xlsx" />
+                <div class="modal-actions">
+                    <button id="cancelFilenameBtn" class="btn btn-secondary">Avbryt</button>
+                    <button id="confirmFilenameBtn" class="btn btn-primary">Last ned</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Download Progress Modal -->
     <div id="downloadProgressModal" class="download-progress-modal">
         <div class="download-progress-content">
@@ -477,6 +495,96 @@
                 return;
             }
 
+            // Generate default filename with fixed name and date
+            const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
+            const defaultFilename = `eierliste_${dateStr}.xlsx`;
+
+            // Show filename dialog modal
+            const filenameModal = document.getElementById('filenameDialogModal');
+            const filenameInput = document.getElementById('filenameInput');
+            const confirmBtn = document.getElementById('confirmFilenameBtn');
+            const cancelBtn = document.getElementById('cancelFilenameBtn');
+            const closeBtn = document.getElementById('closeFilenameDialog');
+
+            if (!filenameModal || !filenameInput || !confirmBtn || !cancelBtn) {
+                // Fallback to direct download if modal elements not found
+                await performDownload(matrikkelenhet_vector, metadata, defaultFilename);
+                return;
+            }
+
+            // Set default filename
+            filenameInput.value = defaultFilename;
+            filenameInput.select();
+
+            // Show modal
+            filenameModal.classList.add('active');
+
+            // Wait for user to confirm or cancel
+            return new Promise((resolve) => {
+                const cleanup = () => {
+                    filenameModal.classList.remove('active');
+                    confirmBtn.onclick = null;
+                    cancelBtn.onclick = null;
+                    if (closeBtn) closeBtn.onclick = null;
+                    if (filenameModal) filenameModal.onclick = null;
+                    document.removeEventListener('keydown', handleEscape);
+                };
+
+                const handleEscape = (e) => {
+                    if (e.key === 'Escape' && filenameModal.classList.contains('active')) {
+                        cleanup();
+                        resolve();
+                    }
+                };
+
+                const handleConfirm = async () => {
+                    let filename = filenameInput.value.trim();
+                    if (!filename) {
+                        filename = defaultFilename;
+                    }
+                    // Ensure .xlsx extension
+                    if (!filename.toLowerCase().endsWith('.xlsx')) {
+                        filename += '.xlsx';
+                    }
+                    // Sanitize filename (remove invalid characters)
+                    filename = filename.replace(/[<>:"/\\|?*]/g, '_');
+                    cleanup();
+                    await performDownload(matrikkelenhet_vector, metadata, filename);
+                    resolve();
+                };
+
+                const handleCancel = () => {
+                    cleanup();
+                    resolve();
+                };
+
+                const handleModalClick = (e) => {
+                    if (e.target === filenameModal) {
+                        handleCancel();
+                    }
+                };
+
+                confirmBtn.onclick = handleConfirm;
+                cancelBtn.onclick = handleCancel;
+                if (closeBtn) closeBtn.onclick = handleCancel;
+                if (filenameModal) filenameModal.onclick = handleModalClick;
+                document.addEventListener('keydown', handleEscape);
+
+                // Allow Enter key to confirm
+                filenameInput.onkeydown = (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleConfirm();
+                    } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        handleCancel();
+                    }
+                };
+            });
+        }
+
+        // Perform the actual download
+        async function performDownload(matrikkelenhet_vector, metadata, filename) {
             const downloadBtn = document.getElementById('downloadExcelBtn');
             const progressModal = document.getElementById('downloadProgressModal');
             const progressBar = document.getElementById('progressBar');
@@ -598,10 +706,23 @@
                 updateProgressStep(4, 'active');
                 updateProgressBar(90);
 
+                // Use the filename chosen by user (or from Content-Disposition header as fallback)
+                let downloadFilename = filename;
+                const contentDisposition = response.headers.get('Content-Disposition');
+                if (contentDisposition) {
+                    const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/);
+                    if (filenameMatch) {
+                        // Prefer user-chosen filename, but use header if user didn't specify
+                        if (!filename || filename === '') {
+                            downloadFilename = filenameMatch[1];
+                        }
+                    }
+                }
+
                 const downloadUrl = window.URL.createObjectURL(blob);
                 const link = document.createElement('a');
                 link.href = downloadUrl;
-                link.download = `${title}-owners.xlsx`;
+                link.download = downloadFilename;
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);

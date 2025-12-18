@@ -182,7 +182,12 @@ def generate_owners_excel_from_data(matrikkelenhet_vector, metadata=None, title=
             item.get('matrikkelenhet', '')
         )
         kontaktinformasjon = owner_info_map.get(key, "")
-        ws.cell(row=idx, column=7, value=kontaktinformasjon)
+        # Split by semicolon and put each owner on a new line
+        if kontaktinformasjon and ';' in kontaktinformasjon:
+            owners = [owner.strip() for owner in kontaktinformasjon.split(';')]
+            kontaktinformasjon = '\n'.join(owners)
+        kontakt_cell = ws.cell(row=idx, column=7, value=kontaktinformasjon)
+        kontakt_cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     # Format columns
     ws.column_dimensions['A'].width = 12

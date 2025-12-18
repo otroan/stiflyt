@@ -4,7 +4,7 @@ import secrets
 import traceback
 import json
 from typing import Optional, Annotated
-
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -91,9 +91,9 @@ async def download_owners_excel(
             request.title
         )
 
-        # Create filename
-        title = request.title or "rapport"
-        filename = f"{title}-owners.xlsx"
+        # Create filename with fixed name and date: eierliste_{dato}.xlsx
+        date_str = datetime.now().strftime('%Y%m%d')
+        filename = f"eierliste_{date_str}.xlsx"
 
         headers = {
             "Content-Disposition": f'attachment; filename="{filename}"'
