@@ -64,3 +64,27 @@ class ExcelReportRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None  # Optional metadata (rutenummer, rutenavn, total_length_km, etc.)
     title: Optional[str] = "Rapport"  # Title for the report
 
+
+class PointMatrikkelRequest(BaseModel):
+    """Request for point-based matrikkelenhet lookup."""
+    lat: float  # Latitude in WGS84 (EPSG:4326)
+    lon: float  # Longitude in WGS84 (EPSG:4326)
+
+
+class PointMatrikkelResponse(BaseModel):
+    """Response for point-based matrikkelenhet lookup."""
+    matrikkelenhet: str
+    matrikkelnummertekst: Optional[str] = None
+    bruksnavn: Optional[str] = None
+    kommunenummer: Optional[int] = None
+    kommunenavn: Optional[str] = None
+    arealmerknadtekst: Optional[str] = None
+    lagretberegnetareal: Optional[float] = None
+    gardsnummer: Optional[int] = None
+    bruksnummer: Optional[int] = None
+    festenummer: Optional[int] = None
+    polygon_geometry: Dict[str, Any]  # GeoJSON Polygon geometry
+    owners: Optional[str] = None  # Owner information from Matrikkel API
+    owner_error: Optional[str] = None  # Error message if owner lookup failed
+    teigid: Optional[int] = None
+

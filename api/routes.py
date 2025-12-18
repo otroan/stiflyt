@@ -3,17 +3,18 @@ import os
 import secrets
 import traceback
 import json
-from typing import Optional, Annotated
+from typing import Optional, Annotated, Dict
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse
 from services.route_service import search_places
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
 from services.excel_report import generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
+from services.point_matrikkel_service import get_matrikkelenhet_for_point, PointMatrikkelError
 import psycopg
 from psycopg.rows import dict_row
 
@@ -57,6 +58,23 @@ def require_shared_login(credentials: HTTPBasicCredentials = Depends(security)):
 
     # Hvis du vil, kan du returnere en "user"-struktur, men her er det bare fellesbruker
     return {"username": SHARED_USERNAME}
+
+
+def get_optional_user(credentials: Optional[HTTPBasicCredentials] = Depends(HTTPBasic(auto_error=False))):
+    """
+    Optional authentication - returns user if authenticated, None otherwise.
+    Does not raise 401 if not authenticated, just returns None.
+    """
+    if credentials is None:
+        return None
+
+    is_user_ok = secrets.compare_digest(credentials.username, SHARED_USERNAME)
+    is_pass_ok = secrets.compare_digest(credentials.password, SHARED_PASSWORD)
+
+    if is_user_ok and is_pass_ok:
+        return {"username": SHARED_USERNAME}
+
+    return None
 
 # GET /routes/{rutenummer}/owners.xlsx endpoint removed - replaced by POST /owners.xlsx
 
@@ -161,6 +179,60 @@ async def get_geometry_owners(request: GeometryOwnerRequest):
         raise HTTPException(
             status_code=500,
             detail=f"Error processing geometry: {str(e)}"
+        )
+
+
+@router.post("/point/matrikkelenhet", response_model=PointMatrikkelResponse, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_point_matrikkelenhet(
+    request: PointMatrikkelRequest,
+    user: Optional[Dict] = Depends(get_optional_user)
+):
+    """
+    Get matrikkelenhet (teig polygon) for a point coordinate.
+
+    Accepts a point (latitude, longitude) in WGS84 and returns the teig polygon
+    that contains the point, along with matrikkelenhet information.
+
+    Owner information is only included if the user is authenticated.
+    Without authentication, only matrikkelenhet metadata is returned.
+
+    Example request:
+    ```json
+    {
+      "lat": 59.9139,
+      "lon": 10.7522
+    }
+    ```
+
+    Returns:
+    - matrikkelenhet: Formatted matrikkelenhet string
+    - polygon_geometry: GeoJSON Polygon geometry of the teig
+    - Additional matrikkelenhet metadata (bruksnavn, kommunenummer, etc.)
+    - owners: Owner information (only if authenticated)
+    """
+    try:
+        # Only fetch owner information if user is authenticated
+        include_owners = user is not None
+        result = get_matrikkelenhet_for_point(request.lat, request.lon, include_owners=include_owners)
+
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No matrikkelenhet found at point ({request.lat}, {request.lon})"
+            )
+
+        return PointMatrikkelResponse(**result)
+    except PointMatrikkelError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
+    except Exception as e:
+        print(f"Error getting matrikkelenhet for point: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing point: {str(e)}"
         )
 
 

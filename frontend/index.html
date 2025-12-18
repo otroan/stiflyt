@@ -210,6 +210,10 @@
         let drawingMode = false;
         let drawingLayerGroup = L.layerGroup().addTo(map);
 
+        // Point click state (for matrikkelenhet lookup)
+        let clickedPolygonLayer = null;
+        let pointClickEnabled = true;
+
         // Color palette for properties (for UI display)
         const colors = [
             '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
@@ -1825,6 +1829,215 @@
                 propertiesTab.click();
             }
         }
+
+        // ===== Point click functionality for matrikkelenhet lookup =====
+
+        // Handle map click to find matrikkelenhet at point
+        async function handleMapClick(e) {
+            // Don't handle clicks if drawing mode is active
+            if (drawingMode) {
+                return;
+            }
+
+            // Don't handle clicks if point click is disabled
+            if (!pointClickEnabled) {
+                return;
+            }
+
+            const lat = e.latlng.lat;
+            const lon = e.latlng.lng;
+
+            // Show loading indicator
+            const loading = document.getElementById('loading');
+            if (loading) {
+                loading.classList.add('active');
+            }
+
+            try {
+                const backendUrl = CommonConfig.getBackendUrl();
+                const url = backendUrl
+                    ? `${backendUrl}/api/v1/point/matrikkelenhet`
+                    : '/api/v1/point/matrikkelenhet';
+
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include',  // Include credentials for authentication (if user is logged in)
+                    body: JSON.stringify({
+                        lat: lat,
+                        lon: lon
+                    })
+                });
+
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        alert('Ingen matrikkelenhet funnet på dette punktet.');
+                    } else {
+                        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+                        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return;
+                }
+
+                const data = await response.json();
+
+                // Display the polygon and matrikkelenhet info
+                displayPointMatrikkelenhet(data, lat, lon);
+
+            } catch (error) {
+                console.error('Error getting matrikkelenhet for point:', error);
+                alert(`Feil ved henting av matrikkelenhet: ${error.message}`);
+            } finally {
+                if (loading) {
+                    loading.classList.remove('active');
+                }
+            }
+        }
+
+        // Display matrikkelenhet polygon and info for clicked point
+        function displayPointMatrikkelenhet(data, lat, lon) {
+            // Remove previous polygon if exists
+            if (clickedPolygonLayer) {
+                map.removeLayer(clickedPolygonLayer);
+                clickedPolygonLayer = null;
+            }
+
+            // Add polygon to map
+            if (data.polygon_geometry) {
+                const polygonLayer = L.geoJSON(data.polygon_geometry, {
+                    style: {
+                        color: '#e74c3c',
+                        weight: 3,
+                        opacity: 0.8,
+                        fillColor: '#e74c3c',
+                        fillOpacity: 0.2
+                    }
+                });
+
+                polygonLayer.addTo(map);
+                clickedPolygonLayer = polygonLayer;
+
+                // Fit map to polygon bounds
+                const bounds = polygonLayer.getBounds();
+                if (bounds && bounds.isValid()) {
+                    map.fitBounds(bounds, { padding: [50, 50] });
+                }
+
+                // Add popup with matrikkelenhet info
+                const popupContent = `
+                    <div style="min-width: 200px;">
+                        <strong>Matrikkelenhet:</strong><br>
+                        ${data.matrikkelenhet || 'Ukjent'}<br>
+                        ${data.bruksnavn ? `<br><strong>Bruksnavn:</strong><br>${data.bruksnavn}` : ''}
+                        ${data.kommunenavn ? `<br><strong>Kommune:</strong><br>${data.kommunenavn}` : ''}
+                        ${data.lagretberegnetareal ? `<br><strong>Areal:</strong><br>${data.lagretberegnetareal.toFixed(2)} m²` : ''}
+                        <br><br>
+                        <small>Klikk for å se detaljer i sidebar</small>
+                    </div>
+                `;
+                polygonLayer.bindPopup(popupContent).openPopup();
+
+                // Make polygon clickable to show details
+                polygonLayer.on('click', () => {
+                    showPointMatrikkelenhetDetails(data);
+                });
+            }
+
+            // Show details in sidebar
+            showPointMatrikkelenhetDetails(data);
+        }
+
+        // Show matrikkelenhet details in sidebar
+        function showPointMatrikkelenhetDetails(data) {
+            // Update sidebar header
+            const selectionTitleEl = document.getElementById('selectionTitle');
+            if (selectionTitleEl) {
+                selectionTitleEl.textContent = 'Matrikkelenhet';
+            }
+
+            // Display info in info tab
+            const info = document.getElementById('routeInfo');
+            info.innerHTML = `
+                <div class="info-item">
+                    <span class="info-label">Matrikkelenhet:</span>
+                    <span>${data.matrikkelenhet || 'Ukjent'}</span>
+                </div>
+                ${data.matrikkelnummertekst ? `
+                <div class="info-item">
+                    <span class="info-label">Matrikkelnummer:</span>
+                    <span>${data.matrikkelnummertekst}</span>
+                </div>
+                ` : ''}
+                ${data.bruksnavn ? `
+                <div class="info-item">
+                    <span class="info-label">Bruksnavn:</span>
+                    <span>${data.bruksnavn}</span>
+                </div>
+                ` : ''}
+                ${data.kommunenummer ? `
+                <div class="info-item">
+                    <span class="info-label">Kommune:</span>
+                    <span>${data.kommunenummer}${data.kommunenavn ? ` - ${data.kommunenavn}` : ''}</span>
+                </div>
+                ` : ''}
+                ${data.lagretberegnetareal ? `
+                <div class="info-item">
+                    <span class="info-label">Areal:</span>
+                    <span>${data.lagretberegnetareal.toFixed(2)} m² (${(data.lagretberegnetareal / 10000).toFixed(4)} dekar)</span>
+                </div>
+                ` : ''}
+                ${data.arealmerknadtekst ? `
+                <div class="info-item">
+                    <span class="info-label">Arealmerknad:</span>
+                    <span>${data.arealmerknadtekst}</span>
+                </div>
+                ` : ''}
+                ${data.owners ? `
+                <div class="info-item">
+                    <span class="info-label">Eiere:</span>
+                    <span>${data.owners}</span>
+                </div>
+                ` : ''}
+                ${data.owner_error ? `
+                <div class="info-item">
+                    <span class="info-label">Eierinfo:</span>
+                    <span style="color: #e74c3c;">Kunne ikke hente eierinformasjon: ${data.owner_error}</span>
+                </div>
+                ` : (!data.owners && !data.owner_error ? `
+                <div class="info-item">
+                    <span class="info-label">Eierinfo:</span>
+                    <span style="color: #7f8c8d; font-style: italic;">Eierinformasjon krever autentisering</span>
+                </div>
+                ` : '')}
+            `;
+
+            // Clear properties table (not applicable for point click)
+            const tbody = document.getElementById('propertiesTableBody');
+            if (tbody) {
+                tbody.innerHTML = '<tr><td colspan="5">Klikk på kartet for å se matrikkelenhet</td></tr>';
+            }
+
+            // Hide download button (not applicable for single point)
+            const downloadBtn = document.getElementById('downloadExcelBtn');
+            if (downloadBtn) {
+                downloadBtn.classList.add('hidden');
+                downloadBtn.style.display = 'none';
+            }
+
+            // Hide error banner
+            displayErrorSummary(null);
+
+            // Switch to info tab
+            const infoTab = document.querySelector('.tab[data-tab="info"]');
+            if (infoTab) {
+                infoTab.click();
+            }
+        }
+
+        // Add click event listener to map
+        map.on('click', handleMapClick);
     </script>
 </body>
 </html>
