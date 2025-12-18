@@ -261,8 +261,10 @@ def main():
 
         # Step 4: Find intersections with teig
         print("\nStep 4: Finding intersections with teig polygons...")
-        intersections = find_matrikkelenhet_intersections(conn, route_geom)
-        print(f"Found {len(intersections)} intersections")
+        intersections, total_count = find_matrikkelenhet_intersections(conn, route_geom)
+        print(f"Found {len(intersections)} intersections (total: {total_count})")
+        if total_count > 100:
+            print(f"WARNING: Limit of 100 matrikkelenheter applied. {total_count - 100} additional intersections were not processed.")
 
         if not intersections:
             print("No intersections found with teig polygons")

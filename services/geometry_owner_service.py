@@ -76,7 +76,7 @@ def get_owners_for_linestring(geometry_geojson):
                 }
 
             # Find matrikkelenhet intersections
-            intersections = find_matrikkelenhet_intersections(conn, route_geom)
+            intersections, total_intersections_count = find_matrikkelenhet_intersections(conn, route_geom)
 
             if not intersections:
                 # No intersections found
@@ -90,12 +90,15 @@ def get_owners_for_linestring(geometry_geojson):
             # Calculate offsets and create matrikkelenhet vector
             matrikkelenhet_vector = calculate_offsets(conn, route_geom, intersections, total_length)
 
+            # Track overflow info for error reporting
+            overflow_count = max(0, total_intersections_count - 100)
+
             # Fetch owner information from Matrikkel API (if credentials are available)
             # This will gracefully handle missing credentials by returning None for owner info
             owner_results = fetch_owners_for_matrikkelenheter(matrikkelenhet_vector)
 
-            # Analyze errors for summary
-            error_analysis = analyze_owner_fetch_errors(owner_results)
+            # Analyze errors for summary (including overflow info)
+            error_analysis = analyze_owner_fetch_errors(owner_results, overflow_count=overflow_count)
 
             # Add owner information to matrikkelenhet_vector
             # Create a mapping from matrikkelenhet identifier to owner info

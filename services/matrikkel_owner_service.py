@@ -114,18 +114,23 @@ def format_owner_info(owners: List[OwnerInfo]) -> str:
     return "; ".join(owner_strings) if owner_strings else ""
 
 
-def analyze_owner_fetch_errors(owner_results: List[Tuple[Dict, Optional[str], Optional[Exception]]]) -> Dict[str, Any]:
+def analyze_owner_fetch_errors(
+    owner_results: List[Tuple[Dict, Optional[str], Optional[Exception]]],
+    overflow_count: int = 0
+) -> Dict[str, Any]:
     """
     Analyze errors from fetch_owners_for_matrikkelenheter results.
 
     Args:
         owner_results: List of tuples from fetch_owners_for_matrikkelenheter
+        overflow_count: Number of matrikkelenheter that were not processed due to limit
 
     Returns:
         dict with:
-            - has_errors: bool - True if any errors found
+            - has_errors: bool - True if any errors found (including overflow)
             - error_count: int - Number of items with errors
-            - total_count: int - Total number of items
+            - total_count: int - Total number of items processed
+            - overflow_count: int - Number of items not processed due to limit
             - error_summary: str - Human-readable error summary
             - error_details: List[str] - List of error messages (first 10)
     """
@@ -144,27 +149,34 @@ def analyze_owner_fetch_errors(owner_results: List[Tuple[Dict, Optional[str], Op
             })
 
     error_count = len(errors)
-    has_errors = error_count > 0
+    has_errors = error_count > 0 or overflow_count > 0
 
     # Create summary message
-    if has_errors:
+    summary_parts = []
+
+    if error_count > 0:
         if error_count == total_count:
-            error_summary = f"Kunne ikke hente eierinformasjon for noen av {total_count} eiendommer."
+            summary_parts.append(f"Kunne ikke hente eierinformasjon for noen av {total_count} eiendommer.")
         else:
-            error_summary = f"Kunne ikke hente eierinformasjon for {error_count} av {total_count} eiendommer."
+            summary_parts.append(f"Kunne ikke hente eierinformasjon for {error_count} av {total_count} eiendommer.")
 
         # Add details (limit to first 10 to avoid overwhelming the user)
         if error_count <= 10:
-            error_summary += f" Detaljer: {'; '.join(errors)}"
+            summary_parts.append(f" Detaljer: {'; '.join(errors)}")
         else:
-            error_summary += f" Første 10 feil: {'; '.join(errors[:10])} (og {error_count - 10} flere)"
-    else:
-        error_summary = None
+            summary_parts.append(f" Første 10 feil: {'; '.join(errors[:10])} (og {error_count - 10} flere)")
+
+    if overflow_count > 0:
+        overflow_msg = f"{overflow_count} eiendommer ble ikke prosessert fordi grensen på 100 eiendommer ble overskredet."
+        summary_parts.append(overflow_msg)
+
+    error_summary = ' '.join(summary_parts) if summary_parts else None
 
     return {
         'has_errors': has_errors,
         'error_count': error_count,
         'total_count': total_count,
+        'overflow_count': overflow_count,
         'error_summary': error_summary,
         'error_details': errors[:10]  # Limit to first 10 for display
     }

@@ -440,10 +440,18 @@ def find_matrikkelenhet_intersections(conn, route_geom):
     """
     Find all intersections between route and teig polygons.
 
+    Limits results to first 100 matrikkelenheter and returns total count
+    to detect overflow.
+
     All schema names are validated constants. Route geometry is parameterized.
 
     Optimized to calculate ST_Intersection only once per row using CTE,
     and uses bounding box filter (&&) for faster initial filtering.
+
+    Returns:
+        tuple: (results, total_count) where:
+            - results: List of intersection dicts (max 100)
+            - total_count: Total number of intersections found (may be > 100)
     """
     # Validate schema names (should always be valid, but check for safety)
     if not validate_schema_name(TEIG_SCHEMA):
@@ -451,6 +459,7 @@ def find_matrikkelenhet_intersections(conn, route_geom):
 
     # Optimized query: Calculate ST_Intersection once using CTE
     # Use bounding box filter (&&) first for faster filtering
+    # Use window function COUNT(*) OVER() to get total count before LIMIT
     query = f"""
         WITH intersections AS (
             SELECT
@@ -486,16 +495,28 @@ def find_matrikkelenhet_intersections(conn, route_geom):
                 WHEN intersection_geom IS NOT NULL
                 THEN ST_Length(ST_Transform(intersection_geom, 4326)::geography)
                 ELSE 0
-            END as length_meters
+            END as length_meters,
+            COUNT(*) OVER() as total_count
         FROM intersections
         WHERE intersection_geom IS NOT NULL
-        AND ST_GeometryType(intersection_geom) IN ('ST_LineString', 'ST_MultiLineString');
+        AND ST_GeometryType(intersection_geom) IN ('ST_LineString', 'ST_MultiLineString')
+        LIMIT 100;
     """
 
     with conn.cursor(row_factory=dict_row) as cur:
         # Only need route_geom 3 times now (was 4): &&, ST_Intersects, and ST_Intersection
         cur.execute(query, (route_geom, route_geom, route_geom))
-        return cur.fetchall()
+        results = cur.fetchall()
+
+        # Extract total_count from first row (all rows have same value due to window function)
+        # If no results, total_count is 0
+        total_count = results[0]['total_count'] if results else 0
+
+        # Remove total_count from result rows before returning
+        for row in results:
+            row.pop('total_count', None)
+
+        return results, total_count
 
 
 def calculate_offsets(conn, route_geom, intersections, total_length):
