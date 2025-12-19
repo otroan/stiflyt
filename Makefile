@@ -1,9 +1,8 @@
-.PHONY: help install install-dev backend frontend start stop clean test lint format perf-test
+.PHONY: help install install-dev backend clean test lint format perf-test
 
 # Default values
 DB_USER ?= $(shell whoami)
-BACKEND_PORT ?= 8000
-FRONTEND_PORT ?= 8080
+BACKEND_PORT ?= 8001
 VENV ?= venv
 PYTHON ?= python3
 
@@ -66,7 +65,6 @@ clean-all: clean clean-venv ## Clean everything including venv
 setup: install-dev ## Setup development environment
 	@echo "Development environment setup complete!"
 	@echo "Run 'make backend' to start the API server"
-	@echo "Run 'make frontend' to start the frontend server"
 
 db-test: ## Test database connection
 	@export DB_USER=$(DB_USER) && \
