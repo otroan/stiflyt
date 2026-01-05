@@ -1,6 +1,6 @@
 # Stiflyt
 
-## Grunneiere
+## 1. Grunneiere
 
 ### Problem
 
@@ -28,7 +28,7 @@ Kartverket har et API (matrikkel APIet) for å slå opp eier informasjon fra mat
 
 Første fase så kommer vi kun til å vise eiernavn. Men når løsningen er oppe så kan vi ta opp igjen diskusjonen med kartverket om å få tilgang til kontaktinformasjon også.
 
-## Feil i turrutebasen
+## 2. Feil i turrutebasen
 
 ### Problem
 
@@ -48,7 +48,7 @@ Lage et mellomlag over turrutebasen hvor enten manuelt eller automatisk fiksede 
 
 Også legge til muligheter for å redigere rutene direkte i verktøyet? Lære fra opplastede GPXer eller fra traktor og sti databasen?
 
-## Rutestatus, Dagbok for rutene, Issue tracker
+## 3. Rutestatus, Dagbok for rutene, Issue tracker
 
 ### Problem
 
@@ -62,7 +62,7 @@ Dugnader og inspeksjoner rapporteres inn i "systemet". Visualisering slik som sk
 Hver rute har en "rutebok" slik som en hyttbok hvor alt arbeid noteres.
 I tillegg har man en "issue tracker" slik at når man får klager eller meldinger på en rute, legges de inn i issue trackeren. Denne kan følges med på av OKen, ruteinspektøren og andre tillitsvalgte.
 
-## Skilt
+## 4. Skilt
 
 ### Problem
 
@@ -73,7 +73,7 @@ Nå når skilt må bestilles med fast pil og kilometeravstand så er det en mer 
 
 Alle ruter har skilt ved endepunktene og ved kryss. Skiltsteder og skilt kan derfor genereres automatisk. Selvsagt vil det være noen unntak. Man må også manuelt legge til skiltretning og status på skiltet. Eventuelt sjekke kvalitet med AI.
 
-## Kartlag for egne GPX filer, bilder, kulturminner
+## 5. Kartlag for egne GPX filer, bilder, kulturminner
 
 Laste opp sine egne GPX filer for å verifisere at rutene i turrutebasen matcher de faktiske rutene. Særlig nyttig ved omlegginger.
 Kunne laste opp sine egne bilder og gjøre disse tilgjengelig for alle brukerne av verktøyet. Praktisk for planlegging av dugnader etc.
