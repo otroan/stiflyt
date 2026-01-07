@@ -591,7 +591,7 @@ async def get_anchor_nodes(
 @router.get("/routes/segments", response_model=RouteSegmentsResponse)
 async def get_route_segments(
     rutenummer_prefix: Annotated[Optional[str], Query(description="Filter by route number prefix (e.g., 'bre')")] = None,
-    vedlikeholdsansvarlig: Annotated[Optional[str], Query(description="Filter by organization (e.g., 'DNT Oslo')")] = None,
+    vedlikeholdsansvarlig: Annotated[Optional[str], Query(description="Filter by organization (pattern match, e.g., 'DNT Oslo' or 'DNT')")] = None,
     limit: Annotated[int, Query(ge=1, le=1000, description="Maximum number of results")] = 100,
     offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0,
     include_geometry: Annotated[bool, Query(description="Include GeoJSON geometry in response")] = False
@@ -628,8 +628,8 @@ async def get_route_segments(
                 params.append(f"{rutenummer_prefix}%")
 
             if vedlikeholdsansvarlig:
-                where_conditions.append(f"fi.vedlikeholdsansvarlig = %s")
-                params.append(vedlikeholdsansvarlig)
+                where_conditions.append(f"fi.vedlikeholdsansvarlig ILIKE %s")
+                params.append(f"%{vedlikeholdsansvarlig}%")
 
             where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
 
