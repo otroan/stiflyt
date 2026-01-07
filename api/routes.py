@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo
-from services.route_service import search_places
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse
+from services.route_service import search_places, get_complete_route
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
 from services.excel_report import generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
@@ -729,4 +729,60 @@ async def get_route_segments(
         raise HTTPException(
             status_code=500,
             detail=f"Error querying route segments: {str(e)}"
+        )
+
+
+@router.get("/routes/{rutenummer}/complete", response_model=CompleteRouteResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_complete_route_endpoint(
+    rutenummer: str,
+    include_geometry: Annotated[bool, Query(description="Include GeoJSON geometry in response")] = True,
+    include_segments: Annotated[bool, Query(description="Include individual segment details")] = False,
+    include_endpoint_names: Annotated[bool, Query(description="Lookup and include from/to place names")] = True
+) -> CompleteRouteResponse:
+    """
+    Get a complete route by combining all segments with the same rutenummer.
+
+    This endpoint:
+    - Combines all route segments with the same rutenummer into a complete route geometry
+    - Finds from/to place names via stedsnavn lookup (ruteinfopunkt first, then stedsnavn)
+    - Returns route metadata (rutenavn, vedlikeholdsansvarlig, length, etc.)
+
+    The route geometry is reconstructed by following connections between segments.
+    If segments cannot be connected, they are returned as separate components (MultiLineString).
+
+    Example:
+    - /api/v1/routes/bre-1/complete
+    - /api/v1/routes/bre-1/complete?include_geometry=false&include_segments=true
+
+    Returns:
+    - Complete route with combined geometry, endpoint names, and metadata
+    - 404 if rutenummer not found
+    """
+    try:
+        with db_connection() as conn:
+            route_data = get_complete_route(
+                conn,
+                rutenummer,
+                include_geometry=include_geometry,
+                include_segments=include_segments,
+                include_endpoint_names=include_endpoint_names
+            )
+
+            if route_data is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Route with rutenummer '{rutenummer}' not found"
+                )
+
+            return CompleteRouteResponse(**route_data)
+
+    except HTTPException:
+        # Re-raise HTTPException (404, etc.) - don't catch these
+        raise
+    except Exception as e:
+        print(f"Error getting complete route: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing complete route: {str(e)}"
         )

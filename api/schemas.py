@@ -111,3 +111,38 @@ class RouteSegmentsResponse(BaseModel):
     limit: int
     offset: int
 
+
+class EndpointName(BaseModel):
+    """Endpoint name information from place name lookup."""
+    name: str
+    source: str  # 'ruteinfopunkt' | 'stedsnavn' | 'anchor_node'
+    distance_meters: Optional[float] = None
+    coordinates: Optional[List[float]] = None  # [lon, lat]
+    tilrettelegging: Optional[str] = None  # Only present for ruteinfopunkt source
+
+
+class RouteComponent(BaseModel):
+    """Route component information (for disconnected routes)."""
+    index: int
+    segment_objids: List[int]
+    segment_count: int
+    length_meters: float
+    is_main: bool
+
+
+class CompleteRouteResponse(BaseModel):
+    """Response for complete route with combined segments and endpoint names."""
+    rutenummer: str
+    rutenavn: Optional[str] = None
+    vedlikeholdsansvarlig: Optional[str] = None
+    geometry: Optional[Dict[str, Any]] = None  # GeoJSON LineString/MultiLineString
+    total_length_meters: float
+    total_length_km: float
+    from_name: Optional[EndpointName] = None
+    to_name: Optional[EndpointName] = None
+    is_connected: bool
+    segment_count: int
+    component_count: int
+    segments: Optional[List[RouteSegment]] = None  # Only included if include_segments=true
+    components: Optional[List[RouteComponent]] = None  # Only included if multiple components
+

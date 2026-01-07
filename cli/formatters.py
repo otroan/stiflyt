@@ -182,3 +182,157 @@ def format_text_summary(response: Dict[str, Any]) -> str:
 
     return "\n".join(lines)
 
+
+def format_complete_route_table(route: Dict[str, Any]) -> str:
+    """
+    Format a complete route as a human-readable table.
+
+    Args:
+        route: Complete route dictionary
+
+    Returns:
+        Formatted table string
+    """
+    lines = []
+
+    # Header section
+    lines.append("=" * 60)
+    lines.append("COMPLETE ROUTE")
+    lines.append("=" * 60)
+    lines.append("")
+
+    # Basic information
+    rutenummer = route.get("rutenummer", "N/A")
+    rutenavn = route.get("rutenavn") or "N/A"
+    vedlikeholdsansvarlig = route.get("vedlikeholdsansvarlig") or "N/A"
+    total_length_km = route.get("total_length_km", 0.0)
+    total_length_meters = route.get("total_length_meters", 0.0)
+    is_connected = route.get("is_connected", False)
+    segment_count = route.get("segment_count", 0)
+    component_count = route.get("component_count", 1)
+
+    lines.append(f"Rutenummer:        {rutenummer}")
+    lines.append(f"Rutenavn:         {rutenavn}")
+    lines.append(f"Vedlikeholdsansvarlig: {vedlikeholdsansvarlig}")
+    lines.append(f"Total lengde:      {total_length_km:.2f} km ({total_length_meters:.1f} m)")
+    lines.append(f"Segmenter:         {segment_count}")
+    lines.append(f"Komponenter:       {component_count}")
+    lines.append(f"Koblet:            {'Ja' if is_connected else 'Nei'}")
+    lines.append("")
+
+    # Endpoint names - always show this section
+    from_name = route.get("from_name")
+    to_name = route.get("to_name")
+
+    lines.append("-" * 60)
+    lines.append("ENDPUNKTER")
+    lines.append("-" * 60)
+    if from_name:
+        name = from_name.get("name", "N/A")
+        source = from_name.get("source", "unknown")
+        distance = from_name.get("distance_meters")
+        distance_str = f"{distance:.1f} m" if distance is not None else "N/A"
+        tilrettelegging = from_name.get("tilrettelegging")
+        if tilrettelegging:
+            lines.append(f"Fra:  {name} ({source}, {distance_str}, tilrettelegging: {tilrettelegging})")
+        else:
+            lines.append(f"Fra:  {name} ({source}, {distance_str})")
+    else:
+        lines.append("Fra:  Ikke funnet")
+
+    if to_name:
+        name = to_name.get("name", "N/A")
+        source = to_name.get("source", "unknown")
+        distance = to_name.get("distance_meters")
+        distance_str = f"{distance:.1f} m" if distance is not None else "N/A"
+        tilrettelegging = to_name.get("tilrettelegging")
+        if tilrettelegging:
+            lines.append(f"Til:  {name} ({source}, {distance_str}, tilrettelegging: {tilrettelegging})")
+        else:
+            lines.append(f"Til:  {name} ({source}, {distance_str})")
+    else:
+        lines.append("Til:  Ikke funnet")
+    lines.append("")
+
+    # Components (if multiple)
+    components = route.get("components")
+    if components and len(components) > 1:
+        lines.append("-" * 60)
+        lines.append("KOMPONENTER")
+        lines.append("-" * 60)
+        for comp in components:
+            index = comp.get("index", 0)
+            segment_count_comp = comp.get("segment_count", 0)
+            length_km = comp.get("length_meters", 0.0) / 1000.0
+            is_main = comp.get("is_main", False)
+            main_str = " (Hovedrute)" if is_main else ""
+            lines.append(f"  Komponent {index}: {segment_count_comp} segmenter, {length_km:.2f} km{main_str}")
+        lines.append("")
+
+    # Segments (if included)
+    segments = route.get("segments")
+    if segments:
+        lines.append("-" * 60)
+        lines.append("SEGMENTER")
+        lines.append("-" * 60)
+        for seg in segments:
+            objid = seg.get("objid", "N/A")
+            length_m = seg.get("length_meters")
+            length_str = f"{length_m:.1f} m" if length_m is not None else "N/A"
+            routes = seg.get("routes", [])
+            rutenummer_str = ", ".join([r.get("rutenummer", "") for r in routes if isinstance(r, dict)])
+            lines.append(f"  objid {objid}: {length_str} ({rutenummer_str})")
+        lines.append("")
+
+    lines.append("=" * 60)
+
+    return "\n".join(lines)
+
+
+def format_complete_route_csv(route: Dict[str, Any]) -> str:
+    """
+    Format a complete route as CSV.
+
+    Args:
+        route: Complete route dictionary
+
+    Returns:
+        CSV string
+    """
+    output = StringIO()
+    fieldnames = [
+        "rutenummer", "rutenavn", "vedlikeholdsansvarlig",
+        "total_length_km", "total_length_meters",
+        "segment_count", "component_count", "is_connected",
+        "from_name", "from_source", "from_distance_meters", "from_tilrettelegging",
+        "to_name", "to_source", "to_distance_meters", "to_tilrettelegging"
+    ]
+
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+    writer.writeheader()
+
+    from_name = route.get("from_name")
+    to_name = route.get("to_name")
+
+    row = {
+        "rutenummer": route.get("rutenummer"),
+        "rutenavn": route.get("rutenavn"),
+        "vedlikeholdsansvarlig": route.get("vedlikeholdsansvarlig"),
+        "total_length_km": route.get("total_length_km"),
+        "total_length_meters": route.get("total_length_meters"),
+        "segment_count": route.get("segment_count"),
+        "component_count": route.get("component_count"),
+        "is_connected": route.get("is_connected"),
+        "from_name": from_name.get("name") if from_name else None,
+        "from_source": from_name.get("source") if from_name else None,
+        "from_distance_meters": from_name.get("distance_meters") if from_name else None,
+        "from_tilrettelegging": from_name.get("tilrettelegging") if from_name else None,
+        "to_name": to_name.get("name") if to_name else None,
+        "to_source": to_name.get("source") if to_name else None,
+        "to_distance_meters": to_name.get("distance_meters") if to_name else None,
+        "to_tilrettelegging": to_name.get("tilrettelegging") if to_name else None,
+    }
+    writer.writerow(row)
+
+    return output.getvalue()
+

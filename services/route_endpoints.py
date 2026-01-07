@@ -56,132 +56,99 @@ def extract_route_endpoints(route_geometry_geojson: Dict[str, Any]) -> Tuple[Opt
 
 def lookup_name_in_ruteinfopunkt(conn, point_lon: float, point_lat: float, rutenummer: Optional[str] = None, search_radius_meters: float = 100.0) -> Optional[Dict[str, Any]]:
     """
-    Look up a name for a point in the ruteinfopunkt table in turrutebasen.
+    Look up a name for a point in the ruteinfopunkt view in stiflyt schema.
+
+    Uses the stable stiflyt.ruteinfopunkt view which provides access to ruteinfopunkt data.
+    Only searches for hytter (cabins) and parkering (parking) facilities, prioritizing hytter over parkering:
+    - '12': Hytte
+    - '42': Hytte betjent
+    - '43': Hytte selvbetjent
+    - '44': Hytte ubetjent
+    - '22': Parkeringsplass (lowest priority)
 
     Args:
         conn: Database connection
         point_lon: Longitude of the point (WGS84)
         point_lat: Latitude of the point (WGS84)
-        rutenummer: Optional route number to filter by
+        rutenummer: Optional route number to filter by (not currently used)
         search_radius_meters: Search radius in meters (default: 100m)
 
     Returns:
         Dict with name, distance, and source, or None if not found
     """
+    from .database import ROUTE_SCHEMA, quote_identifier, validate_schema_name
+
     if not validate_schema_name(ROUTE_SCHEMA):
         return None
 
-    # Check if ruteinfopunkt table exists
-    check_table_query = """
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables
-            WHERE table_schema = %s AND table_name = 'ruteinfopunkt'
-        );
-    """
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Check if view exists
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.views
+                    WHERE table_schema = %s AND table_name = 'ruteinfopunkt'
+                ) as exists
+            """, (ROUTE_SCHEMA,))
+            result = cur.fetchone()
+            view_exists = result.get('exists') if result else False
 
-    with conn.cursor() as cur:
-        cur.execute(check_table_query, (ROUTE_SCHEMA,))
-        table_exists = cur.fetchone()[0]
+            if not view_exists:
+                return None
 
-        if not table_exists:
-            return None
+            # Use the stable view - columns are: informasjon (for name) and posisjon (for geometry)
+            schema_quoted = quote_identifier(ROUTE_SCHEMA)
+            table_quoted = quote_identifier('ruteinfopunkt')
 
-        # First, check what columns exist in ruteinfopunkt table
-        check_columns_query = """
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = %s AND table_name = 'ruteinfopunkt'
-            ORDER BY ordinal_position;
-        """
-        cur.execute(check_columns_query, (ROUTE_SCHEMA,))
-        columns = [row[0] for row in cur.fetchall()]
-
-        if not columns:
-            return None
-
-        # Find name column (try common patterns)
-        name_column = None
-        for col in ['navn', 'name', 'stedsnavn', 'punktnavn', 'beskrivelse', 'tekst']:
-            if col in columns:
-                name_column = col
-                break
-
-        # Find geometry column
-        geom_column = None
-        for col in ['geom', 'geometry', 'posisjon', 'location', 'punkt']:
-            if col in columns:
-                geom_column = col
-                break
-
-        if not name_column or not geom_column:
-            # Can't query without name or geometry column
-            return None
-
-        # Build query dynamically based on available columns
-        # We'll select objid, name column, and distance
-        select_cols = ['objid', name_column]
-        if 'beskrivelse' in columns and name_column != 'beskrivelse':
-            select_cols.append('beskrivelse')
-
-        query = f"""
-            SELECT
-                {', '.join(select_cols)},
-                ST_Distance(
+            query = f"""
+                SELECT
+                    objid,
+                    informasjon as navn,
+                    tilrettelegging,
+                    ST_Distance(
+                        ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                        ST_Transform(posisjon::geometry, 25833)
+                    ) as distance_meters
+                FROM {schema_quoted}.{table_quoted}
+                WHERE ST_DWithin(
+                    ST_Transform(posisjon::geometry, 25833),
                     ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
-                    ST_Transform({geom_column}::geometry, 25833)
-                ) as distance_meters
-            FROM {ROUTE_SCHEMA}.ruteinfopunkt
-            WHERE ST_DWithin(
-                ST_Transform({geom_column}::geometry, 25833),
-                ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
-                %s
-            )
-        """
+                    %s
+                )
+                AND informasjon IS NOT NULL
+                AND tilrettelegging = ANY(%s)
+                ORDER BY
+                    CASE
+                        WHEN tilrettelegging IN ('12', '42', '43', '44') THEN 1  -- Hytter first
+                        WHEN tilrettelegging = '22' THEN 2  -- Parkeringsplass last
+                        ELSE 3
+                    END,
+                    distance_meters ASC
+                LIMIT 1
+            """
 
-        params = [point_lon, point_lat, point_lon, point_lat, search_radius_meters]
-
-        # Add rutenummer filter if provided (check if there's a relationship column)
-        if rutenummer:
-            # Check if there's a fotrute_fk or rutenummer column
-            if 'fotrute_fk' in columns:
-                query += """
-                    AND EXISTS (
-                        SELECT 1 FROM {schema}.fotruteinfo fi
-                        WHERE fi.rutenummer = %s
-                        AND fi.fotrute_fk = ruteinfopunkt.fotrute_fk
-                    )
-                """.format(schema=ROUTE_SCHEMA)
-                params.append(rutenummer)
-            elif 'rutenummer' in columns:
-                query += " AND rutenummer = %s"
-                params.append(rutenummer)
-
-        query += " ORDER BY distance_meters ASC LIMIT 1;"
-
-        try:
-            cur.execute(query, params)
+            # Filter values: '12' (Hytte), '42' (Hytte betjent), '43' (Hytte selvbetjent), '44' (Hytte ubetjent), '22' (Parkeringsplass)
+            filter_values = ['12', '42', '43', '44', '22']
+            cur.execute(query, (point_lon, point_lat, point_lon, point_lat, search_radius_meters, filter_values))
             result = cur.fetchone()
 
-            if result:
-                # Get name from the appropriate column (first non-objid column)
-                name = None
-                for i in range(1, len(select_cols)):
-                    if result[i]:
-                        name = result[i]
-                        break
-
-                if name:
-                    # distance_meters is the last column
-                    distance_idx = len(select_cols)
-                    return {
-                        'name': str(name),
-                        'distance_meters': float(result[distance_idx]) if result[distance_idx] else None,
-                        'source': 'ruteinfopunkt'
-                    }
-        except Exception as e:
-            # If query fails, log and return None
-            print(f"Error querying ruteinfopunkt: {e}")
-            return None
+            if result and result.get('navn'):
+                return {
+                    'name': str(result['navn']),
+                    'distance_meters': float(result['distance_meters']) if result.get('distance_meters') is not None else None,
+                    'source': 'ruteinfopunkt',
+                    'tilrettelegging': result.get('tilrettelegging')
+                }
+    except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
+        # Only log meaningful errors (not just "view doesn't exist")
+        error_str = str(e)
+        if error_str and error_str != "0" and "does not exist" not in error_str.lower():
+            print(f"Error in lookup_name_in_ruteinfopunkt: {e}")
+        return None
 
     return None
 
@@ -189,6 +156,8 @@ def lookup_name_in_ruteinfopunkt(conn, point_lon: float, point_lat: float, ruten
 def lookup_name_in_stedsnavn(conn, point_lon: float, point_lat: float, search_radius_meters: float = 500.0) -> Optional[Dict[str, Any]]:
     """
     Look up a name for a point in the stedsnavn database.
+
+    Uses the same structure as search_places: public.stedsnavn with skrivemate table.
 
     Args:
         conn: Database connection
@@ -199,103 +168,154 @@ def lookup_name_in_stedsnavn(conn, point_lon: float, point_lat: float, search_ra
     Returns:
         Dict with name, distance, and source, or None if not found
     """
-    # First, check if stedsnavn schema/table exists
-    # We need to find the schema name - it might be in a config or we need to search for it
-    # For now, let's try common schema patterns
-
-    check_schema_query = """
-        SELECT schema_name
-        FROM information_schema.schemata
-        WHERE schema_name LIKE '%stedsnavn%' OR schema_name LIKE '%place%name%'
-        ORDER BY schema_name
-        LIMIT 1;
-    """
-
-    with conn.cursor() as cur:
-        cur.execute(check_schema_query)
-        schema_result = cur.fetchone()
-
-        if not schema_result:
-            # Try to find any table with 'stedsnavn' or 'place' in the name
-            check_table_query = """
-                SELECT table_schema, table_name
-                FROM information_schema.tables
-                WHERE (table_name LIKE '%stedsnavn%' OR table_name LIKE '%place%name%')
-                AND table_type = 'BASE TABLE'
-                LIMIT 1;
-            """
-            cur.execute(check_table_query)
-            table_result = cur.fetchone()
-
-            if not table_result:
-                return None
-
-            stedsnavn_schema = table_result[0]
-            stedsnavn_table = table_result[1]
-        else:
-            stedsnavn_schema = schema_result[0]
-            # Try to find the table name
-            check_table_query = """
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = %s
-                AND table_type = 'BASE TABLE'
-                LIMIT 1;
-            """
-            cur.execute(check_table_query, (stedsnavn_schema,))
-            table_result = cur.fetchone()
-            if not table_result:
-                return None
-            stedsnavn_table = table_result[0]
-
-        # Validate schema and table names
-        if not validate_schema_name(stedsnavn_schema):
-            return None
-        if not validate_schema_name(stedsnavn_table):
-            return None
-
-        # Look up closest place name within search radius
-        # We need to guess the column names - common patterns:
-        # - navn, name, stedsnavn
-        # - geom, geometry, posisjon, location
-        query = f"""
-            SELECT
-                navn,
-                name,
-                stedsnavn,
-                ST_Distance(
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Use the same structure as search_places: public.stedsnavn with skrivemate
+            # Try the explicit public.stedsnavn structure first
+            query = """
+                SELECT
+                    sm.komplettskrivemate AS navn,
+                    ST_Distance(
+                        ST_Transform(
+                            COALESCE(
+                                sp.geom,          -- punkt
+                                smp.geom,         -- multipunkt
+                                so.geom,          -- område
+                                ssl.geom          -- senterlinje
+                            ),
+                            25833
+                        ),
+                        ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833)
+                    ) as distance_meters
+                FROM public.stedsnavn sn
+                JOIN public.skrivemate sm ON sn.objid = sm.stedsnavn_fk
+                LEFT JOIN public.sted_posisjon   sp  ON sn.sted_fk = sp.stedsnummer
+                LEFT JOIN public.sted_multipunkt smp ON sn.sted_fk = smp.stedsnummer
+                LEFT JOIN public.sted_omrade    so  ON sn.sted_fk = so.stedsnummer
+                LEFT JOIN public.sted_senterlinje ssl ON sn.sted_fk = ssl.stedsnummer
+                WHERE ST_DWithin(
+                    ST_Transform(
+                        COALESCE(
+                            sp.geom,
+                            smp.geom,
+                            so.geom,
+                            ssl.geom
+                        ),
+                        25833
+                    ),
                     ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
-                    ST_Transform(geom::geometry, 25833)
-                ) as distance_meters
-            FROM "{stedsnavn_schema}"."{stedsnavn_table}"
-            WHERE ST_DWithin(
-                ST_Transform(geom::geometry, 25833),
-                ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
-                %s
-            )
-            AND (navn IS NOT NULL OR name IS NOT NULL OR stedsnavn IS NOT NULL)
-            ORDER BY distance_meters ASC
-            LIMIT 1;
-        """
+                    %s
+                )
+                AND sm.komplettskrivemate IS NOT NULL
+                ORDER BY distance_meters ASC
+                LIMIT 1;
+            """
 
-        try:
             cur.execute(query, [point_lon, point_lat, point_lon, point_lat, search_radius_meters])
             result = cur.fetchone()
 
-            if result:
-                # Try to get name from various possible column names
-                name = result[0] or result[1] or result[2]  # navn, name, or stedsnavn
-                if name:
-                    return {
-                        'name': name,
-                        'distance_meters': float(result[3]) if result[3] else None,
-                        'source': 'stedsnavn'
-                    }
-        except Exception as e:
-            # If query fails (wrong column names), return None
-            # In production, you might want to log this
-            print(f"Error querying stedsnavn: {e}")
-            return None
+            if result and result.get('navn'):
+                return {
+                    'name': result['navn'],
+                    'distance_meters': float(result['distance_meters']) if result.get('distance_meters') is not None else None,
+                    'source': 'stedsnavn'
+                }
+    except Exception as e:
+        # If query fails, rollback and return None
+        try:
+            conn.rollback()
+        except:
+            pass
+        print(f"Error querying stedsnavn: {e}")
+        return None
+
+    return None
+
+
+def lookup_name_in_anchor_nodes(conn, point_lon: float, point_lat: float, search_radius_meters: float = 500.0) -> Optional[Dict[str, Any]]:
+    """
+    Look up a name for a point using anchor_nodes table.
+    Anchor nodes already have names found via stedsnavn lookup.
+
+    Args:
+        conn: Database connection
+        point_lon: Longitude of the point (WGS84)
+        point_lat: Latitude of the point (WGS84)
+        search_radius_meters: Search radius in meters (default: 500m)
+
+    Returns:
+        Dict with name, distance_meters, and source, or None if not found
+    """
+    from .database import ROUTE_SCHEMA, quote_identifier, validate_schema_name
+
+    if not validate_schema_name(ROUTE_SCHEMA):
+        return None
+
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            # Check if anchor_nodes table exists
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = %s AND table_name = 'anchor_nodes'
+                )
+            """, (ROUTE_SCHEMA,))
+            result = cur.fetchone()
+            table_exists = result[0] if result else False
+            if not table_exists:
+                return None
+
+            schema_quoted = quote_identifier(ROUTE_SCHEMA)
+            table_quoted = quote_identifier('anchor_nodes')
+
+            # Find nearest anchor node with a name
+            query = f"""
+                SELECT
+                    node_id,
+                    navn,
+                    navn_kilde,
+                    navn_distance_m,
+                    ST_Distance(
+                        ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                        ST_Transform(geom, 25833)
+                    ) as distance_meters
+                FROM {schema_quoted}.{table_quoted}
+                WHERE navn IS NOT NULL
+                  AND ST_DWithin(
+                      ST_Transform(geom, 25833),
+                      ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                      %s
+                  )
+                ORDER BY distance_meters ASC
+                LIMIT 1
+            """
+            cur.execute(query, (point_lon, point_lat, point_lon, point_lat, search_radius_meters))
+            result = cur.fetchone()
+
+            if result and result.get('navn'):
+                # Map navn_kilde to source format
+                navn_kilde = result.get('navn_kilde', 'anchor_node')
+                source_map = {
+                    'ruteinfopunkt': 'ruteinfopunkt',
+                    'stedsnavn': 'stedsnavn',
+                }
+                source = source_map.get(navn_kilde, 'anchor_node')
+
+                return {
+                    'name': result['navn'],
+                    'source': source,
+                    'distance_meters': float(result['distance_meters']) if result.get('distance_meters') is not None else None,
+                }
+    except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
+        # Only log if it's a meaningful error (not just table doesn't exist or empty result)
+        error_str = str(e)
+        if error_str and error_str != "0" and "does not exist" not in error_str.lower():
+            print(f"Error querying anchor_nodes: {e}")
+        return None
 
     return None
 
@@ -303,8 +323,10 @@ def lookup_name_in_stedsnavn(conn, point_lon: float, point_lat: float, search_ra
 def lookup_endpoint_name(conn, point_lon: float, point_lat: float, rutenummer: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Look up a name for a route endpoint using hierarchical lookup:
-    1. First try ruteinfopunkt (within 100m)
-    2. Then try stedsnavn (within 500m)
+    1. First try anchor_nodes (already has names found via stedsnavn/ruteinfopunkt)
+    2. Then check ruteinfopunkt directly
+    3. Finally check stedsnavn directly
+    4. Prefer ruteinfopunkt over stedsnavn if both are found
 
     Args:
         conn: Database connection
@@ -315,15 +337,28 @@ def lookup_endpoint_name(conn, point_lon: float, point_lat: float, rutenummer: O
     Returns:
         Dict with name, distance_meters, and source, or None if not found
     """
-    # First try ruteinfopunkt (closer search radius)
-    result = lookup_name_in_ruteinfopunkt(conn, point_lon, point_lat, rutenummer, search_radius_meters=100.0)
-    if result:
-        return result
+    # Use same search radius for all sources to allow fair comparison
+    search_radius = 500.0
 
-    # Fallback to stedsnavn (larger search radius)
-    result = lookup_name_in_stedsnavn(conn, point_lon, point_lat, search_radius_meters=500.0)
-    if result:
-        return result
+    # First try anchor_nodes (fastest, already has names)
+    anchor_node_result = lookup_name_in_anchor_nodes(conn, point_lon, point_lat, search_radius_meters=search_radius)
+    if anchor_node_result:
+        return anchor_node_result
+
+    # Check both ruteinfopunkt and stedsnavn directly
+    ruteinfopunkt_result = lookup_name_in_ruteinfopunkt(conn, point_lon, point_lat, rutenummer, search_radius_meters=search_radius)
+    stedsnavn_result = lookup_name_in_stedsnavn(conn, point_lon, point_lat, search_radius_meters=search_radius)
+
+    # Prefer ruteinfopunkt if both are found (more specific to the route)
+    if ruteinfopunkt_result and stedsnavn_result:
+        return ruteinfopunkt_result
+
+    # Return whichever is found
+    if ruteinfopunkt_result:
+        return ruteinfopunkt_result
+
+    if stedsnavn_result:
+        return stedsnavn_result
 
     return None
 
