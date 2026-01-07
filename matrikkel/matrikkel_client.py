@@ -42,6 +42,10 @@ class OwnerInfo:
     navn: Optional[str] = None
     adresse: Optional[str] = None
     eierId: Optional[int] = None
+    fraDato: Optional[str] = None  # Date when ownership started
+    tilDato: Optional[str] = None  # Date when ownership ended (None if current)
+    andel: Optional[str] = None  # Ownership share/percentage
+    eierforhold_type: Optional[str] = None  # Type of ownership relationship
 
 
 class MatrikkelClient:
@@ -235,12 +239,13 @@ class MatrikkelClient:
 
         return results
 
-    def get_owner_information(self, matrikkelenhet_id: Any, debug: bool = False) -> List[OwnerInfo]:
+    def get_owner_information(self, matrikkelenhet_id: Any, debug: bool = False, include_historical: bool = False) -> List[OwnerInfo]:
         """Get owner information for a matrikkelenhet.
 
         Args:
             matrikkelenhet_id: MatrikkelenhetId object or ID value
             debug: If True, print debug information
+            include_historical: If True, include historical owners (default: False, only current owners)
 
         Returns:
             List of OwnerInfo objects
@@ -291,6 +296,86 @@ class MatrikkelClient:
         for eierforhold in items:
             owner_info = OwnerInfo()
 
+            # Extract date information from eierforhold (to detect historical owners)
+            # Try multiple field names (API uses different names)
+            if hasattr(eierforhold, 'datoFra'):
+                if eierforhold.datoFra:
+                    owner_info.fraDato = str(eierforhold.datoFra.date) if hasattr(eierforhold.datoFra, 'date') else str(eierforhold.datoFra)
+                else:
+                    owner_info.fraDato = None
+            elif hasattr(eierforhold, 'fraDato'):
+                owner_info.fraDato = str(eierforhold.fraDato) if eierforhold.fraDato else None
+            elif hasattr(eierforhold, 'getFraDato'):
+                owner_info.fraDato = str(eierforhold.getFraDato()) if eierforhold.getFraDato() else None
+            elif hasattr(eierforhold, 'gyldigFra'):
+                owner_info.fraDato = str(eierforhold.gyldigFra) if eierforhold.gyldigFra else None
+
+            # Check datoTil (API uses this, not tilDato) - this indicates historical/ended ownership
+            has_end_date = False
+            if hasattr(eierforhold, 'datoTil'):
+                if eierforhold.datoTil:
+                    owner_info.tilDato = str(eierforhold.datoTil.date) if hasattr(eierforhold.datoTil, 'date') else str(eierforhold.datoTil)
+                    has_end_date = True
+                else:
+                    owner_info.tilDato = None
+            elif hasattr(eierforhold, 'sluttdato'):
+                if eierforhold.sluttdato:
+                    owner_info.tilDato = str(eierforhold.sluttdato.date) if hasattr(eierforhold.sluttdato, 'date') else str(eierforhold.sluttdato)
+                    has_end_date = True
+                else:
+                    owner_info.tilDato = None
+            elif hasattr(eierforhold, 'tilDato'):
+                if eierforhold.tilDato:
+                    owner_info.tilDato = str(eierforhold.tilDato)
+                    has_end_date = True
+                else:
+                    owner_info.tilDato = None
+            elif hasattr(eierforhold, 'getTilDato'):
+                til_dato = eierforhold.getTilDato()
+                if til_dato:
+                    owner_info.tilDato = str(til_dato)
+                    has_end_date = True
+                else:
+                    owner_info.tilDato = None
+            elif hasattr(eierforhold, 'gyldigTil'):
+                if eierforhold.gyldigTil:
+                    owner_info.tilDato = str(eierforhold.gyldigTil)
+                    has_end_date = True
+                else:
+                    owner_info.tilDato = None
+
+            # Extract eierforholdKodeId (type code - "0" is typically owner, others might be different)
+            eierforhold_kode = None
+            if hasattr(eierforhold, 'eierforholdKodeId'):
+                if eierforhold.eierforholdKodeId:
+                    if hasattr(eierforhold.eierforholdKodeId, 'value'):
+                        eierforhold_kode = str(eierforhold.eierforholdKodeId.value)
+                    else:
+                        eierforhold_kode = str(eierforhold.eierforholdKodeId)
+                    owner_info.eierforhold_type = eierforhold_kode
+                else:
+                    owner_info.eierforhold_type = None
+
+            # Skip if this eierforhold has ended (datoTil is set) - it's historical
+            # Unless include_historical is True
+            if has_end_date and not include_historical:
+                continue  # Skip historical eierforhold
+
+            # Extract ownership share/percentage
+            if hasattr(eierforhold, 'andel'):
+                if eierforhold.andel:
+                    # Handle dict format like {'teller': '1', 'nevner': '2'}
+                    if isinstance(eierforhold.andel, dict):
+                        teller = eierforhold.andel.get('teller', '')
+                        nevner = eierforhold.andel.get('nevner', '')
+                        owner_info.andel = f"{teller}/{nevner}" if teller and nevner else str(eierforhold.andel)
+                    else:
+                        owner_info.andel = str(eierforhold.andel)
+                else:
+                    owner_info.andel = None
+            elif hasattr(eierforhold, 'getAndel'):
+                owner_info.andel = str(eierforhold.getAndel()) if eierforhold.getAndel() else None
+
             # Get eierId
             eier_id = None
             if hasattr(eierforhold, 'eierId'):
@@ -326,12 +411,13 @@ class MatrikkelClient:
 
         return owners
 
-    def get_owners_batch(self, matrikkelenhet_ids: List[Any], debug: bool = False) -> List[Tuple[Any, List[OwnerInfo], Optional[Exception]]]:
+    def get_owners_batch(self, matrikkelenhet_ids: List[Any], debug: bool = False, include_historical: bool = False) -> List[Tuple[Any, List[OwnerInfo], Optional[Exception]]]:
         """Get owner information for multiple matrikkelenhet IDs in batch.
 
         Args:
             matrikkelenhet_ids: List of MatrikkelenhetId objects or ID values
             debug: If True, print debug information
+            include_historical: If True, include historical owners (default: False, only current owners)
 
         Returns:
             List of tuples: (matrikkelenhet_id, List[OwnerInfo] or None, Exception or None)
@@ -343,7 +429,7 @@ class MatrikkelClient:
 
         for matrikkelenhet_id in matrikkelenhet_ids:
             try:
-                owners = self.get_owner_information(matrikkelenhet_id, debug=debug)
+                owners = self.get_owner_information(matrikkelenhet_id, debug=debug, include_historical=include_historical)
                 results.append((matrikkelenhet_id, owners, None))
             except Exception as e:
                 results.append((matrikkelenhet_id, None, e))

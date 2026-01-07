@@ -286,8 +286,9 @@ def fetch_owners_for_matrikkelenheter(
                     ident_key_to_error[ident_key] = error
 
             # Step 4: Get owners in batch (only for unique matrikkelenhet IDs)
+            # Only fetch current owners (not historical) - default behavior
             unique_matrikkelenhet_ids = list(ident_key_to_matrikkelenhet_id.values())
-            owner_results = client.get_owners_batch(unique_matrikkelenhet_ids)
+            owner_results = client.get_owners_batch(unique_matrikkelenhet_ids, include_historical=False)
 
             # Step 5: Map owner results back to ident keys
             matrikkelenhet_id_to_owners: Dict[Any, List[OwnerInfo]] = {}
