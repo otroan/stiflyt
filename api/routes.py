@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment
 from services.route_service import search_places
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
 from services.excel_report import generate_owners_excel_from_data
@@ -586,3 +586,122 @@ async def get_anchor_nodes(
         # If table doesn't exist or any other error, return empty FeatureCollection
         print(f"Error loading anchor nodes: {str(e)}")
         return create_feature_collection_response([])
+
+
+@router.get("/routes/segments", response_model=RouteSegmentsResponse)
+async def get_route_segments(
+    rutenummer_prefix: Annotated[Optional[str], Query(description="Filter by route number prefix (e.g., 'bre')")] = None,
+    vedlikeholdsansvarlig: Annotated[Optional[str], Query(description="Filter by organization (e.g., 'DNT Oslo')")] = None,
+    limit: Annotated[int, Query(ge=1, le=1000, description="Maximum number of results")] = 100,
+    offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0,
+    include_geometry: Annotated[bool, Query(description="Include GeoJSON geometry in response")] = False
+) -> RouteSegmentsResponse:
+    """
+    Get route segments filtered by rutenummer prefix and/or vedlikeholdsansvarlig.
+
+    Returns route segments from fotrute and fotruteinfo tables matching the specified filters.
+
+    At least one filter (rutenummer_prefix or vedlikeholdsansvarlig) must be provided.
+
+    Example:
+    - /api/v1/routes/segments?rutenummer_prefix=bre&vedlikeholdsansvarlig=DNT Oslo
+    - /api/v1/routes/segments?rutenummer_prefix=bre&limit=50&include_geometry=true
+    """
+    # Validate that at least one filter is provided
+    if not rutenummer_prefix and not vedlikeholdsansvarlig:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one filter must be provided: rutenummer_prefix or vedlikeholdsansvarlig"
+        )
+
+    try:
+        with db_connection() as conn:
+            route_schema = get_route_schema(conn)
+            schema_quoted = quote_identifier(route_schema)
+
+            # Build WHERE clause dynamically based on filters
+            where_conditions = []
+            params = []
+
+            if rutenummer_prefix:
+                where_conditions.append(f"fi.rutenummer LIKE %s")
+                params.append(f"{rutenummer_prefix}%")
+
+            if vedlikeholdsansvarlig:
+                where_conditions.append(f"fi.vedlikeholdsansvarlig = %s")
+                params.append(vedlikeholdsansvarlig)
+
+            where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+
+            # Build SELECT clause
+            select_parts = [
+                "f.objid",
+                "fi.rutenummer",
+                "fi.rutenavn",
+                "fi.vedlikeholdsansvarlig",
+                "ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters"
+            ]
+
+            if include_geometry:
+                select_parts.append("ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326))::json as geometry")
+
+            # Build query with count for total
+            query = f"""
+                WITH filtered_segments AS (
+                    SELECT
+                        {', '.join(select_parts)}
+                    FROM {schema_quoted}.fotrute f
+                    JOIN {schema_quoted}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+                    {where_clause}
+                )
+                SELECT
+                    *,
+                    COUNT(*) OVER() as total_count
+                FROM filtered_segments
+                ORDER BY rutenummer, objid
+                LIMIT %s
+                OFFSET %s
+            """
+
+            params.extend([limit, offset])
+
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+
+            # Extract total count from first row (all rows have same value due to window function)
+            total_count = rows[0]['total_count'] if rows else 0
+
+            # Build response
+            segments = []
+            for row in rows:
+                segment_data = {
+                    "objid": row["objid"],
+                    "rutenummer": row["rutenummer"],
+                    "rutenavn": row.get("rutenavn"),
+                    "vedlikeholdsansvarlig": row.get("vedlikeholdsansvarlig"),
+                    "length_meters": float(row["length_meters"]) if row.get("length_meters") is not None else None
+                }
+
+                if include_geometry and row.get("geometry"):
+                    segment_data["geometry"] = parse_geometry(row["geometry"])
+
+                segments.append(RouteSegment(**segment_data))
+
+            return RouteSegmentsResponse(
+                segments=segments,
+                total=total_count,
+                limit=limit,
+                offset=offset
+            )
+
+    except HTTPException:
+        # Re-raise HTTPException - don't catch these
+        raise
+    except Exception as e:
+        print(f"Error querying route segments: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error querying route segments: {str(e)}"
+        )

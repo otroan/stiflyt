@@ -88,3 +88,21 @@ class PointMatrikkelResponse(BaseModel):
     owner_error: Optional[str] = None  # Error message if owner lookup failed
     teigid: Optional[int] = None
 
+
+class RouteSegment(BaseModel):
+    """Route segment information."""
+    objid: int
+    rutenummer: str
+    rutenavn: Optional[str] = None
+    vedlikeholdsansvarlig: Optional[str] = None
+    length_meters: Optional[float] = None
+    geometry: Optional[Dict[str, Any]] = None  # GeoJSON geometry (optional)
+
+
+class RouteSegmentsResponse(BaseModel):
+    """Response for route segments query."""
+    segments: List[RouteSegment]
+    total: int
+    limit: int
+    offset: int
+
