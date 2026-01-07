@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo
 from services.route_service import search_places
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
 from services.excel_report import generate_owners_excel_from_data
@@ -672,21 +672,46 @@ async def get_route_segments(
             # Extract total count from first row (all rows have same value due to window function)
             total_count = rows[0]['total_count'] if rows else 0
 
-            # Build response
-            segments = []
+            # Group segments by objid and collect routes
+            segments_dict = {}
             for row in rows:
-                segment_data = {
-                    "objid": row["objid"],
-                    "rutenummer": row["rutenummer"],
-                    "rutenavn": row.get("rutenavn"),
-                    "vedlikeholdsansvarlig": row.get("vedlikeholdsansvarlig"),
-                    "length_meters": float(row["length_meters"]) if row.get("length_meters") is not None else None
-                }
+                objid = row["objid"]
 
-                if include_geometry and row.get("geometry"):
-                    segment_data["geometry"] = parse_geometry(row["geometry"])
+                # Initialize segment if not seen before
+                if objid not in segments_dict:
+                    segments_dict[objid] = {
+                        "objid": objid,
+                        "routes": [],
+                        "length_meters": float(row["length_meters"]) if row.get("length_meters") is not None else None,
+                        "geometry": None
+                    }
 
-                segments.append(RouteSegment(**segment_data))
+                    # Store geometry (same for all rows with same objid)
+                    if include_geometry and row.get("geometry"):
+                        segments_dict[objid]["geometry"] = parse_geometry(row["geometry"])
+
+                # Add route information to the segment
+                route_info = RouteInfo(
+                    rutenummer=row["rutenummer"],
+                    rutenavn=row.get("rutenavn"),
+                    vedlikeholdsansvarlig=row.get("vedlikeholdsansvarlig")
+                )
+
+                # Only add if not already present (avoid duplicates by rutenummer)
+                existing_rutenummer = {r.rutenummer for r in segments_dict[objid]["routes"]}
+                if route_info.rutenummer not in existing_rutenummer:
+                    segments_dict[objid]["routes"].append(route_info)
+
+            # Convert to list of RouteSegment objects
+            segments = []
+            for objid, segment_data in segments_dict.items():
+                segment = RouteSegment(
+                    objid=segment_data["objid"],
+                    routes=segment_data["routes"],
+                    length_meters=segment_data["length_meters"],
+                    geometry=segment_data["geometry"]
+                )
+                segments.append(segment)
 
             return RouteSegmentsResponse(
                 segments=segments,

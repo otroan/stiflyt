@@ -89,12 +89,17 @@ class PointMatrikkelResponse(BaseModel):
     teigid: Optional[int] = None
 
 
-class RouteSegment(BaseModel):
-    """Route segment information."""
-    objid: int
+class RouteInfo(BaseModel):
+    """Route information for a segment."""
     rutenummer: str
     rutenavn: Optional[str] = None
     vedlikeholdsansvarlig: Optional[str] = None
+
+
+class RouteSegment(BaseModel):
+    """Route segment information with grouped routes."""
+    objid: int
+    routes: List[RouteInfo]  # List of routes that use this segment
     length_meters: Optional[float] = None
     geometry: Optional[Dict[str, Any]] = None  # GeoJSON geometry (optional)
 
