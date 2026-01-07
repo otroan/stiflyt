@@ -1,0 +1,24 @@
+[Unit]
+Description=Stiflyt Deployment Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=stiflyt
+Group=stiflyt
+WorkingDirectory=/opt/stiflyt
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="GIT_REMOTE=origin"
+Environment="GIT_BRANCH=main"
+
+# Run deployment script
+ExecStart=/opt/stiflyt/scripts/deploy.sh
+
+# Restart service after deployment
+ExecStartPost=/bin/systemctl restart stiflyt.service
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stiflyt-deploy
+

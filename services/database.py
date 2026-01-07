@@ -12,6 +12,7 @@ USE_UNIX_SOCKET = os.getenv("USE_UNIX_SOCKET", "true").lower() == "true"
 SOCKET_DIR = os.getenv("DB_SOCKET_DIR", "/var/run/postgresql")
 DB_NAME = os.getenv("DB_NAME", "matrikkel")
 DB_USER = os.getenv("DB_USER", "stiflyt_reader")
+DB_PASSWORD = os.getenv("DB_PASSWORD", None)
 
 # Fixed schema name - ALWAYS use 'stiflyt' schema (never dynamic schema names)
 # The schema name is fixed and does not change on each download
@@ -156,6 +157,9 @@ def get_db_connection():
             'dbname': DB_NAME,
             'user': DB_USER,
         }
+        # Add password if provided (needed when using md5/scram-sha-256 auth)
+        if DB_PASSWORD:
+            conn_params['password'] = DB_PASSWORD
     else:
         from urllib.parse import urlparse
         parsed = urlparse(DATABASE_URL)

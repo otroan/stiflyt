@@ -1,0 +1,41 @@
+[Unit]
+Description=Stiflyt Route Backend API
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=stiflyt
+Group=stiflyt
+WorkingDirectory=/opt/stiflyt
+Environment="PATH=/opt/stiflyt/venv/bin:/usr/local/bin:/usr/bin:/bin"
+# Load environment variables from .env file (optional - won't fail if missing)
+EnvironmentFile=-/opt/stiflyt/.env
+# Fallback values if .env doesn't exist or doesn't set these
+Environment="DB_USER=stiflyt_reader"
+Environment="USE_UNIX_SOCKET=true"
+Environment="DB_SOCKET_DIR=/var/run/postgresql"
+Environment="DB_NAME=matrikkel"
+
+# Start command
+ExecStart=/opt/stiflyt/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 4
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/stiflyt
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stiflyt
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,17 @@
+[Unit]
+Description=Stiflyt Automated Deployment Timer
+Requires=stiflyt-deploy.service
+
+[Timer]
+# Run deployment every day at 2 AM
+OnCalendar=*-*-* 02:00:00
+
+# Also run 15 minutes after boot (for testing)
+OnBootSec=15min
+
+# Run immediately if missed
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
