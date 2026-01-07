@@ -38,15 +38,17 @@ cp .env.example .env
 ```bash
 USE_UNIX_SOCKET=true
 DB_SOCKET_DIR=/var/run/postgresql  # Default PostgreSQL socket directory
-DB_NAME=stiflyt
-DB_USER=your_username
+DB_NAME=matrikkel
+DB_USER=stiflyt_reader
 ```
 
 **TCP Connection**:
 ```bash
 USE_UNIX_SOCKET=false
-DATABASE_URL=postgresql://user:password@localhost:5432/stiflyt
+DATABASE_URL=postgresql://stiflyt_reader:password@localhost:5432/matrikkel
 ```
+
+**Important:** The database uses a fixed schema name `stiflyt` (not dynamic schema names). All tables and views are in the `stiflyt` schema.
 
 ### 3. Run the Services
 
@@ -64,7 +66,7 @@ make frontend
 
 ```bash
 # Backend (serves frontend automatically)
-export DB_USER=your_username
+export DB_USER=stiflyt_reader
 source venv/bin/activate
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 

@@ -9,7 +9,7 @@ The backend system processes routes from the `turrutebasen` PostGIS table and cr
 ### 2.1 Route Processing
 
 **FR-1.1**: The system SHALL process routes from the `fotrute` and `fotruteinfo` tables
-- **Input**: Route segments from `fotrute` table (schema: `turogfriluftsruter_b9b25c7668da494b9894d492fc35290d`)
+- **Input**: Route segments from `fotrute` table (schema: `stiflyt`)
 - **Input**: Route metadata from `fotruteinfo` table with `rutenummer` (route identifier)
 - **Relationship**: `fotruteinfo.fotrute_fk = fotrute.objid`
 - **Output**: Processed routes in a middle layer table
@@ -22,7 +22,7 @@ The backend system processes routes from the `turrutebasen` PostGIS table and cr
 
 **FR-1.3**: The system SHALL calculate matrikkelenhet per route offset
 - For each route, the system SHALL determine which matrikkelenhet (from `teig` table) each segment passes through
-- `teig` table is in schema: `matrikkeleneiendomskartteig_d56c3a44c39b43ae8081f08a97a28c7d`
+- `teig` table is in schema: `stiflyt`
 - The system SHALL store the offset from route start (in meters) for each matrikkelenhet
 - The system SHALL store: kommune, gardsnummer, bruksnummer, festenummer, and offset_from_start
 - Matrikkelenhet identifier is stored in `teig.matrikkelnummertekst`
@@ -77,10 +77,10 @@ The backend system processes routes from the `turrutebasen` PostGIS table and cr
 ### 2.4 Data Sources
 
 **FR-4.1**: The system SHALL read from PostGIS tables:
-- **Route tables** (schema: `turogfriluftsruter_b9b25c7668da494b9894d492fc35290d`):
+- **Route tables** (schema: `stiflyt`):
   - `fotrute`: Route segments with geometry (`senterlinje`)
   - `fotruteinfo`: Route metadata with `rutenummer`, `rutenavn`, `vedlikeholdsansvarlig`
-- **Matrikkel tables** (schema: `matrikkeleneiendomskartteig_d56c3a44c39b43ae8081f08a97a28c7d`):
+- **Matrikkel tables** (schema: `stiflyt`):
   - `teig`: Property units with geometry (`omrade`) and `matrikkelnummertekst`
 
 **FR-4.2**: The system SHALL assume:

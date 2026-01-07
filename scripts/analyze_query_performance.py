@@ -21,27 +21,11 @@ from psycopg2.extras import RealDictCursor
 
 def discover_route_schema(conn):
     """
-    Dynamically discover the route schema name.
-    The schema name contains a hash that can change.
+    Get the route schema name.
+    ALWAYS returns 'stiflyt' - the fixed schema name.
     """
-    query = """
-        SELECT schema_name
-        FROM information_schema.schemata
-        WHERE schema_name LIKE %s
-        ORDER BY schema_name
-        LIMIT 1;
-    """
-
-    with conn.cursor() as cur:
-        cur.execute(query, ('turogfriluftsruter_%',))
-        result = cur.fetchone()
-        if result:
-            schema_name = result[0]
-            # Validate schema name for safety
-            if validate_schema_name(schema_name):
-                return schema_name
-        # Fallback to hardcoded value if not found
-        return "turogfriluftsruter_b9b25c7668da494b9894d492fc35290d"
+    # Use fixed schema name 'stiflyt'
+    return "stiflyt"
 
 
 def check_indexes(conn):
@@ -54,7 +38,7 @@ def check_indexes(conn):
     print(f"Using route schema: {route_schema}")
 
     if not route_schema:
-        print("⚠️  Could not discover route schema")
+        print("⚠️  Could not get route schema (should always be 'stiflyt')")
         return False, None
 
     # First, let's see ALL indexes on the fotrute table for debugging
@@ -251,7 +235,7 @@ def main():
     try:
         conn = get_db_connection()
 
-        # Check indexes (also returns the discovered schema name)
+        # Check indexes (returns the schema name, always 'stiflyt')
         has_index, route_schema = check_indexes(conn)
 
         # Check table stats

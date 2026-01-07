@@ -50,12 +50,7 @@ def get_teig_data_source_info():
                 except Exception:
                     pass
 
-            # Fallback: use schema name (contains hash that changes on import)
-            # Extract hash from schema name for display
-            schema_parts = teig_schema.split('_')
-            if len(schema_parts) > 1:
-                hash_part = schema_parts[-1]
-                return f"Teig schema: {teig_schema} (hash: {hash_part[:8]}...)"
+            # Fallback: use schema name (always 'stiflyt' now)
             return f"Teig schema: {teig_schema}"
     except Exception as e:
         # If we can't get info, return generic message

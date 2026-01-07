@@ -380,7 +380,7 @@ async def get_links(
             # Use quoted schema and table name for safety
             route_schema = get_route_schema(conn)
             schema_quoted = quote_identifier(route_schema)
-            # Discover links table/view (schema hash changes on import)
+            # Find links table/view in stiflyt schema
             cur.execute(
                 """
                     SELECT table_name
@@ -504,7 +504,7 @@ async def get_anchor_nodes(
             with conn.cursor(row_factory=dict_row) as cur:
                 route_schema = get_route_schema(conn)
                 schema_quoted = quote_identifier(route_schema)
-                # Discover anchor_nodes relation (table, view or materialized view).
+                # Find anchor_nodes relation (table, view or materialized view) in stiflyt schema.
                 # We use pg_class/pg_namespace so this works even if anchor_nodes is a MATERIALIZED VIEW.
                 cur.execute(
                     """
@@ -520,7 +520,7 @@ async def get_anchor_nodes(
                 )
                 table_row = cur.fetchone()
                 if not table_row:
-                    print("Anchor nodes relation not found in discovered route schema")
+                    print("Anchor nodes relation not found in stiflyt schema")
                     return create_feature_collection_response([])
 
                 anchor_nodes_table_quoted = quote_identifier(table_row["relname"])

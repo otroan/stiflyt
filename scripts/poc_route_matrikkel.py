@@ -12,11 +12,11 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5
 USE_UNIX_SOCKET = os.getenv("USE_UNIX_SOCKET", "true").lower() == "true"
 SOCKET_DIR = os.getenv("DB_SOCKET_DIR", "/var/run/postgresql")
 DB_NAME = os.getenv("DB_NAME", "matrikkel")
-DB_USER = os.getenv("DB_USER", os.getenv("USER"))
+DB_USER = os.getenv("DB_USER", "stiflyt_reader")
 
-# Schema names
-ROUTE_SCHEMA = "turogfriluftsruter_b9b25c7668da494b9894d492fc35290d"
-TEIG_SCHEMA = "matrikkeleneiendomskartteig_d56c3a44c39b43ae8081f08a97a28c7d"
+# Fixed schema name - ALWAYS use 'stiflyt' schema
+ROUTE_SCHEMA = os.getenv("ROUTE_SCHEMA", "stiflyt")
+TEIG_SCHEMA = os.getenv("TEIG_SCHEMA", "stiflyt")
 
 
 def get_db_connection():

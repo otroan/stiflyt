@@ -6,11 +6,12 @@
 -- See DATABASE_INDEXES.md for details.
 
 -- Check if index exists
+-- NOTE: Always use fixed schema name 'stiflyt' (not dynamic schema names)
 SELECT
     indexname,
     indexdef
 FROM pg_indexes
-WHERE schemaname = 'turogfriluftsruter_b9b25c7668da494b9894d492fc35290d'
+WHERE schemaname = 'stiflyt'
 AND tablename = 'fotrute'
 AND indexdef LIKE '%GIST%';
 
@@ -18,9 +19,9 @@ AND indexdef LIKE '%GIST%';
 -- This may take several minutes on large tables
 -- IMPORTANT: Run this in stiflyt-db repository after data import
 CREATE INDEX IF NOT EXISTS idx_fotrute_senterlinje_gist
-ON turogfriluftsruter_b9b25c7668da494b9894d492fc35290d.fotrute
+ON stiflyt.fotrute
 USING GIST (senterlinje);
 
 -- Analyze table to update statistics
-ANALYZE turogfriluftsruter_b9b25c7668da494b9894d492fc35290d.fotrute;
-ANALYZE turogfriluftsruter_b9b25c7668da494b9894d492fc35290d.fotruteinfo;
+ANALYZE stiflyt.fotrute;
+ANALYZE stiflyt.fotruteinfo;

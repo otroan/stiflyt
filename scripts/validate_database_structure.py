@@ -35,8 +35,6 @@ try:
         db_connection,
         get_route_schema,
         get_teig_schema,
-        ROUTE_SCHEMA_PREFIX,
-        TEIG_SCHEMA_PREFIX,
     )
     from psycopg.rows import dict_row
 except ImportError as e:
@@ -158,6 +156,28 @@ REQUIRED_ROUTE_TABLES = {
         ],
         # Anchor nodes are required for backend – if missing, validation must fail
     },
+    'nodes': {
+        'required_columns': [
+            'node_id',
+            'geom',  # Geometry column
+        ],
+        'optional_columns': [],
+    },
+    'link_segments': {
+        'required_columns': [],  # Optional view
+        'optional_columns': [
+            'link_id',
+            'segment_id',
+        ],
+    },
+    'link_ruteinfo': {
+        'required_columns': [],  # Optional view
+        'optional_columns': [
+            'link_id',
+            'rutenummer',
+            'rutenavn',
+        ],
+    },
 }
 
 REQUIRED_TEIG_TABLES = {
@@ -182,6 +202,18 @@ REQUIRED_TEIG_TABLES = {
             'gardsnummer',
             'bruksnummer',
             'festenummer',
+        ],
+    },
+    'eiendomsgrense': {
+        'required_columns': [],  # Optional view
+        'optional_columns': [
+            'geom',  # Geometry column
+        ],
+    },
+    'teiggrensepunkt': {
+        'required_columns': [],  # Optional view
+        'optional_columns': [
+            'geom',  # Geometry column
         ],
     },
 }
@@ -218,17 +250,15 @@ RECOMMENDED_INDEXES = {
 }
 
 
-def check_schema_exists(conn, prefix: str) -> Optional[str]:
-    """Check if a schema with the given prefix exists."""
+def check_schema_exists(conn, schema_name: str) -> Optional[str]:
+    """Check if a schema exists."""
     query = """
         SELECT schema_name
         FROM information_schema.schemata
-        WHERE schema_name LIKE %s
-        ORDER BY schema_name
-        LIMIT 1
+        WHERE schema_name = %s
     """
     with conn.cursor() as cur:
-        cur.execute(query, (f"{prefix}%",))
+        cur.execute(query, (schema_name,))
         result = cur.fetchone()
         return result[0] if result else None
 
@@ -465,21 +495,21 @@ def validate_table(
                     )
 
 
-def validate_schema(conn, result: ValidationResult, prefix: str, required_tables: Dict):
+def validate_schema(conn, result: ValidationResult, schema_name: str, required_tables: Dict):
     """Validate a schema and its tables."""
-    schema = check_schema_exists(conn, prefix)
+    schema = check_schema_exists(conn, schema_name)
     if not schema:
         result.add_error(
             'MISSING_SCHEMA',
-            f"Required schema with prefix '{prefix}' not found",
-            {'prefix': prefix}
+            f"Required schema '{schema_name}' not found",
+            {'schema': schema_name}
         )
         return None
 
-    result.schemas_found[prefix] = schema
+    result.schemas_found[schema_name] = schema
     result.add_info(
-        f"Found schema '{schema}' with prefix '{prefix}'",
-        {'prefix': prefix, 'schema': schema}
+        f"Found schema '{schema}'",
+        {'schema': schema}
     )
 
     # Get all tables in schema
@@ -501,7 +531,8 @@ def validate_schema(conn, result: ValidationResult, prefix: str, required_tables
 
 def validate_foreign_keys(conn, result: ValidationResult):
     """Validate foreign key relationships."""
-    route_schema = result.schemas_found.get(ROUTE_SCHEMA_PREFIX)
+    # Get the stiflyt schema from results
+    route_schema = result.schemas_found.get('stiflyt')
     if not route_schema:
         return
 
@@ -602,8 +633,8 @@ def generate_report(result: ValidationResult, output_file: Optional[str] = None,
         print(f"  Info messages: {len(result.info)}")
 
     print(f"\nSchemas found:")
-    for prefix, schema in result.schemas_found.items():
-        print(f"  {prefix} -> {schema}")
+    for schema_name, schema in result.schemas_found.items():
+        print(f"  {schema_name}: {schema}")
 
     if result.errors:
         print(f"\n{'='*70}")
@@ -669,13 +700,13 @@ def main():
         print("Checking PostGIS extension...")
         validate_postgis_extension(conn, result)
 
-        # Validate route schema
-        print(f"Validating route schema (prefix: {ROUTE_SCHEMA_PREFIX})...")
-        route_schema = validate_schema(conn, result, ROUTE_SCHEMA_PREFIX, REQUIRED_ROUTE_TABLES)
+        # Validate route schema (using fixed schema name 'stiflyt')
+        print("Validating route schema (stiflyt)...")
+        route_schema = validate_schema(conn, result, 'stiflyt', REQUIRED_ROUTE_TABLES)
 
-        # Validate teig schema
-        print(f"Validating teig schema (prefix: {TEIG_SCHEMA_PREFIX})...")
-        teig_schema = validate_schema(conn, result, TEIG_SCHEMA_PREFIX, REQUIRED_TEIG_TABLES)
+        # Validate teig schema (using fixed schema name 'stiflyt')
+        print("Validating teig schema (stiflyt)...")
+        teig_schema = validate_schema(conn, result, 'stiflyt', REQUIRED_TEIG_TABLES)
 
         # Validate foreign keys
         if route_schema:

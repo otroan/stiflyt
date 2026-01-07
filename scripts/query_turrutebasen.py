@@ -10,9 +10,9 @@ load_dotenv()
 # Database connection parameters
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/matrikkel")
 
-# Schema names (discovered from database)
-ROUTE_SCHEMA = os.getenv("ROUTE_SCHEMA", "turogfriluftsruter_a76f986a1d204cc9a06ad5d87ce9f94b")
-TEIG_SCHEMA = os.getenv("TEIG_SCHEMA", "matrikkeleneiendomskartteig_d56c3a44c39b43ae8081f08a97a28c7d")
+# Fixed schema name - ALWAYS use 'stiflyt' schema
+ROUTE_SCHEMA = os.getenv("ROUTE_SCHEMA", "stiflyt")
+TEIG_SCHEMA = os.getenv("TEIG_SCHEMA", "stiflyt")
 
 
 def check_table_exists(conn, table_name):

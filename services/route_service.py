@@ -835,8 +835,8 @@ def search_places(query: str, limit: int = 20):
                         }
                     )
         except Exception as e:
-            # Fallback: keep old auto-discovery behaviour for backwards compatibility
-            print(f"Explicit stedsnavn search failed, trying dynamic discovery: {e}")
+            # Fallback: try to find stedsnavn table in any schema (stedsnavn may be in a different schema than stiflyt)
+            print(f"Explicit stedsnavn search in stiflyt schema failed, trying dynamic discovery: {e}")
             try:
                 stedsnavn_schema = None
                 stedsnavn_table = None
