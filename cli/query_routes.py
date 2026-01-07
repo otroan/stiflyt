@@ -13,6 +13,7 @@ from typing import Optional
 from .api_client import RouteSegmentsClient, APIError, ConnectionError, AuthenticationError, APIResponseError
 from .config import CLIConfig
 from .formatters import format_json, format_table, format_csv, format_text_summary
+from .find_available_numbers import analyze_available_numbers, format_available_numbers
 
 
 def main():
@@ -39,6 +40,9 @@ Examples:
 
   # Pagination
   %(prog)s --rutenummer-prefix bre --limit 50 --offset 100
+
+  # Find available route numbers
+  %(prog)s --rutenummer-prefix bre --find-available
         """
     )
 
@@ -121,7 +125,45 @@ Examples:
         help='Show verbose error messages'
     )
 
+    # Find available numbers
+    parser.add_argument(
+        '--find-available',
+        action='store_true',
+        help='Find available route numbers for the given prefix (requires --rutenummer-prefix)'
+    )
+
     args = parser.parse_args()
+
+    # Handle find-available mode
+    if args.find_available:
+        if not args.rutenummer_prefix:
+            parser.error("--find-available requires --rutenummer-prefix")
+
+        # Validate prefix format (3 letters)
+        if len(args.rutenummer_prefix) != 3 or not args.rutenummer_prefix.isalpha():
+            parser.error("--rutenummer-prefix must be exactly 3 letters (e.g., 'bre')")
+
+        try:
+            result = analyze_available_numbers(args.rutenummer_prefix.lower())
+            output = format_available_numbers(result)
+
+            if args.format == "json":
+                import json
+                output = json.dumps(result, indent=2, ensure_ascii=False)
+
+            if args.output:
+                with open(args.output, 'w', encoding='utf-8') as f:
+                    f.write(output)
+            else:
+                print(output)
+
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error finding available numbers: {e}", file=sys.stderr)
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
 
     # Validate that at least one filter is provided
     if not args.rutenummer_prefix and not args.vedlikeholdsansvarlig:

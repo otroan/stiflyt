@@ -36,11 +36,24 @@ def format_table(segments: List[Dict[str, Any]], show_geometry: bool = False) ->
 
     # Calculate column widths - need to handle routes as list
     def get_routes_str(routes_list):
-        """Format routes list as comma-separated string."""
+        """Format routes list as comma-separated string of rutenummer."""
         if not routes_list:
             return ""
         route_strs = [r.get("rutenummer", "") if isinstance(r, dict) else str(r) for r in routes_list]
         return ", ".join(route_strs)
+
+    def get_rutenavn_str(routes_list):
+        """Get rutenavn values from routes, excluding 'Ukjent'."""
+        if not routes_list:
+            return ""
+        navn_list = []
+        for r in routes_list:
+            if isinstance(r, dict):
+                rutenavn = r.get("rutenavn", "")
+                # Only include if not "Ukjent" and not empty
+                if rutenavn and rutenavn != "Ukjent":
+                    navn_list.append(rutenavn)
+        return ", ".join(navn_list) if navn_list else ""
 
     def get_vedlikeholdsansvarlig_str(routes_list):
         """Get unique vedlikeholdsansvarlig values from routes."""
@@ -57,6 +70,7 @@ def format_table(segments: List[Dict[str, Any]], show_geometry: bool = False) ->
     col_widths = {
         "objid": max(len("objid"), max(len(str(s.get("objid", ""))) for s in segments)),
         "rutenummer": max(len("rutenummer"), max(len(get_routes_str(s.get("routes", []))) for s in segments)),
+        "rutenavn": max(len("rutenavn"), max(len(get_rutenavn_str(s.get("routes", []))) for s in segments)),
         "vedlikeholdsansvarlig": max(len("vedlikeholdsansvarlig"), max(len(get_vedlikeholdsansvarlig_str(s.get("routes", []))) for s in segments)),
         "length_meters": max(len("length (m)"), max(len(f"{s.get('length_meters', 0):.1f}") if s.get('length_meters') else len("N/A") for s in segments)),
     }
@@ -69,6 +83,7 @@ def format_table(segments: List[Dict[str, Any]], show_geometry: bool = False) ->
     header = (
         f"{'objid':<{col_widths['objid']}} | "
         f"{'rutenummer':<{col_widths['rutenummer']}} | "
+        f"{'rutenavn':<{col_widths['rutenavn']}} | "
         f"{'vedlikeholdsansvarlig':<{col_widths['vedlikeholdsansvarlig']}} | "
         f"{'length (m)':>{col_widths['length_meters']}}"
     )
@@ -80,6 +95,7 @@ def format_table(segments: List[Dict[str, Any]], show_geometry: bool = False) ->
         objid = str(segment.get("objid", ""))
         routes = segment.get("routes", [])
         rutenummer_str = get_routes_str(routes)
+        rutenavn_str = get_rutenavn_str(routes)
         vedlikeholdsansvarlig_str = get_vedlikeholdsansvarlig_str(routes)
         length_meters = segment.get("length_meters")
         length_str = f"{length_meters:.1f}" if length_meters is not None else "N/A"
@@ -87,6 +103,7 @@ def format_table(segments: List[Dict[str, Any]], show_geometry: bool = False) ->
         row = (
             f"{objid:<{col_widths['objid']}} | "
             f"{rutenummer_str:<{col_widths['rutenummer']}} | "
+            f"{rutenavn_str:<{col_widths['rutenavn']}} | "
             f"{vedlikeholdsansvarlig_str:<{col_widths['vedlikeholdsansvarlig']}} | "
             f"{length_str:>{col_widths['length_meters']}}"
         )
