@@ -1,6 +1,7 @@
 """Output formatters for CLI."""
 import json
 import csv
+import yaml
 from typing import List, Dict, Any, Optional
 from io import StringIO
 
@@ -335,4 +336,134 @@ def format_complete_route_csv(route: Dict[str, Any]) -> str:
     writer.writerow(row)
 
     return output.getvalue()
+
+
+def format_route_registry_yaml(routes_by_number: Dict[int, Dict[str, Any]], as_list: bool = False) -> str:
+    """
+    Format routes as YAML according to the route registry schema.
+
+    Groups routes by number and handles variants (v for winter, a-z for alternatives).
+
+    Args:
+        routes_by_number: Dictionary mapping route number to route data.
+                         Each route data dict should have:
+                         - rutenummer: full rutenummer (e.g., "bre10", "bre10v")
+                         - rutenavn: route name
+                         - vedlikeholdsansvarlig: authority
+                         - from_name: optional endpoint name dict
+                         - to_name: optional endpoint name dict
+                         - status: optional status (defaults to "active")
+                         - authority: optional authority (defaults based on vedlikeholdsansvarlig)
+        as_list: If True, output as YAML list. If False, output single entry (for one route number).
+
+    Returns:
+        YAML string formatted according to route.schema.json
+    """
+    from cli.find_available_numbers import parse_rutenummer
+
+    # Convert to list of registry entries
+    registry_entries = []
+
+    for number, routes in sorted(routes_by_number.items()):
+        # Find main route (no letter) or use first route as main
+        main_route = None
+        variants = {}
+
+        for rutenummer, route_data in routes.items():
+            parsed = parse_rutenummer(rutenummer)
+            if not parsed:
+                continue
+
+            prefix, route_num, letter = parsed
+
+            if letter is None:
+                # This is the main route
+                main_route = route_data
+                main_route['rutenummer'] = rutenummer
+            else:
+                # This is a variant
+                variants[letter] = route_data
+                variants[letter]['rutenummer'] = rutenummer
+
+        # If no main route found, use first route
+        if main_route is None and routes:
+            first_rutenummer = next(iter(routes.keys()))
+            main_route = routes[first_rutenummer]
+            main_route['rutenummer'] = first_rutenummer
+
+        if main_route is None:
+            continue
+
+        # Build registry entry
+        entry = {
+            'number': number,
+            'status': main_route.get('status', 'active'),
+            'authority': main_route.get('authority', _map_authority(main_route.get('vedlikeholdsansvarlig'))),
+        }
+
+        # Add title if available
+        rutenavn = main_route.get('rutenavn')
+        if rutenavn and rutenavn != 'Ukjent':
+            entry['title'] = rutenavn
+
+        # Add endpoints if available
+        from_name = main_route.get('from_name')
+        to_name = main_route.get('to_name')
+        if from_name or to_name:
+            entry['endpoints'] = {}
+            if from_name and from_name.get('name'):
+                entry['endpoints']['a'] = from_name['name']
+            if to_name and to_name.get('name'):
+                entry['endpoints']['b'] = to_name['name']
+
+        # Add variants if any
+        if variants:
+            entry['variants'] = {}
+            for letter, variant_data in sorted(variants.items()):
+                variant_entry = {
+                    'status': variant_data.get('status', 'active'),
+                }
+
+                # Add variant-specific title if different from main
+                variant_rutenavn = variant_data.get('rutenavn')
+                if variant_rutenavn and variant_rutenavn != rutenavn and variant_rutenavn != 'Ukjent':
+                    variant_entry['title'] = variant_rutenavn
+
+                entry['variants'][letter] = variant_entry
+
+        registry_entries.append(entry)
+
+    # Format as YAML - output as list if as_list=True, otherwise single entry
+    if as_list:
+        return yaml.dump(registry_entries, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    else:
+        # Single entry (for one route number)
+        if len(registry_entries) == 1:
+            return yaml.dump(registry_entries[0], allow_unicode=True, sort_keys=False, default_flow_style=False)
+        else:
+            # Multiple entries - output as list
+            return yaml.dump(registry_entries, allow_unicode=True, sort_keys=False, default_flow_style=False)
+
+
+def _map_authority(vedlikeholdsansvarlig: Optional[str]) -> str:
+    """
+    Map vedlikeholdsansvarlig to authority enum value.
+
+    Args:
+        vedlikeholdsansvarlig: Organization name
+
+    Returns:
+        Authority enum value: "dnt", "turrutebasen", "legacy", or "import"
+    """
+    if not vedlikeholdsansvarlig:
+        return "legacy"
+
+    vedlikeholdsansvarlig_lower = vedlikeholdsansvarlig.lower()
+
+    if 'dnt' in vedlikeholdsansvarlig_lower:
+        return "dnt"
+    elif 'turrutebasen' in vedlikeholdsansvarlig_lower:
+        return "turrutebasen"
+    else:
+        return "legacy"
 

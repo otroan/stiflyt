@@ -12,8 +12,8 @@ from typing import Optional
 
 from .api_client import RouteSegmentsClient, APIError, ConnectionError, AuthenticationError, APIResponseError
 from .config import CLIConfig
-from .formatters import format_json, format_table, format_csv, format_text_summary, format_complete_route_table, format_complete_route_csv
-from .find_available_numbers import analyze_available_numbers, format_available_numbers
+from .formatters import format_json, format_table, format_csv, format_text_summary, format_complete_route_table, format_complete_route_csv, format_route_registry_yaml
+from .find_available_numbers import analyze_available_numbers, format_available_numbers, parse_rutenummer, get_existing_rutenummer
 
 
 def main():
@@ -84,9 +84,15 @@ Examples:
     # Output options
     parser.add_argument(
         '--format',
-        choices=['json', 'table', 'csv'],
+        choices=['json', 'table', 'csv', 'yaml'],
         default='table',
         help='Output format (default: table)'
+    )
+    parser.add_argument(
+        '--export-registry',
+        nargs='+',
+        metavar='AREA',
+        help='Export routes for given area(s) (e.g., bre jot ron) as YAML registry format. Queries database directly.'
     )
     parser.add_argument(
         '--include-geometry',
@@ -313,6 +319,194 @@ Examples:
                 print("\n" + json.dumps(result, indent=2, ensure_ascii=False))
 
         sys.exit(0)
+
+    # Handle export-registry mode
+    if args.export_registry:
+        from services.database import db_connection, get_route_schema, quote_identifier
+        from services.route_endpoints import extract_route_endpoints, lookup_endpoint_name
+        from collections import defaultdict
+        from psycopg.rows import dict_row
+
+        # Validate area prefixes
+        areas = [area.lower() for area in args.export_registry]
+        for area in areas:
+            if len(area) != 3 or not area.isalpha():
+                parser.error(f"Invalid area prefix: {area}. Must be exactly 3 letters (e.g., 'bre')")
+
+        try:
+            # Query database for all routes in each area
+            all_routes_by_number = defaultdict(dict)  # number -> {rutenummer: route_data}
+
+            with db_connection() as conn:
+                route_schema = get_route_schema(conn)
+                schema_quoted = quote_identifier(route_schema)
+
+                for area in areas:
+                    if args.verbose:
+                        print(f"Querying routes for area: {area}", file=sys.stderr)
+
+                    # Get all rutenummer for this area
+                    rutenummer_list = get_existing_rutenummer(area)
+
+                    if args.verbose:
+                        print(f"Found {len(rutenummer_list)} routes for {area}", file=sys.stderr)
+
+                    # Batch query: Get metadata for all routes in one query
+                    if not rutenummer_list:
+                        continue
+
+                    placeholders = ','.join(['%s'] * len(rutenummer_list))
+                    metadata_query = f"""
+                        SELECT DISTINCT
+                            fi.rutenummer,
+                            fi.rutenavn,
+                            fi.vedlikeholdsansvarlig,
+                            f.objid as first_objid
+                        FROM {schema_quoted}.fotruteinfo fi
+                        JOIN {schema_quoted}.fotrute f ON fi.fotrute_fk = f.objid
+                        WHERE fi.rutenummer IN ({placeholders})
+                        ORDER BY fi.rutenummer, f.objid
+                    """
+
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(metadata_query, rutenummer_list)
+                        metadata_rows = cur.fetchall()
+
+                    # Group by rutenummer to get first segment for endpoint lookup
+                    routes_metadata = {}
+                    for row in metadata_rows:
+                        rutenummer = row['rutenummer']
+                        if rutenummer not in routes_metadata:
+                            routes_metadata[rutenummer] = {
+                                'rutenavn': row.get('rutenavn'),
+                                'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
+                                'first_objid': row['first_objid']
+                            }
+
+                    # Get endpoint coordinates for routes (lightweight - just first/last points)
+                    if args.verbose:
+                        print(f"Getting endpoint coordinates for {len(routes_metadata)} routes...", file=sys.stderr)
+
+                    endpoint_query = f"""
+                        WITH route_segments AS (
+                            SELECT
+                                fi.rutenummer,
+                                f.objid,
+                                ST_X(ST_Transform(ST_StartPoint(f.senterlinje::geometry), 4326)) as start_lon,
+                                ST_Y(ST_Transform(ST_StartPoint(f.senterlinje::geometry), 4326)) as start_lat,
+                                ST_X(ST_Transform(ST_EndPoint(f.senterlinje::geometry), 4326)) as end_lon,
+                                ST_Y(ST_Transform(ST_EndPoint(f.senterlinje::geometry), 4326)) as end_lat,
+                                ROW_NUMBER() OVER (PARTITION BY fi.rutenummer ORDER BY f.objid) as rn_start,
+                                ROW_NUMBER() OVER (PARTITION BY fi.rutenummer ORDER BY f.objid DESC) as rn_end
+                            FROM {schema_quoted}.fotruteinfo fi
+                            JOIN {schema_quoted}.fotrute f ON fi.fotrute_fk = f.objid
+                            WHERE fi.rutenummer IN ({placeholders})
+                        )
+                        SELECT
+                            rutenummer,
+                            MAX(CASE WHEN rn_start = 1 THEN start_lon END) as first_start_lon,
+                            MAX(CASE WHEN rn_start = 1 THEN start_lat END) as first_start_lat,
+                            MAX(CASE WHEN rn_end = 1 THEN end_lon END) as last_end_lon,
+                            MAX(CASE WHEN rn_end = 1 THEN end_lat END) as last_end_lat
+                        FROM route_segments
+                        GROUP BY rutenummer
+                    """
+
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(endpoint_query, rutenummer_list)
+                        endpoint_rows = cur.fetchall()
+
+                    # Map endpoints to routes
+                    endpoints_by_route = {}
+                    for row in endpoint_rows:
+                        rutenummer = row['rutenummer']
+                        first_start_lon = row.get('first_start_lon')
+                        first_start_lat = row.get('first_start_lat')
+                        last_end_lon = row.get('last_end_lon')
+                        last_end_lat = row.get('last_end_lat')
+                        if first_start_lon is not None and first_start_lat is not None and last_end_lon is not None and last_end_lat is not None:
+                            endpoints_by_route[rutenummer] = {
+                                'start': [first_start_lon, first_start_lat],
+                                'end': [last_end_lon, last_end_lat]
+                            }
+
+                    # Process each route (lightweight - only endpoint name lookups)
+                    processed = 0
+                    for rutenummer in rutenummer_list:
+                        try:
+                            metadata = routes_metadata.get(rutenummer, {})
+                            route_data = {
+                                'rutenummer': rutenummer,
+                                'rutenavn': metadata.get('rutenavn'),
+                                'vedlikeholdsansvarlig': metadata.get('vedlikeholdsansvarlig'),
+                                'from_name': None,
+                                'to_name': None
+                            }
+
+                            # Get endpoint names (only if coordinates available)
+                            endpoints = endpoints_by_route.get(rutenummer)
+                            if endpoints:
+                                start_coords = endpoints.get('start')
+                                end_coords = endpoints.get('end')
+
+                                if start_coords and len(start_coords) >= 2:
+                                    start_name_info = lookup_endpoint_name(conn, start_coords[0], start_coords[1], rutenummer)
+                                    if start_name_info and start_name_info.get('name'):
+                                        route_data['from_name'] = {
+                                            'name': start_name_info.get('name'),
+                                            'source': start_name_info.get('source', 'unknown'),
+                                            'distance_meters': start_name_info.get('distance_meters')
+                                        }
+
+                                if end_coords and len(end_coords) >= 2:
+                                    end_name_info = lookup_endpoint_name(conn, end_coords[0], end_coords[1], rutenummer)
+                                    if end_name_info and end_name_info.get('name'):
+                                        route_data['to_name'] = {
+                                            'name': end_name_info.get('name'),
+                                            'source': end_name_info.get('source', 'unknown'),
+                                            'distance_meters': end_name_info.get('distance_meters')
+                                        }
+
+                            # Parse rutenummer to get number
+                            parsed = parse_rutenummer(rutenummer)
+                            if parsed:
+                                prefix, number, letter = parsed
+                                all_routes_by_number[number][rutenummer] = route_data
+                                processed += 1
+
+                                if args.verbose and processed % 10 == 0:
+                                    print(f"Processed {processed}/{len(rutenummer_list)} routes...", file=sys.stderr)
+                        except Exception as e:
+                            if args.verbose:
+                                print(f"Error getting route {rutenummer}: {e}", file=sys.stderr)
+                            continue
+
+                    if args.verbose:
+                        print(f"Completed processing {processed} routes for area {area}", file=sys.stderr)
+
+            # Format as YAML (output as list since we have multiple route numbers)
+            yaml_output = format_route_registry_yaml(all_routes_by_number, as_list=True)
+
+            # Write output
+            if args.output:
+                try:
+                    with open(args.output, 'w', encoding='utf-8') as f:
+                        f.write(yaml_output)
+                    if not args.verbose:
+                        print(f"Registry exported to {args.output}", file=sys.stderr)
+                except Exception as e:
+                    print(f"Error writing to file {args.output}: {e}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print(yaml_output)
+
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error exporting registry: {e}", file=sys.stderr)
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
 
     # Handle find-available mode
     if args.find_available:
