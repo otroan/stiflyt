@@ -210,3 +210,139 @@ class RouteSegmentsClient:
         except requests.exceptions.RequestException as e:
             raise ConnectionError(f"Request failed: {e}")
 
+
+class RoutesClient:
+    """Client for querying routes from the API."""
+
+    def __init__(self, config: CLIConfig):
+        """
+        Initialize API client.
+
+        Args:
+            config: CLIConfig instance with API settings
+        """
+        self.config = config
+        self.base_url = config.api_url.rstrip('/')
+
+    def _make_request(self, method: str, url: str, params: Optional[Dict] = None) -> Dict[str, Any]:
+        """Helper method to make HTTP requests with error handling."""
+        auth = self.config.get_auth()
+        headers = {"Accept": "application/json"}
+
+        try:
+            response = requests.request(
+                method,
+                url,
+                params=params,
+                auth=auth,
+                headers=headers,
+                timeout=self.config.timeout
+            )
+
+            # Handle HTTP errors
+            if response.status_code == 401:
+                raise AuthenticationError("Authentication failed. Check your credentials.")
+            elif response.status_code == 400:
+                error_detail = response.json().get("detail", "Bad request")
+                raise APIResponseError(f"Bad request: {error_detail}", status_code=400)
+            elif response.status_code == 404:
+                error_detail = response.json().get("detail", "Not found")
+                raise APIResponseError(error_detail, status_code=404)
+            elif response.status_code >= 500:
+                error_detail = response.json().get("detail", "Server error")
+                raise APIResponseError(f"Server error: {error_detail}", status_code=response.status_code)
+            elif not response.ok:
+                raise APIResponseError(
+                    f"API returned status {response.status_code}",
+                    status_code=response.status_code
+                )
+
+            # Parse JSON response
+            try:
+                return response.json()
+            except ValueError as e:
+                raise APIResponseError(f"Invalid JSON response: {e}")
+
+        except requests.exceptions.ConnectionError as e:
+            raise ConnectionError(f"Could not connect to API at {self.base_url}: {e}")
+        except requests.exceptions.Timeout as e:
+            raise ConnectionError(f"Request to API timed out: {e}")
+        except requests.exceptions.RequestException as e:
+            raise ConnectionError(f"Request failed: {e}")
+
+    def get_routes(
+        self,
+        prefix: Optional[str] = None,
+        vedlikeholdsansvarlig: Optional[str] = None,
+        bbox: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        include_geometry: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Get routes from the API.
+
+        Args:
+            prefix: Route number prefix (e.g., "bre", "jot", "ron")
+            vedlikeholdsansvarlig: Organization filter (pattern match)
+            bbox: Bounding box as "xmin,ymin,xmax,ymax" in WGS84
+            limit: Maximum number of results (default: 100, max: 1000)
+            offset: Pagination offset (default: 0)
+            include_geometry: Include GeoJSON geometry in response (default: False)
+
+        Returns:
+            Dictionary with routes, total, limit, and offset
+        """
+        params = {
+            "limit": min(limit, 1000),
+            "offset": max(offset, 0),
+            "include_geometry": include_geometry
+        }
+
+        if prefix:
+            params["prefix"] = prefix
+        if vedlikeholdsansvarlig:
+            params["vedlikeholdsansvarlig"] = vedlikeholdsansvarlig
+        if bbox:
+            params["bbox"] = bbox
+
+        url = f"{self.base_url}/routes"
+        return self._make_request("GET", url, params)
+
+    def get_route(
+        self,
+        rutenummer: str,
+        include_geometry: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Get a single route by rutenummer.
+
+        Args:
+            rutenummer: Route number (e.g., "bre10")
+            include_geometry: Include GeoJSON geometry in response (default: False)
+
+        Returns:
+            Dictionary with route information
+        """
+        params = {"include_geometry": include_geometry}
+        url = f"{self.base_url}/routes/{rutenummer}"
+        return self._make_request("GET", url, params)
+
+    def get_route_segments(
+        self,
+        rutenummer: str,
+        include_geometry: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Get route segments for a specific route.
+
+        Args:
+            rutenummer: Route number (e.g., "bre10")
+            include_geometry: Include GeoJSON geometry in response (default: False)
+
+        Returns:
+            Dictionary with route segments
+        """
+        params = {"include_geometry": include_geometry}
+        url = f"{self.base_url}/routes/{rutenummer}/segments"
+        return self._make_request("GET", url, params)

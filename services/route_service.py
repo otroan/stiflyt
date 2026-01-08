@@ -1,6 +1,7 @@
 """Route service for processing routes and matrikkelenhet."""
 import psycopg
 import json
+from typing import Optional
 from psycopg.rows import dict_row
 from .database import (
     db_connection,
@@ -1138,4 +1139,182 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
         result['components'] = components
 
     return result
+
+
+def get_routes_from_view(
+    conn,
+    rutenummer: Optional[str] = None,
+    prefix: Optional[str] = None,
+    vedlikeholdsansvarlig: Optional[str] = None,
+    bbox: Optional[tuple[float, float, float, float]] = None,
+    limit: int = 100,
+    offset: int = 0,
+    include_geometry: bool = False
+):
+    """
+    Get routes from stiflyt.routes materialized view with optional filters.
+
+    Args:
+        conn: Database connection
+        rutenummer: Exact route number (e.g., "bre10")
+        prefix: Route number prefix (e.g., "bre", "jot", "ron")
+        vedlikeholdsansvarlig: Organization filter (pattern match)
+        bbox: Bounding box as (xmin, ymin, xmax, ymax) in WGS84 (4326)
+        limit: Maximum number of results
+        offset: Pagination offset
+        include_geometry: If True, include GeoJSON geometry
+
+    Returns:
+        tuple: (routes_list, total_count) where routes_list is list of route dicts
+    """
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    # Build WHERE clause
+    where_conditions = []
+    params = []
+
+    if rutenummer:
+        where_conditions.append("rutenummer = %s")
+        params.append(rutenummer)
+    elif prefix:
+        where_conditions.append("rutenummer LIKE %s")
+        params.append(f"{prefix}%")
+
+    if vedlikeholdsansvarlig:
+        where_conditions.append("vedlikeholdsansvarlig ILIKE %s")
+        params.append(f"%{vedlikeholdsansvarlig}%")
+
+    if bbox:
+        xmin, ymin, xmax, ymax = bbox
+        # Transform bbox from WGS84 (4326) to UTM 33N (25833) for spatial query
+        where_conditions.append(
+            "route_geometry && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), 25833) "
+            "AND ST_Intersects(route_geometry, ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), 25833))"
+        )
+        params.extend([xmin, ymin, xmax, ymax, xmin, ymin, xmax, ymax])
+
+    where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+
+    # Build SELECT clause
+    select_parts = [
+        "rutenummer",
+        "rutenavn",
+        "vedlikeholdsansvarlig",
+        "rutetype",
+        "total_length_m",
+        "segment_count",
+        "segment_objids"
+    ]
+
+    if include_geometry:
+        select_parts.append("ST_AsGeoJSON(ST_Transform(route_geometry, 4326))::json as route_geometry")
+
+    # Build query with count for total
+    query = f"""
+        WITH filtered_routes AS (
+            SELECT
+                {', '.join(select_parts)}
+            FROM {ROUTE_SCHEMA}.routes
+            {where_clause}
+        )
+        SELECT
+            *,
+            COUNT(*) OVER() as total_count
+        FROM filtered_routes
+        ORDER BY rutenummer
+        LIMIT %s
+        OFFSET %s
+    """
+
+    params.extend([limit, offset])
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+    # Extract total count from first row
+    total_count = rows[0]['total_count'] if rows else 0
+
+    # Build results
+    routes = []
+    for row in rows:
+        route = {
+            'rutenummer': row['rutenummer'],
+            'rutenavn': row.get('rutenavn'),
+            'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
+            'rutetype': row.get('rutetype'),
+            'total_length_m': float(row['total_length_m']) if row.get('total_length_m') is not None else 0.0,
+            'segment_count': int(row['segment_count']) if row.get('segment_count') is not None else 0,
+            'segment_objids': row.get('segment_objids')
+        }
+
+        if include_geometry and row.get('route_geometry'):
+            route['route_geometry'] = parse_geometry(row['route_geometry'])
+
+        routes.append(route)
+
+    return routes, total_count
+
+
+def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool = False):
+    """
+    Get route segments from stiflyt.route_segments view for a specific route.
+
+    Args:
+        conn: Database connection
+        rutenummer: Route number
+        include_geometry: If True, include GeoJSON geometry
+
+    Returns:
+        List of segment dicts
+    """
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    select_parts = [
+        "rutenummer",
+        "segment_objid",
+        "source_node",
+        "target_node",
+        "rutenavn",
+        "vedlikeholdsansvarlig",
+        "rutetype",
+        "gradering"
+    ]
+
+    if include_geometry:
+        select_parts.append("ST_AsGeoJSON(ST_Transform(senterlinje, 4326))::json as senterlinje")
+
+    query = f"""
+        SELECT
+            {', '.join(select_parts)}
+        FROM {ROUTE_SCHEMA}.route_segments
+        WHERE rutenummer = %s
+        ORDER BY segment_objid
+    """
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(query, (rutenummer,))
+        rows = cur.fetchall()
+
+    segments = []
+    for row in rows:
+        segment = {
+            'rutenummer': row['rutenummer'],
+            'segment_objid': int(row['segment_objid']),
+            'source_node': row.get('source_node'),
+            'target_node': row.get('target_node'),
+            'rutenavn': row.get('rutenavn'),
+            'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
+            'rutetype': row.get('rutetype'),
+            'gradering': row.get('gradering')
+        }
+
+        if include_geometry and row.get('senterlinje'):
+            segment['senterlinje'] = parse_geometry(row['senterlinje'])
+
+        segments.append(segment)
+
+    return segments
 

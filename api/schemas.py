@@ -146,3 +146,43 @@ class CompleteRouteResponse(BaseModel):
     segments: Optional[List[RouteSegment]] = None  # Only included if include_segments=true
     components: Optional[List[RouteComponent]] = None  # Only included if multiple components
 
+
+class Route(BaseModel):
+    """Route from stiflyt.routes materialized view."""
+    rutenummer: str
+    rutenavn: Optional[str] = None
+    vedlikeholdsansvarlig: Optional[str] = None
+    rutetype: Optional[str] = None
+    route_geometry: Optional[Dict[str, Any]] = None  # GeoJSON geometry (optional)
+    total_length_m: float
+    segment_count: int
+    segment_objids: Optional[List[int]] = None
+
+
+class RoutesResponse(BaseModel):
+    """Response for routes query."""
+    routes: List[Route]
+    total: int
+    limit: int
+    offset: int
+
+
+class RouteSegmentDetail(BaseModel):
+    """Route segment detail from stiflyt.route_segments view."""
+    rutenummer: str
+    segment_objid: int
+    senterlinje: Optional[Dict[str, Any]] = None  # GeoJSON geometry
+    source_node: Optional[int] = None
+    target_node: Optional[int] = None
+    rutenavn: Optional[str] = None
+    vedlikeholdsansvarlig: Optional[str] = None
+    rutetype: Optional[str] = None
+    gradering: Optional[str] = None
+
+
+class RouteSegmentsDetailResponse(BaseModel):
+    """Response for route segments detail query."""
+    rutenummer: str
+    segments: List[RouteSegmentDetail]
+    total: int
+

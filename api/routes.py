@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse
-from services.route_service import search_places, get_complete_route
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse
+from services.route_service import search_places, get_complete_route, get_routes_from_view, get_route_segments_from_view
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
 from services.excel_report import generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
@@ -785,4 +785,158 @@ async def get_complete_route_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Error processing complete route: {str(e)}"
+        )
+
+
+@router.get("/routes", response_model=RoutesResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_routes(
+    prefix: Annotated[Optional[str], Query(description="Filter by route number prefix (e.g., 'bre', 'jot', 'ron')")] = None,
+    vedlikeholdsansvarlig: Annotated[Optional[str], Query(description="Filter by organization (pattern match)")] = None,
+    bbox: Annotated[Optional[str], Query(description="Bounding box as 'xmin,ymin,xmax,ymax' in WGS84")] = None,
+    limit: Annotated[int, Query(ge=1, le=1000, description="Maximum number of results")] = 100,
+    offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0,
+    include_geometry: Annotated[bool, Query(description="Include GeoJSON geometry in response")] = False
+) -> RoutesResponse:
+    """
+    Get routes from stiflyt.routes materialized view.
+
+    Supports filtering by:
+    - prefix: Route number prefix (e.g., "bre", "jot", "ron")
+    - vedlikeholdsansvarlig: Organization name (pattern match)
+    - bbox: Bounding box for spatial filtering
+
+    Example:
+    - /api/v1/routes?prefix=bre
+    - /api/v1/routes?vedlikeholdsansvarlig=DNT
+    - /api/v1/routes?bbox=10.0,59.0,11.0,60.0
+    - /api/v1/routes?prefix=bre&include_geometry=true
+    """
+    try:
+        # Parse bbox if provided
+        bbox_tuple = None
+        if bbox:
+            try:
+                bbox_tuple = parse_bbox(bbox)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid bbox format: {e}")
+
+        with db_connection() as conn:
+            routes, total_count = get_routes_from_view(
+                conn,
+                prefix=prefix,
+                vedlikeholdsansvarlig=vedlikeholdsansvarlig,
+                bbox=bbox_tuple,
+                limit=limit,
+                offset=offset,
+                include_geometry=include_geometry
+            )
+
+        # Convert to Pydantic models
+        route_models = []
+        for route in routes:
+            route_models.append(Route(**route))
+
+        return RoutesResponse(
+            routes=route_models,
+            total=total_count,
+            limit=limit,
+            offset=offset
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error querying routes: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error querying routes: {str(e)}"
+        )
+
+
+@router.get("/routes/{rutenummer}", response_model=Route, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_route_by_number(
+    rutenummer: str,
+    include_geometry: Annotated[bool, Query(description="Include GeoJSON geometry in response")] = False
+) -> Route:
+    """
+    Get a single route by rutenummer from stiflyt.routes materialized view.
+
+    Example:
+    - /api/v1/routes/bre10
+    - /api/v1/routes/bre10?include_geometry=true
+    """
+    try:
+        with db_connection() as conn:
+            routes, total_count = get_routes_from_view(
+                conn,
+                rutenummer=rutenummer,
+                limit=1,
+                offset=0,
+                include_geometry=include_geometry
+            )
+
+            if not routes:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Route with rutenummer '{rutenummer}' not found"
+                )
+
+            return Route(**routes[0])
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting route: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting route: {str(e)}"
+        )
+
+
+@router.get("/routes/{rutenummer}/segments", response_model=RouteSegmentsDetailResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_route_segments_detail(
+    rutenummer: str,
+    include_geometry: Annotated[bool, Query(description="Include GeoJSON geometry in response")] = False
+) -> RouteSegmentsDetailResponse:
+    """
+    Get route segments for a specific route from stiflyt.route_segments view.
+
+    Example:
+    - /api/v1/routes/bre10/segments
+    - /api/v1/routes/bre10/segments?include_geometry=true
+    """
+    try:
+        with db_connection() as conn:
+            # First verify route exists
+            routes, _ = get_routes_from_view(conn, rutenummer=rutenummer, limit=1, offset=0)
+            if not routes:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Route with rutenummer '{rutenummer}' not found"
+                )
+
+            # Get segments
+            segments = get_route_segments_from_view(conn, rutenummer, include_geometry=include_geometry)
+
+        # Convert to Pydantic models
+        segment_models = []
+        for segment in segments:
+            segment_models.append(RouteSegmentDetail(**segment))
+
+        return RouteSegmentsDetailResponse(
+            rutenummer=rutenummer,
+            segments=segment_models,
+            total=len(segment_models)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting route segments: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting route segments: {str(e)}"
         )

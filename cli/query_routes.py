@@ -10,19 +10,28 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .api_client import RouteSegmentsClient, APIError, ConnectionError, AuthenticationError, APIResponseError
+from .api_client import RouteSegmentsClient, RoutesClient, APIError, ConnectionError, AuthenticationError, APIResponseError
 from .config import CLIConfig
-from .formatters import format_json, format_table, format_csv, format_text_summary, format_complete_route_table, format_complete_route_csv, format_route_registry_yaml
+from .formatters import format_json, format_table, format_csv, format_text_summary, format_complete_route_table, format_complete_route_csv, format_route_registry_yaml, format_routes_table, format_routes_csv, format_routes_summary
 from .find_available_numbers import analyze_available_numbers, format_available_numbers, parse_rutenummer, get_existing_rutenummer
 
 
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
-        description='Query route segments from Stiflyt backend API',
+        description='Query routes and route segments from Stiflyt backend API',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Query routes (new routes API)
+  %(prog)s --list-routes
+  %(prog)s --list-routes --prefix bre
+  %(prog)s --list-routes --prefix bre --format json
+  %(prog)s --list-routes --bbox 10.0,59.0,11.0,60.0
+  %(prog)s --get-route bre10
+  %(prog)s --get-route bre10 --format json
+  %(prog)s --get-route-segments bre10
+
   # Query segments with rutenummer starting with "bre" and vedlikeholdsansvarlig "DNT Oslo"
   %(prog)s --rutenummer-prefix bre --vedlikeholdsansvarlig "DNT Oslo"
 
@@ -59,6 +68,35 @@ Examples:
   # Test ruteinfopunkt lookup (debug)
   %(prog)s --test-ruteinfopunkt 7.710764899 61.809237843 --rutenummer bre9
         """
+    )
+
+    # Routes API commands (new)
+    parser.add_argument(
+        '--list-routes',
+        action='store_true',
+        help='List all routes (uses new routes API)'
+    )
+    parser.add_argument(
+        '--get-route',
+        type=str,
+        metavar='RUTENUMMER',
+        help='Get a single route by rutenummer (uses new routes API)'
+    )
+    parser.add_argument(
+        '--get-route-segments',
+        type=str,
+        metavar='RUTENUMMER',
+        help='Get segments for a route (uses new routes API)'
+    )
+    parser.add_argument(
+        '--prefix',
+        type=str,
+        help='Filter routes by prefix (e.g., "bre", "jot", "ron") - used with --list-routes'
+    )
+    parser.add_argument(
+        '--bbox',
+        type=str,
+        help='Bounding box as "xmin,ymin,xmax,ymax" in WGS84 - used with --list-routes'
     )
 
     # Complete route mode
@@ -537,6 +575,132 @@ Examples:
             if args.verbose:
                 import traceback
                 traceback.print_exc()
+            sys.exit(1)
+
+    # Handle routes API commands (new)
+    if args.list_routes or args.get_route or args.get_route_segments:
+        # Create configuration
+        config = CLIConfig(
+            api_url=args.api_url,
+            username=args.username,
+            password=args.password,
+            timeout=args.timeout
+        )
+
+        # Create routes API client
+        client = RoutesClient(config)
+
+        try:
+            if args.list_routes:
+                # List routes
+                response = client.get_routes(
+                    prefix=args.prefix,
+                    vedlikeholdsansvarlig=args.vedlikeholdsansvarlig,
+                    bbox=args.bbox,
+                    limit=args.limit,
+                    offset=args.offset,
+                    include_geometry=args.include_geometry
+                )
+
+                # Format output
+                if args.format == "json":
+                    output_text = format_json(response)
+                elif args.format == "csv":
+                    routes = response.get("routes", [])
+                    output_text = format_routes_csv(routes, include_geometry=args.include_geometry)
+                else:
+                    # Table output (default)
+                    output_lines = []
+                    if not args.no_summary:
+                        output_lines.append(format_routes_summary(response))
+                    routes = response.get("routes", [])
+                    output_lines.append(format_routes_table(routes, show_geometry=args.include_geometry))
+                    output_text = "\n".join(output_lines)
+
+            elif args.get_route:
+                # Get single route
+                route = client.get_route(
+                    rutenummer=args.get_route,
+                    include_geometry=args.include_geometry
+                )
+
+                # Format output
+                if args.format == "json":
+                    output_text = format_json(route)
+                elif args.format == "csv":
+                    output_text = format_routes_csv([route], include_geometry=args.include_geometry)
+                else:
+                    # Table output (default)
+                    output_text = format_routes_table([route], show_geometry=args.include_geometry)
+
+            elif args.get_route_segments:
+                # Get route segments
+                response = client.get_route_segments(
+                    rutenummer=args.get_route_segments,
+                    include_geometry=args.include_geometry
+                )
+
+                # Format output
+                if args.format == "json":
+                    output_text = format_json(response)
+                else:
+                    # For segments, use existing segment formatters
+                    segments = response.get("segments", [])
+                    # Convert to format expected by formatters
+                    formatted_segments = []
+                    for seg in segments:
+                        formatted_segments.append({
+                            "objid": seg.get("segment_objid"),
+                            "routes": [{
+                                "rutenummer": seg.get("rutenummer"),
+                                "rutenavn": seg.get("rutenavn"),
+                                "vedlikeholdsansvarlig": seg.get("vedlikeholdsansvarlig")
+                            }],
+                            "length_meters": None,  # Not available in route_segments view
+                            "geometry": seg.get("senterlinje") if args.include_geometry else None
+                        })
+
+                    if args.format == "csv":
+                        output_text = format_csv(formatted_segments, include_geometry=args.include_geometry)
+                    else:
+                        output_text = format_table(formatted_segments, show_geometry=args.include_geometry)
+
+            # Write output
+            if args.output:
+                try:
+                    with open(args.output, 'w', encoding='utf-8') as f:
+                        f.write(output_text)
+                    if args.format != "json" and not args.no_summary:
+                        print(f"Results written to {args.output}", file=sys.stderr)
+                except Exception as e:
+                    print(f"Error writing to file {args.output}: {e}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print(output_text)
+
+            sys.exit(0)
+
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except ConnectionError as e:
+            print(f"Connection error: {e}", file=sys.stderr)
+            if args.verbose:
+                print(f"API URL: {config.api_url}", file=sys.stderr)
+            sys.exit(1)
+        except AuthenticationError as e:
+            print(f"Authentication error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except APIResponseError as e:
+            if e.status_code == 404:
+                print(f"Route not found: {e}", file=sys.stderr)
+            else:
+                print(f"API error: {e}", file=sys.stderr)
+            if args.verbose and e.response:
+                print(f"Response: {e.response}", file=sys.stderr)
+            sys.exit(1)
+        except APIError as e:
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
     # Handle complete route mode

@@ -338,6 +338,128 @@ def format_complete_route_csv(route: Dict[str, Any]) -> str:
     return output.getvalue()
 
 
+def format_routes_table(routes: List[Dict[str, Any]], show_geometry: bool = False) -> str:
+    """
+    Format routes as a human-readable table.
+
+    Args:
+        routes: List of route dictionaries
+        show_geometry: Whether to include geometry info in table
+
+    Returns:
+        Formatted table string
+    """
+    if not routes:
+        return "No routes found."
+
+    lines = []
+
+    # Calculate column widths
+    col_widths = {
+        "rutenummer": max(len("rutenummer"), max(len(str(r.get("rutenummer", ""))) for r in routes)),
+        "rutenavn": max(len("rutenavn"), max(len(str(r.get("rutenavn", "") or "")) for r in routes)),
+        "vedlikeholdsansvarlig": max(len("vedlikeholdsansvarlig"), max(len(str(r.get("vedlikeholdsansvarlig", "") or "")) for r in routes)),
+        "rutetype": max(len("rutetype"), max(len(str(r.get("rutetype", "") or "")) for r in routes)),
+        "total_length_m": max(len("length (m)"), max(len(f"{r.get('total_length_m', 0):.1f}") if r.get('total_length_m') else len("N/A") for r in routes)),
+        "segment_count": max(len("segments"), max(len(str(r.get("segment_count", 0))) for r in routes)),
+    }
+
+    # Ensure minimum widths
+    for key in col_widths:
+        col_widths[key] = max(col_widths[key], 8)
+
+    # Build header
+    header = (
+        f"{'rutenummer':<{col_widths['rutenummer']}} | "
+        f"{'rutenavn':<{col_widths['rutenavn']}} | "
+        f"{'vedlikeholdsansvarlig':<{col_widths['vedlikeholdsansvarlig']}} | "
+        f"{'rutetype':<{col_widths['rutetype']}} | "
+        f"{'length (m)':>{col_widths['total_length_m']}} | "
+        f"{'segments':>{col_widths['segment_count']}}"
+    )
+    lines.append(header)
+    lines.append("-" * len(header))
+
+    # Build rows
+    for route in routes:
+        rutenummer = str(route.get("rutenummer", ""))
+        rutenavn = str(route.get("rutenavn") or "")
+        vedlikeholdsansvarlig = str(route.get("vedlikeholdsansvarlig") or "")
+        rutetype = str(route.get("rutetype") or "")
+        total_length_m = route.get("total_length_m")
+        length_str = f"{total_length_m:.1f}" if total_length_m is not None else "N/A"
+        segment_count = route.get("segment_count", 0)
+
+        row = (
+            f"{rutenummer:<{col_widths['rutenummer']}} | "
+            f"{rutenavn:<{col_widths['rutenavn']}} | "
+            f"{vedlikeholdsansvarlig:<{col_widths['vedlikeholdsansvarlig']}} | "
+            f"{rutetype:<{col_widths['rutetype']}} | "
+            f"{length_str:>{col_widths['total_length_m']}} | "
+            f"{segment_count:>{col_widths['segment_count']}}"
+        )
+        lines.append(row)
+
+    return "\n".join(lines)
+
+
+def format_routes_csv(routes: List[Dict[str, Any]], include_geometry: bool = False) -> str:
+    """
+    Format routes as CSV.
+
+    Args:
+        routes: List of route dictionaries
+        include_geometry: Whether to include geometry column
+
+    Returns:
+        CSV string
+    """
+    if not routes:
+        return ""
+
+    output = StringIO()
+    fieldnames = ["rutenummer", "rutenavn", "vedlikeholdsansvarlig", "rutetype", "total_length_m", "segment_count"]
+    if include_geometry:
+        fieldnames.append("route_geometry")
+
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+    writer.writeheader()
+
+    for route in routes:
+        row = {k: route.get(k) for k in fieldnames}
+        if include_geometry and "route_geometry" in row and row["route_geometry"]:
+            row["route_geometry"] = json.dumps(row["route_geometry"])
+        writer.writerow(row)
+
+    return output.getvalue()
+
+
+def format_routes_summary(response: Dict[str, Any]) -> str:
+    """
+    Format summary information for routes response.
+
+    Args:
+        response: Response dictionary with routes, total, limit, offset
+
+    Returns:
+        Summary string
+    """
+    total = response.get("total", 0)
+    limit = response.get("limit", 0)
+    offset = response.get("offset", 0)
+    routes = response.get("routes", [])
+    count = len(routes)
+
+    lines = []
+    lines.append(f"Found {total} route(s) total")
+    lines.append(f"Showing {count} route(s) (offset: {offset}, limit: {limit})")
+    if count < total:
+        lines.append(f"Use --offset and --limit for pagination")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
 def format_route_registry_yaml(routes_by_number: Dict[int, Dict[str, Any]], as_list: bool = False) -> str:
     """
     Format routes as YAML according to the route registry schema.
