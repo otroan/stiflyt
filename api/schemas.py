@@ -157,6 +157,8 @@ class Route(BaseModel):
     total_length_m: float
     segment_count: int
     segment_objids: Optional[List[int]] = None
+    from_name: Optional[str] = None  # Start endpoint name from anchor_nodes
+    to_name: Optional[str] = None  # End endpoint name from anchor_nodes
 
 
 class RoutesResponse(BaseModel):
@@ -178,11 +180,31 @@ class RouteSegmentDetail(BaseModel):
     vedlikeholdsansvarlig: Optional[str] = None
     rutetype: Optional[str] = None
     gradering: Optional[str] = None
+    length_meters: Optional[float] = None
 
 
 class RouteSegmentsDetailResponse(BaseModel):
     """Response for route segments detail query."""
     rutenummer: str
     segments: List[RouteSegmentDetail]
+    total: int
+
+
+class RouteLink(BaseModel):
+    """Route link from stiflyt.links_with_routes table (routing topology)."""
+    link_id: int
+    a_node: Optional[int] = None
+    b_node: Optional[int] = None
+    a_node_name: Optional[str] = None  # Name of a_node from anchor_nodes
+    b_node_name: Optional[str] = None  # Name of b_node from anchor_nodes
+    length_m: Optional[float] = None
+    segment_objids: Optional[List[int]] = None
+    geom: Optional[Dict[str, Any]] = None  # GeoJSON geometry
+
+
+class RouteLinksResponse(BaseModel):
+    """Response for route links query."""
+    rutenummer: str
+    links: List[RouteLink]
     total: int
 

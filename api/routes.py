@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse
-from services.route_service import search_places, get_complete_route, get_routes_from_view, get_route_segments_from_view
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse, RouteLink, RouteLinksResponse
+from services.route_service import search_places, get_complete_route, get_routes_from_view, get_route_segments_from_view, get_route_links
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
 from services.excel_report import generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
@@ -939,4 +939,54 @@ async def get_route_segments_detail(
         raise HTTPException(
             status_code=500,
             detail=f"Error getting route segments: {str(e)}"
+        )
+
+
+@router.get("/routes/{rutenummer}/links", response_model=RouteLinksResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_route_links_endpoint(
+    rutenummer: str,
+    include_geometry: Annotated[bool, Query(description="Include GeoJSON geometry in response")] = False
+) -> RouteLinksResponse:
+    """
+    Get routing links for a specific route from stiflyt.links table.
+
+    Links represent routing topology (segments between junctions) and may combine
+    multiple segments. Useful for navigation/routing purposes.
+
+    Example:
+    - /api/v1/routes/bre10/links
+    - /api/v1/routes/bre10/links?include_geometry=true
+    """
+    try:
+        with db_connection() as conn:
+            # First verify route exists
+            routes, _ = get_routes_from_view(conn, rutenummer=rutenummer, limit=1, offset=0)
+            if not routes:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Route with rutenummer '{rutenummer}' not found"
+                )
+
+            # Get links
+            links = get_route_links(conn, rutenummer, include_geometry=include_geometry)
+
+        # Convert to Pydantic models
+        link_models = []
+        for link in links:
+            link_models.append(RouteLink(**link))
+
+        return RouteLinksResponse(
+            rutenummer=rutenummer,
+            links=link_models,
+            total=len(link_models)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting route links: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting route links: {str(e)}"
         )

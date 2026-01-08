@@ -1254,6 +1254,59 @@ def get_routes_from_view(
 
         routes.append(route)
 
+    # Get endpoint names for routes: first link's a_node and last link's b_node
+    if routes:
+        # Query endpoint names for all routes at once
+        rutenummer_list = [r['rutenummer'] for r in routes]
+        placeholders = ','.join(['%s'] * len(rutenummer_list))
+        
+        endpoint_query = f"""
+            WITH route_links_expanded AS (
+                SELECT
+                    UNNEST(lwr.rutenummer_list) as rutenummer,
+                    lwr.link_id,
+                    lwr.a_node,
+                    lwr.b_node
+                FROM {ROUTE_SCHEMA}.links_with_routes lwr
+                WHERE lwr.rutenummer_list && ARRAY[{placeholders}]
+            ),
+            first_last_links AS (
+                SELECT
+                    rutenummer,
+                    (SELECT a_node FROM route_links_expanded rle2 
+                     WHERE rle2.rutenummer = rle.rutenummer 
+                     ORDER BY link_id ASC LIMIT 1) as first_a_node,
+                    (SELECT b_node FROM route_links_expanded rle2 
+                     WHERE rle2.rutenummer = rle.rutenummer 
+                     ORDER BY link_id DESC LIMIT 1) as last_b_node
+                FROM route_links_expanded rle
+                GROUP BY rutenummer
+            )
+            SELECT
+                fll.rutenummer,
+                an_a.navn as from_name,
+                an_b.navn as to_name
+            FROM first_last_links fll
+            LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_a ON an_a.node_id = fll.first_a_node
+            LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_b ON an_b.node_id = fll.last_b_node
+        """
+        
+        try:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(endpoint_query, rutenummer_list)
+                endpoint_rows = cur.fetchall()
+            
+            # Map endpoint names to routes
+            endpoint_map = {row['rutenummer']: row for row in endpoint_rows}
+            for route in routes:
+                endpoint_info = endpoint_map.get(route['rutenummer'])
+                if endpoint_info:
+                    route['from_name'] = endpoint_info.get('from_name')
+                    route['to_name'] = endpoint_info.get('to_name')
+        except Exception as e:
+            # Silently fail if query doesn't work (anchor_nodes might not exist)
+            pass
+
     return routes, total_count
 
 
@@ -1280,7 +1333,8 @@ def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool =
         "rutenavn",
         "vedlikeholdsansvarlig",
         "rutetype",
-        "gradering"
+        "gradering",
+        "ST_Length(ST_Transform(senterlinje, 4326)::geography) as length_meters"
     ]
 
     if include_geometry:
@@ -1308,7 +1362,8 @@ def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool =
             'rutenavn': row.get('rutenavn'),
             'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
             'rutetype': row.get('rutetype'),
-            'gradering': row.get('gradering')
+            'gradering': row.get('gradering'),
+            'length_meters': float(row['length_meters']) if row.get('length_meters') is not None else None
         }
 
         if include_geometry and row.get('senterlinje'):
@@ -1317,4 +1372,72 @@ def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool =
         segments.append(segment)
 
     return segments
+
+
+def get_route_links(conn, rutenummer: str, include_geometry: bool = False):
+    """
+    Get routing links for a specific route from stiflyt.links_with_routes table.
+
+    Uses links_with_routes table which is already aggregated and won't have duplicates.
+
+    Links represent routing topology (segments between junctions) and may
+    combine multiple segments. Useful for navigation/routing purposes.
+
+    Args:
+        conn: Database connection
+        rutenummer: Route number
+        include_geometry: If True, include GeoJSON geometry
+
+    Returns:
+        List of link dicts
+    """
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    select_parts = [
+        "l.link_id",
+        "l.a_node",
+        "l.b_node",
+        "l.length_m",
+        "l.segment_objids",
+        "an_a.navn as a_node_name",
+        "an_b.navn as b_node_name"
+    ]
+
+    if include_geometry:
+        select_parts.append("ST_AsGeoJSON(ST_Transform(l.geom, 4326))::json as geom")
+
+    # Use links_with_routes with JOIN to anchor_nodes for node names
+    query = f"""
+        SELECT
+            {', '.join(select_parts)}
+        FROM {ROUTE_SCHEMA}.links_with_routes l
+        LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_a ON an_a.node_id = l.a_node
+        LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_b ON an_b.node_id = l.b_node
+        WHERE %s = ANY(l.rutenummer_list)
+        ORDER BY l.link_id
+    """
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(query, (rutenummer,))
+        rows = cur.fetchall()
+
+    links = []
+    for row in rows:
+        link = {
+            'link_id': int(row['link_id']),
+            'a_node': row.get('a_node'),
+            'b_node': row.get('b_node'),
+            'a_node_name': row.get('a_node_name'),
+            'b_node_name': row.get('b_node_name'),
+            'length_m': float(row['length_m']) if row.get('length_m') is not None else None,
+            'segment_objids': row.get('segment_objids')
+        }
+
+        if include_geometry and row.get('geom'):
+            link['geom'] = parse_geometry(row['geom'])
+
+        links.append(link)
+
+    return links
 

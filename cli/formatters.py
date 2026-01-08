@@ -358,6 +358,8 @@ def format_routes_table(routes: List[Dict[str, Any]], show_geometry: bool = Fals
     col_widths = {
         "rutenummer": max(len("rutenummer"), max(len(str(r.get("rutenummer", ""))) for r in routes)),
         "rutenavn": max(len("rutenavn"), max(len(str(r.get("rutenavn", "") or "")) for r in routes)),
+        "from_name": max(len("from"), max(len(str(r.get("from_name", "") or "")) for r in routes)),
+        "to_name": max(len("to"), max(len(str(r.get("to_name", "") or "")) for r in routes)),
         "vedlikeholdsansvarlig": max(len("vedlikeholdsansvarlig"), max(len(str(r.get("vedlikeholdsansvarlig", "") or "")) for r in routes)),
         "rutetype": max(len("rutetype"), max(len(str(r.get("rutetype", "") or "")) for r in routes)),
         "total_length_m": max(len("length (m)"), max(len(f"{r.get('total_length_m', 0):.1f}") if r.get('total_length_m') else len("N/A") for r in routes)),
@@ -372,6 +374,8 @@ def format_routes_table(routes: List[Dict[str, Any]], show_geometry: bool = Fals
     header = (
         f"{'rutenummer':<{col_widths['rutenummer']}} | "
         f"{'rutenavn':<{col_widths['rutenavn']}} | "
+        f"{'from':<{col_widths['from_name']}} | "
+        f"{'to':<{col_widths['to_name']}} | "
         f"{'vedlikeholdsansvarlig':<{col_widths['vedlikeholdsansvarlig']}} | "
         f"{'rutetype':<{col_widths['rutetype']}} | "
         f"{'length (m)':>{col_widths['total_length_m']}} | "
@@ -384,6 +388,8 @@ def format_routes_table(routes: List[Dict[str, Any]], show_geometry: bool = Fals
     for route in routes:
         rutenummer = str(route.get("rutenummer", ""))
         rutenavn = str(route.get("rutenavn") or "")
+        from_name = str(route.get("from_name") or "")
+        to_name = str(route.get("to_name") or "")
         vedlikeholdsansvarlig = str(route.get("vedlikeholdsansvarlig") or "")
         rutetype = str(route.get("rutetype") or "")
         total_length_m = route.get("total_length_m")
@@ -393,6 +399,8 @@ def format_routes_table(routes: List[Dict[str, Any]], show_geometry: bool = Fals
         row = (
             f"{rutenummer:<{col_widths['rutenummer']}} | "
             f"{rutenavn:<{col_widths['rutenavn']}} | "
+            f"{from_name:<{col_widths['from_name']}} | "
+            f"{to_name:<{col_widths['to_name']}} | "
             f"{vedlikeholdsansvarlig:<{col_widths['vedlikeholdsansvarlig']}} | "
             f"{rutetype:<{col_widths['rutetype']}} | "
             f"{length_str:>{col_widths['total_length_m']}} | "
@@ -418,7 +426,7 @@ def format_routes_csv(routes: List[Dict[str, Any]], include_geometry: bool = Fal
         return ""
 
     output = StringIO()
-    fieldnames = ["rutenummer", "rutenavn", "vedlikeholdsansvarlig", "rutetype", "total_length_m", "segment_count"]
+    fieldnames = ["rutenummer", "rutenavn", "from_name", "to_name", "vedlikeholdsansvarlig", "rutetype", "total_length_m", "segment_count"]
     if include_geometry:
         fieldnames.append("route_geometry")
 

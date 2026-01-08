@@ -346,3 +346,24 @@ class RoutesClient:
         params = {"include_geometry": include_geometry}
         url = f"{self.base_url}/routes/{rutenummer}/segments"
         return self._make_request("GET", url, params)
+
+    def get_route_links(
+        self,
+        rutenummer: str,
+        include_geometry: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Get routing links for a specific route.
+
+        Links represent routing topology (segments between junctions).
+
+        Args:
+            rutenummer: Route number (e.g., "bre10")
+            include_geometry: Include GeoJSON geometry in response (default: False)
+
+        Returns:
+            Dictionary with route links
+        """
+        params = {"include_geometry": include_geometry}
+        url = f"{self.base_url}/routes/{rutenummer}/links"
+        return self._make_request("GET", url, params)

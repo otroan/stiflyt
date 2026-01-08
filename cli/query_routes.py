@@ -30,7 +30,8 @@ Examples:
   %(prog)s --list-routes --bbox 10.0,59.0,11.0,60.0
   %(prog)s --get-route bre10
   %(prog)s --get-route bre10 --format json
-  %(prog)s --get-route-segments bre10
+  %(prog)s --get-route-segments bre10  # Physical route segments
+  %(prog)s --get-route-links bre10      # Routing topology links
 
   # Query segments with rutenummer starting with "bre" and vedlikeholdsansvarlig "DNT Oslo"
   %(prog)s --rutenummer-prefix bre --vedlikeholdsansvarlig "DNT Oslo"
@@ -86,7 +87,13 @@ Examples:
         '--get-route-segments',
         type=str,
         metavar='RUTENUMMER',
-        help='Get segments for a route (uses new routes API)'
+        help='Get physical route segments for a route (from route_segments view). Shows individual segments with geometry and length.'
+    )
+    parser.add_argument(
+        '--get-route-links',
+        type=str,
+        metavar='RUTENUMMER',
+        help='Get routing links for a route (from links table). Links represent routing topology between junctions and may combine multiple segments. Useful for navigation/routing.'
     )
     parser.add_argument(
         '--prefix',
@@ -578,7 +585,7 @@ Examples:
             sys.exit(1)
 
     # Handle routes API commands (new)
-    if args.list_routes or args.get_route or args.get_route_segments:
+    if args.list_routes or args.get_route or args.get_route_segments or args.get_route_links:
         # Create configuration
         config = CLIConfig(
             api_url=args.api_url,
@@ -656,7 +663,7 @@ Examples:
                                 "rutenavn": seg.get("rutenavn"),
                                 "vedlikeholdsansvarlig": seg.get("vedlikeholdsansvarlig")
                             }],
-                            "length_meters": None,  # Not available in route_segments view
+                            "length_meters": seg.get("length_meters"),  # Now available!
                             "geometry": seg.get("senterlinje") if args.include_geometry else None
                         })
 
@@ -664,6 +671,92 @@ Examples:
                         output_text = format_csv(formatted_segments, include_geometry=args.include_geometry)
                     else:
                         output_text = format_table(formatted_segments, show_geometry=args.include_geometry)
+
+            elif args.get_route_links:
+                # Get route links
+                response = client.get_route_links(
+                    rutenummer=args.get_route_links,
+                    include_geometry=args.include_geometry
+                )
+
+                # Format output
+                if args.format == "json":
+                    output_text = format_json(response)
+                else:
+                    # For links, create a custom table format
+                    links = response.get("links", [])
+                    if args.format == "csv":
+                        import csv
+                        from io import StringIO
+                        output = StringIO()
+                        fieldnames = ["link_id", "a_node", "a_node_name", "b_node", "b_node_name", "length_m", "segment_objids"]
+                        if args.include_geometry:
+                            fieldnames.append("geom")
+                        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+                        writer.writeheader()
+                        for link in links:
+                            row = {k: link.get(k) for k in fieldnames}
+                            if "segment_objids" in row and row["segment_objids"]:
+                                row["segment_objids"] = ",".join(map(str, row["segment_objids"]))
+                            if "geom" in row and row["geom"]:
+                                import json
+                                row["geom"] = json.dumps(row["geom"])
+                            writer.writerow(row)
+                        output_text = output.getvalue()
+                    else:
+                        # Table format for links
+                        lines = []
+                        lines.append(f"Routing Links for Route: {response.get('rutenummer', args.get_route_links)}")
+                        lines.append(f"Total: {response.get('total', len(links))} links")
+                        lines.append("")
+
+                        # Build table
+                        col_widths = {
+                            "link_id": max(len("link_id"), max(len(str(l.get("link_id", ""))) for l in links)),
+                            "a_node": max(len("a_node"), max(len(str(l.get("a_node", "") or "")) for l in links)),
+                            "a_node_name": max(len("a_name"), max(len(str(l.get("a_node_name", "") or "")) for l in links)),
+                            "b_node": max(len("b_node"), max(len(str(l.get("b_node", "") or "")) for l in links)),
+                            "b_node_name": max(len("b_name"), max(len(str(l.get("b_node_name", "") or "")) for l in links)),
+                            "length_m": max(len("length (m)"), max(len(f"{l.get('length_m', 0):.1f}") if l.get('length_m') else len("N/A") for l in links)),
+                            "segments": max(len("segments"), max(len(str(len(l.get("segment_objids", [])))) for l in links)),
+                        }
+                        for key in col_widths:
+                            col_widths[key] = max(col_widths[key], 8)
+
+                        header = (
+                            f"{'link_id':<{col_widths['link_id']}} | "
+                            f"{'a_node':<{col_widths['a_node']}} | "
+                            f"{'a_name':<{col_widths['a_node_name']}} | "
+                            f"{'b_node':<{col_widths['b_node']}} | "
+                            f"{'b_name':<{col_widths['b_node_name']}} | "
+                            f"{'length (m)':>{col_widths['length_m']}} | "
+                            f"{'segments':>{col_widths['segments']}}"
+                        )
+                        lines.append(header)
+                        lines.append("-" * len(header))
+
+                        for link in links:
+                            link_id = str(link.get("link_id", ""))
+                            a_node = str(link.get("a_node") or "")
+                            a_node_name = str(link.get("a_node_name") or "")
+                            b_node = str(link.get("b_node") or "")
+                            b_node_name = str(link.get("b_node_name") or "")
+                            length_m = link.get("length_m")
+                            length_str = f"{length_m:.1f}" if length_m is not None else "N/A"
+                            segment_count = len(link.get("segment_objids", []))
+
+                            row = (
+                                f"{link_id:<{col_widths['link_id']}} | "
+                                f"{a_node:<{col_widths['a_node']}} | "
+                                f"{a_node_name:<{col_widths['a_node_name']}} | "
+                                f"{b_node:<{col_widths['b_node']}} | "
+                                f"{b_node_name:<{col_widths['b_node_name']}} | "
+                                f"{length_str:>{col_widths['length_m']}} | "
+                                f"{segment_count:>{col_widths['segments']}}"
+                            )
+                            lines.append(row)
+
+                        output_text = "\n".join(lines)
 
             # Write output
             if args.output:
