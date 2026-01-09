@@ -397,15 +397,15 @@ Examples:
     if args.list_multilinestring_reasons:
         from services.database import db_connection, ROUTE_SCHEMA, quote_identifier, validate_schema_name
         from psycopg.rows import dict_row
-        
+
         try:
             with db_connection() as conn:
                 if not validate_schema_name(ROUTE_SCHEMA):
                     print(f"Error: Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}", file=sys.stderr)
                     sys.exit(1)
-                
+
                 schema_quoted = quote_identifier(ROUTE_SCHEMA)
-                
+
                 # Check if table exists
                 with conn.cursor(row_factory=dict_row) as cur:
                     table_check_query = """
@@ -418,12 +418,12 @@ Examples:
                     cur.execute(table_check_query, (ROUTE_SCHEMA,))
                     table_exists_row = cur.fetchone()
                     table_exists = table_exists_row.get('table_exists') if table_exists_row else False
-                    
+
                     if not table_exists:
                         print(f"Error: route_continuous_geometries table does not exist in schema {ROUTE_SCHEMA}.", file=sys.stderr)
                         print("       This table is created by build-links. Please run build-links first.", file=sys.stderr)
                         sys.exit(1)
-                    
+
                     # Check if column exists
                     column_check_query = """
                         SELECT EXISTS (
@@ -436,12 +436,12 @@ Examples:
                     cur.execute(column_check_query, (ROUTE_SCHEMA,))
                     column_exists_row = cur.fetchone()
                     column_exists = column_exists_row.get('column_exists') if column_exists_row else False
-                    
+
                     if not column_exists:
                         print(f"Warning: multilinestring_reason column does not exist in route_continuous_geometries.", file=sys.stderr)
                         print("         This column was added in a recent version. Please run build-links with the latest version.", file=sys.stderr)
                         sys.exit(1)
-                    
+
                     # Build query - prioritize routes with non-single_linestring reasons
                     valid_reasons = {
                         'single_linestring',
@@ -451,7 +451,7 @@ Examples:
                         'disconnected_components',
                         'traversal_issue'
                     }
-                    
+
                     if args.reason_filter:
                         if args.reason_filter not in valid_reasons:
                             print(f"Error: Invalid reason filter '{args.reason_filter}'. Valid values: {', '.join(sorted(valid_reasons))}", file=sys.stderr)
@@ -459,7 +459,7 @@ Examples:
                         reason_filter = args.reason_filter
                     else:
                         reason_filter = None
-                    
+
                     # Query routes - prioritize non-single_linestring if no filter
                     if reason_filter:
                         query = f"""
@@ -505,22 +505,22 @@ Examples:
                             )
                         """
                         cur.execute(query)
-                    
+
                     routes = cur.fetchall()
-                    
+
                     if not routes:
                         print("No routes found in route_continuous_geometries.")
                         if reason_filter:
                             print(f"  (filtered by reason: {reason_filter})")
                         sys.exit(0)
-                    
+
                     # Count reasons
                     reason_counts = {}
                     for route in routes:
                         reason = route.get('multilinestring_reason')
                         if reason:
                             reason_counts[reason] = reason_counts.get(reason, 0) + 1
-                    
+
                     # Output based on format
                     if args.format == 'json':
                         import json
@@ -547,7 +547,7 @@ Examples:
                         if reason_filter:
                             print(f"Filtered by reason: {reason_filter}")
                         print()
-                        
+
                         print("Reason distribution:")
                         print("-" * 80)
                         for reason in sorted(valid_reasons):
@@ -556,7 +556,7 @@ Examples:
                                 percentage = (count / len(routes)) * 100
                                 print(f"  {reason:30s}: {count:4d} route(s) ({percentage:5.1f}%)")
                         print()
-                        
+
                         print("Routes:")
                         print("-" * 80)
                         for route in routes:
@@ -565,7 +565,7 @@ Examples:
                             num_geoms = route.get('num_geoms', 1)
                             print(f"  {route['rutenummer']:15s} | {reason:30s} | {geom_type:20s} | {num_geoms} part(s)")
                         print()
-                        
+
                         # Show all routes with issues
                         problematic_routes = [r for r in routes if r.get('multilinestring_reason') != 'single_linestring']
                         if problematic_routes:
@@ -585,13 +585,13 @@ Examples:
                                 reason_desc = reason_descriptions.get(reason, reason)
                                 print(f"  {route['rutenummer']:15s} | {reason:30s} | {reason_desc}")
                             print()
-        
+
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc()
             sys.exit(1)
-        
+
         sys.exit(0)
 
     # Handle validation mode
@@ -701,7 +701,7 @@ Examples:
                 all_vedlikeholdsansvarlig = []
                 all_rutetype = []
                 all_gradering = []
-                
+
                 for segment_objid, fotruteinfo_rows in segments_dict.items():
                     for row in fotruteinfo_rows:
                         if row.get('rutenavn'):
@@ -712,7 +712,7 @@ Examples:
                             all_rutetype.append(row.get('rutetype'))
                         if row.get('gradering'):
                             all_gradering.append(row.get('gradering'))
-                
+
                 # Build validation report (using ValidationResult status)
                 validation_report = {
                     'rutenummer': rutenummer,
@@ -870,7 +870,7 @@ Examples:
                                 reason_desc = reason_descriptions.get(reason, reason)
                                 print(f"   MultiLineString reason: {reason_desc} ({reason})")
                         print()
-                    
+
                     # Show multilinestring_reason from metadata if available
                     multilinestring_reason = validation_result.metadata.get('multilinestring_reason')
                     if multilinestring_reason:

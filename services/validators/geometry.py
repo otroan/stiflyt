@@ -11,18 +11,18 @@ from psycopg.rows import dict_row
 
 class RouteGeometryValidator(BaseValidator):
     """Validates route geometry from route_geometries."""
-    
+
     def get_name(self) -> str:
         return "route_geometry"
-    
+
     def get_category(self) -> str:
         return "geometry"
-    
+
     def validate(self, route_data: Dict[str, Any], conn) -> ValidationResult:
         """Validate route geometry."""
         rutenummer = route_data.get('rutenummer')
         result = ValidationResult(rutenummer)
-        
+
         if not validate_schema_name(ROUTE_SCHEMA):
             result.add_issue(ValidationIssue(
                 type='VALIDATION_ERROR',
@@ -30,9 +30,9 @@ class RouteGeometryValidator(BaseValidator):
                 severity=Severity.ERROR
             ))
             return result
-        
+
         schema_quoted = quote_identifier(ROUTE_SCHEMA)
-        
+
         # Get route geometry from route_geometries column
         # Also check route_continuous_geometries for multilinestring_reason if table exists
         # First try with LEFT JOIN, fallback to simple query if table doesn't exist
@@ -50,7 +50,7 @@ class RouteGeometryValidator(BaseValidator):
               AND lwr.route_geometries->>%s IS NOT NULL
             LIMIT 1
         """
-        
+
         # Try to get multilinestring_reason from route_continuous_geometries if table exists
         # Use a savepoint to avoid breaking the main transaction if table doesn't exist
         multilinestring_reason = None
@@ -60,21 +60,21 @@ class RouteGeometryValidator(BaseValidator):
                 # Check if table exists first
                 table_check_query = """
                     SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
+                        SELECT FROM information_schema.tables
                         WHERE table_schema = %s AND table_name = 'route_continuous_geometries'
                     ) as exists
                 """
                 cur.execute(table_check_query, (ROUTE_SCHEMA,))
                 table_exists_row = cur.fetchone()
                 table_exists = table_exists_row.get('exists') if table_exists_row else False
-                
+
                 if table_exists:
                     # Check if column exists (it might not exist if build-links hasn't run with latest version)
                     # Use dynamic schema check for turogfriluftsruter_* schemas
                     column_check_query = """
                         SELECT EXISTS (
-                            SELECT 1 FROM information_schema.columns 
-                            WHERE table_schema = %s 
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = %s
                               AND table_name = 'route_continuous_geometries'
                               AND column_name = 'multilinestring_reason'
                         ) as exists
@@ -82,7 +82,7 @@ class RouteGeometryValidator(BaseValidator):
                     cur.execute(column_check_query, (ROUTE_SCHEMA,))
                     column_exists_row = cur.fetchone()
                     column_exists = column_exists_row.get('exists') if column_exists_row else False
-                    
+
                     if column_exists:
                         reason_query = f"""
                             SELECT multilinestring_reason
@@ -105,11 +105,11 @@ class RouteGeometryValidator(BaseValidator):
         except Exception:
             # Table might not exist yet or other error, ignore
             pass
-        
+
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(route_geometry_query, (rutenummer, rutenummer, rutenummer, rutenummer, rutenummer, rutenummer, rutenummer))
             route_geom_row = cur.fetchone()
-            
+
             if not route_geom_row or not route_geom_row.get('route_geometry_json'):
                 result.add_issue(ValidationIssue(
                     type='NO_ROUTE_GEOMETRY',
@@ -117,13 +117,13 @@ class RouteGeometryValidator(BaseValidator):
                     severity=Severity.WARNING
                 ))
                 return result
-            
+
             route_geometry_json = route_geom_row['route_geometry_json']
             link_count = route_geom_row.get('link_count', 0)
             geom_type = route_geom_row.get('geom_type')
             num_components = route_geom_row.get('num_geoms', 1) if geom_type == 'ST_MultiLineString' else 1
             # multilinestring_reason is fetched separately above
-            
+
             # Validate route geometry
             geom_validation_query = """
                 SELECT
@@ -133,33 +133,33 @@ class RouteGeometryValidator(BaseValidator):
             """
             cur.execute(geom_validation_query, (route_geometry_json, route_geometry_json, route_geometry_json))
             geom_validation = cur.fetchone()
-            
+
             if geom_validation:
                 is_valid = geom_validation['is_valid']
                 is_simple = geom_validation['is_simple']
                 length_meters = geom_validation.get('length_meters')
-                
+
                 if not is_valid:
                     result.add_issue(ValidationIssue(
                         type='INVALID_ROUTE_GEOMETRY',
                         message='Route geometry is invalid',
                         severity=Severity.ERROR
                     ))
-                
+
                 if not is_simple:
                     result.add_issue(ValidationIssue(
                         type='NON_SIMPLE_ROUTE_GEOMETRY',
                         message='Route geometry has self-intersections or is not simple',
                         severity=Severity.WARNING
                     ))
-                
+
                 if length_meters is None or length_meters == 0:
                     result.add_issue(ValidationIssue(
                         type='ZERO_LENGTH_ROUTE',
                         message='Route has zero or null length',
                         severity=Severity.ERROR
                     ))
-                
+
                 if geom_type:
                     result.metadata['route_geometry_type'] = geom_type
                     result.metadata['route_length_meters'] = float(length_meters) if length_meters else None
@@ -168,7 +168,7 @@ class RouteGeometryValidator(BaseValidator):
                     # Store multilinestring_reason in metadata if available (even for LineString, as it can be 'single_linestring')
                     if multilinestring_reason:
                         result.metadata['multilinestring_reason'] = multilinestring_reason
-                    
+
                     # Validate multilinestring_reason if it exists
                     if multilinestring_reason is not None:
                         # Valid values
@@ -180,7 +180,7 @@ class RouteGeometryValidator(BaseValidator):
                             'disconnected_components',
                             'traversal_issue'
                         }
-                        
+
                         # Check if reason is valid
                         if multilinestring_reason not in valid_reasons:
                             result.add_issue(ValidationIssue(
@@ -192,11 +192,11 @@ class RouteGeometryValidator(BaseValidator):
                                     'valid_reasons': sorted(valid_reasons)
                                 }
                             ))
-                        
+
                         # Check consistency with geometry type
                         is_linestring = geom_type == 'ST_LineString'
                         is_single_component_multilinestring = (geom_type == 'ST_MultiLineString' and num_components == 1)
-                        
+
                         if is_linestring or is_single_component_multilinestring:
                             # Should be 'single_linestring'
                             if multilinestring_reason != 'single_linestring':
@@ -236,12 +236,12 @@ class RouteGeometryValidator(BaseValidator):
                                 severity=Severity.ERROR,
                                 metadata={'rutenummer': rutenummer}
                             ))
-                    
+
                     # Build message with reason if available
                     message = f'Route geometry type: {geom_type}'
                     if geom_type == 'ST_MultiLineString' and num_components > 1:
                         message += f' with {num_components} component(s)'
-                    
+
                     # Show reason if available (for both LineString and MultiLineString)
                     if multilinestring_reason:
                         reason_descriptions = {
@@ -254,45 +254,45 @@ class RouteGeometryValidator(BaseValidator):
                         }
                         reason_desc = reason_descriptions.get(multilinestring_reason, multilinestring_reason)
                         message += f'. Reason: {reason_desc}'
-                    
+
                     result.add_issue(ValidationIssue(
                         type='ROUTE_GEOMETRY_TYPE',
                         message=message,
                         severity=Severity.INFO,
                         metadata={
-                            'geom_type': geom_type, 
+                            'geom_type': geom_type,
                             'length_meters': float(length_meters) if length_meters else None,
                             'num_components': num_components if geom_type == 'ST_MultiLineString' else 1,
                             'multilinestring_reason': multilinestring_reason if geom_type == 'ST_MultiLineString' else None
                         }
                     ))
-        
+
         result.metadata['link_count'] = link_count
         return result
 
 
 class LinkConnectivityValidator(BaseValidator):
     """Validates link connectivity and node structure."""
-    
+
     def get_name(self) -> str:
         return "link_connectivity"
-    
+
     def get_category(self) -> str:
         return "geometry"
-    
+
     def get_dependencies(self) -> List[str]:
         return ["route_geometry"]  # Needs route geometry to be validated first
-    
+
     def validate(self, route_data: Dict[str, Any], conn) -> ValidationResult:
         """Validate link connectivity."""
         rutenummer = route_data.get('rutenummer')
         result = ValidationResult(rutenummer)
-        
+
         if not validate_schema_name(ROUTE_SCHEMA):
             return result
-        
+
         schema_quoted = quote_identifier(ROUTE_SCHEMA)
-        
+
         # Get links
         links_query = f"""
             SELECT
@@ -311,19 +311,19 @@ class LinkConnectivityValidator(BaseValidator):
             WHERE %s = ANY(l.rutenummer_list)
             ORDER BY l.link_id
         """
-        
+
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(links_query, (rutenummer,))
             links = cur.fetchall()
-        
+
         if not links:
             return result
-        
+
         # Validate individual links
         for link in links:
             link_id = link['link_id']
             length_m = link.get('length_m')
-            
+
             if length_m is None or length_m == 0:
                 result.add_issue(ValidationIssue(
                     type='ZERO_LENGTH_LINK',
@@ -339,25 +339,25 @@ class LinkConnectivityValidator(BaseValidator):
                     affected_links=[link_id],
                     metadata={'length_m': length_m}
                 ))
-        
+
         # Build link graph
         link_graph = {}
         link_by_id = {}
-        
+
         for link in links:
             link_id = link['link_id']
             a_node = link['a_node']
             b_node = link['b_node']
             link_by_id[link_id] = link
-            
+
             if a_node not in link_graph:
                 link_graph[a_node] = []
             link_graph[a_node].append(('a', link_id))
-            
+
             if b_node not in link_graph:
                 link_graph[b_node] = []
             link_graph[b_node].append(('b', link_id))
-        
+
         # Check node connectivity
         if len(links) > 1:
             # Find endpoints
@@ -365,7 +365,7 @@ class LinkConnectivityValidator(BaseValidator):
             for node, link_refs in link_graph.items():
                 if len(link_refs) == 1:
                     endpoint_nodes.append(node)
-            
+
             if len(endpoint_nodes) != 2:
                 result.add_issue(ValidationIssue(
                     type='UNEXPECTED_ENDPOINT_COUNT',
@@ -373,12 +373,12 @@ class LinkConnectivityValidator(BaseValidator):
                     severity=Severity.WARNING,
                     metadata={'endpoint_count': len(endpoint_nodes), 'endpoint_nodes': endpoint_nodes}
                 ))
-            
+
             # Check endpoints have correct degree
             for link in links:
                 a_degree = link.get('a_node_degree')
                 b_degree = link.get('b_node_degree')
-                
+
                 if link['a_node'] in endpoint_nodes and a_degree is not None and a_degree != 1:
                     result.add_issue(ValidationIssue(
                         type='ENDPOINT_NODE_WRONG_DEGREE',
@@ -387,7 +387,7 @@ class LinkConnectivityValidator(BaseValidator):
                         affected_links=[link['link_id']],
                         metadata={'node_id': link['a_node'], 'degree': a_degree}
                     ))
-                
+
                 if link['b_node'] in endpoint_nodes and b_degree is not None and b_degree != 1:
                     result.add_issue(ValidationIssue(
                         type='ENDPOINT_NODE_WRONG_DEGREE',
@@ -396,36 +396,36 @@ class LinkConnectivityValidator(BaseValidator):
                         affected_links=[link['link_id']],
                         metadata={'node_id': link['b_node'], 'degree': b_degree}
                     ))
-            
+
             # Check for multiple components
             components = []
             visited_components = set()
-            
+
             def dfs_component(link_id, component):
                 if link_id in visited_components:
                     return
                 visited_components.add(link_id)
                 component.append(link_id)
-                
+
                 link = link_by_id[link_id]
                 b_node = link['b_node']
                 if b_node in link_graph:
                     for node_type, connected_link_id in link_graph[b_node]:
                         if node_type == 'a' and connected_link_id not in visited_components:
                             dfs_component(connected_link_id, component)
-            
+
             for link in links:
                 link_id = link['link_id']
                 if link_id not in visited_components:
                     component = []
                     dfs_component(link_id, component)
                     components.append(component)
-            
+
             if len(components) > 1:
                 components.sort(key=len, reverse=True)
                 main_component = components[0]
                 appendix_components = components[1:]
-                
+
                 result.add_issue(ValidationIssue(
                     type='MULTIPLE_LINK_COMPONENTS',
                     message=f'Route has {len(components)} disconnected link component(s). Main component: {len(main_component)} links, Appendix components: {[len(c) for c in appendix_components]} links. Note: route_geometries should still provide continuous geometry.',
@@ -436,50 +436,50 @@ class LinkConnectivityValidator(BaseValidator):
                         'appendix_component_link_ids': [c for c in appendix_components]
                     }
                 ))
-        
+
         return result
 
 
 class SegmentGapValidator(BaseValidator):
     """Validates gaps between route segments."""
-    
+
     def get_name(self) -> str:
         return "segment_gaps"
-    
+
     def get_category(self) -> str:
         return "geometry"
-    
+
     def get_dependencies(self) -> List[str]:
         return ["route_geometry"]  # Needs route geometry to be validated first
-    
+
     def validate(self, route_data: Dict[str, Any], conn) -> ValidationResult:
         """
         Validate gaps between route segments.
-        
+
         Checks for gaps between connected segments that might prevent
         ST_LineMerge from creating a single LineString.
         """
         rutenummer = route_data.get('rutenummer')
         result = ValidationResult(rutenummer)
-        
+
         if not validate_schema_name(ROUTE_SCHEMA):
             return result
-        
+
         # Get segment objids from route_data
         segments_dict = route_data.get('segments_dict', {})
         if not segments_dict:
             return result
-        
+
         segment_objids = [int(objid) for objid in segments_dict.keys()]
         if len(segment_objids) < 2:
             # Need at least 2 segments to check for gaps
             return result
-        
+
         # Find connections between segments
         # Note: find_segment_connections only finds connections within 1.0m
         # But we want to check ALL connections, so we need a different approach
         # Let's check the actual route_geometries geometry instead
-        
+
         # First, try to get the route geometry from route_geometries
         schema_quoted = quote_identifier(ROUTE_SCHEMA)
         route_geom_query = f"""
@@ -491,12 +491,12 @@ class SegmentGapValidator(BaseValidator):
               AND lwr.route_geometries->>%s IS NOT NULL
             LIMIT 1
         """
-        
+
         try:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(route_geom_query, (rutenummer, rutenummer, rutenummer, rutenummer))
                 route_geom_row = cur.fetchone()
-                
+
                 if route_geom_row and route_geom_row.get('route_geometry_json'):
                     geom_type = route_geom_row.get('geom_type')
                     # multilinestring_reason is fetched separately above
@@ -510,15 +510,15 @@ class SegmentGapValidator(BaseValidator):
                         num_result = cur.fetchone()
                         # With dict_row, fetchone() returns a dict, so get the first value
                         num_geoms = list(num_result.values())[0] if num_result else 1
-                        
+
                         if num_geoms > 1:
                             # MultiLineString with multiple components - analyze why
                             # Check: gaps, reversed segments, overlapping, etc.
-                            
+
                             # First, check if we can merge with ST_LineMerge
                             try:
                                 merge_test_query = """
-                                    SELECT 
+                                    SELECT
                                         ST_GeometryType(ST_LineMerge(ST_GeomFromGeoJSON(%s))) as merged_type,
                                         ST_NumGeometries(ST_LineMerge(ST_GeomFromGeoJSON(%s))) as merged_num_geoms
                                 """
@@ -530,19 +530,19 @@ class SegmentGapValidator(BaseValidator):
                                 # If merge test fails, continue with other checks
                                 merged_type = None
                                 merged_num_geoms = num_geoms
-                            
+
                             # Check distances between components
                             check_gaps_query = """
                             WITH geom AS (
                                 SELECT ST_GeomFromGeoJSON(%s) as g
                             ),
                             components AS (
-                                SELECT 
+                                SELECT
                                     generate_series(1, ST_NumGeometries(g)) as idx,
                                     ST_GeometryN(g, generate_series(1, ST_NumGeometries(g))) as component
                                 FROM geom
                             )
-                            SELECT 
+                            SELECT
                                 c1.idx as comp1_idx,
                                 c2.idx as comp2_idx,
                                 ST_Distance(
@@ -564,7 +564,7 @@ class SegmentGapValidator(BaseValidator):
                             FROM components c1
                             CROSS JOIN components c2
                             WHERE c1.idx < c2.idx
-                            ORDER BY 
+                            ORDER BY
                                 LEAST(
                                     COALESCE(ST_Distance(ST_Transform(ST_EndPoint(c1.component), 25833), ST_Transform(ST_StartPoint(c2.component), 25833)), 999999),
                                     COALESCE(ST_Distance(ST_Transform(ST_EndPoint(c1.component), 25833), ST_Transform(ST_EndPoint(c2.component), 25833)), 999999),
@@ -579,7 +579,7 @@ class SegmentGapValidator(BaseValidator):
                             except Exception as e:
                                 # If query fails, skip gap checking
                                 gap_results = []
-                            
+
                             if gap_results:
                                 for gap_row in gap_results:
                                     # Find minimum distance between components
@@ -589,7 +589,7 @@ class SegmentGapValidator(BaseValidator):
                                         gap_row.get('distance_start_to_start', float('inf')),
                                         gap_row.get('distance_start_to_end', float('inf'))
                                     )
-                                    
+
                                     if min_dist < float('inf') and min_dist > 0.0:
                                         result.add_issue(ValidationIssue(
                                             type='SEGMENT_GAP',
@@ -618,7 +618,7 @@ class SegmentGapValidator(BaseValidator):
                                     'traversal_issue': 'Traversal found all links in order, but still MultiLineString (unknown cause)'
                                 }
                                 reason_desc = reason_descriptions.get(multilinestring_reason, multilinestring_reason)
-                                
+
                                 # Map reasons to appropriate severity
                                 if multilinestring_reason in ('loop_or_branch', 'disconnected_components'):
                                     severity = Severity.ERROR
@@ -628,7 +628,7 @@ class SegmentGapValidator(BaseValidator):
                                     severity = Severity.INFO
                                 else:
                                     severity = Severity.WARNING
-                                
+
                                 result.add_issue(ValidationIssue(
                                     type='MULTILINESTRING_REASON',
                                     message=f"Route geometry is MultiLineString with {num_geoms} component(s). Reason: {reason_desc}",
@@ -662,12 +662,12 @@ class SegmentGapValidator(BaseValidator):
                                     SELECT ST_GeomFromGeoJSON(%s) as g
                                 ),
                                 components AS (
-                                    SELECT 
+                                    SELECT
                                         generate_series(1, ST_NumGeometries(g)) as idx,
                                         ST_GeometryN(g, generate_series(1, ST_NumGeometries(g))) as component
                                     FROM geom
                                 )
-                                SELECT 
+                                SELECT
                                     c1.idx as comp1_idx,
                                     c2.idx as comp2_idx,
                                     ST_Overlaps(c1.component, c2.component) as overlaps,
@@ -681,10 +681,10 @@ class SegmentGapValidator(BaseValidator):
                                 try:
                                     cur.execute(check_overlap_query, (route_geom_row['route_geometry_json'],))
                                     overlap_results = cur.fetchall()
-                                    
+
                                     has_overlap = any(row.get('overlaps', False) for row in overlap_results)
                                     has_intersect = any(row.get('intersects', False) for row in overlap_results)
-                                    
+
                                     if has_overlap:
                                         result.add_issue(ValidationIssue(
                                             type='MULTILINESTRING_OVERLAPPING',
@@ -708,12 +708,12 @@ class SegmentGapValidator(BaseValidator):
                                             SELECT ST_GeomFromGeoJSON(%s) as g
                                         ),
                                         components AS (
-                                            SELECT 
+                                            SELECT
                                                 generate_series(1, ST_NumGeometries(g)) as idx,
                                                 ST_GeometryN(g, generate_series(1, ST_NumGeometries(g))) as component
                                             FROM geom
                                         )
-                                        SELECT 
+                                        SELECT
                                             c1.idx as comp1_idx,
                                             c2.idx as comp2_idx,
                                             ST_Equals(ST_EndPoint(c1.component), ST_StartPoint(c2.component)) as end_equals_start,
@@ -736,13 +736,13 @@ class SegmentGapValidator(BaseValidator):
                                         except Exception as e:
                                             # If reversed check fails, skip it
                                             reversed_results = []
-                                        
+
                                         # Check if components are touching but not correctly oriented
                                         incorrectly_oriented = []
                                         for rev_row in reversed_results:
                                             end_to_start_dist = rev_row.get('distance_end_to_start', float('inf'))
                                             end_equals_start = rev_row.get('end_equals_start', False)
-                                            
+
                                             # If components are very close but end != start, they might be reversed
                                             if end_to_start_dist < 0.001 and not end_equals_start:
                                                 incorrectly_oriented.append({
@@ -750,7 +750,7 @@ class SegmentGapValidator(BaseValidator):
                                                     'comp2': rev_row['comp2_idx'],
                                                     'distance': end_to_start_dist
                                                 })
-                                        
+
                                         if incorrectly_oriented:
                                             result.add_issue(ValidationIssue(
                                                 type='MULTILINESTRING_REVERSED_SEGMENTS',
@@ -769,12 +769,12 @@ class SegmentGapValidator(BaseValidator):
                                                     SELECT ST_GeomFromGeoJSON(%s) as g
                                                 ),
                                                 components AS (
-                                                    SELECT 
+                                                    SELECT
                                                         generate_series(1, ST_NumGeometries(g)) as idx,
                                                         ST_GeometryN(g, generate_series(1, ST_NumGeometries(g))) as component
                                                     FROM geom
                                                 )
-                                                SELECT 
+                                                SELECT
                                                     c1.idx as comp1_idx,
                                                     c2.idx as comp2_idx,
                                                     ST_Distance(
@@ -793,13 +793,13 @@ class SegmentGapValidator(BaseValidator):
                                             try:
                                                 cur.execute(check_ordering_query, (route_geom_row['route_geometry_json'],))
                                                 ordering_results = cur.fetchall()
-                                                
+
                                                 # Check if sequential components are close
                                                 sequential_issues = []
                                                 for ord_row in ordering_results:
                                                     end_to_start = ord_row.get('distance_end_to_start', float('inf'))
                                                     end_to_end = ord_row.get('distance_end_to_end', float('inf'))
-                                                    
+
                                                     # If sequential components are far apart, they're in wrong order
                                                     if end_to_start > 1.0 and end_to_end > 1.0:
                                                         sequential_issues.append({
@@ -808,7 +808,7 @@ class SegmentGapValidator(BaseValidator):
                                                             'end_to_start_dist': end_to_start,
                                                             'end_to_end_dist': end_to_end
                                                         })
-                                                
+
                                                 if sequential_issues:
                                                     result.add_issue(ValidationIssue(
                                                         type='MULTILINESTRING_WRONG_ORDER',
@@ -846,13 +846,13 @@ class SegmentGapValidator(BaseValidator):
         except Exception as e:
             # If route geometry check fails, continue with segment checks
             route_geom_row = None
-        
+
         # Also check if raw segments can be merged (to compare with route_geometries)
         # This helps identify if link-building process introduced the MultiLineString
         if segment_objids:
             try:
                 raw_merge_query = f"""
-                    SELECT 
+                    SELECT
                         ST_GeometryType(ST_LineMerge(ST_Collect(senterlinje::geometry))) as merged_type,
                         ST_NumGeometries(ST_LineMerge(ST_Collect(senterlinje::geometry))) as merged_num_geoms
                     FROM {schema_quoted}.fotrute
@@ -864,7 +864,7 @@ class SegmentGapValidator(BaseValidator):
                 if raw_merge_result:
                     raw_merged_type = raw_merge_result[0] if raw_merge_result else None
                     raw_merged_num_geoms = raw_merge_result[1] if raw_merge_result and len(raw_merge_result) > 1 else None
-                    
+
                     # Compare raw segments with route_geometries
                     if route_geom_row and route_geom_row.get('route_geometry_json'):
                         route_geom_type = route_geom_row.get('geom_type')
@@ -883,37 +883,37 @@ class SegmentGapValidator(BaseValidator):
             except Exception:
                 # If query fails, skip this check
                 pass
-        
+
         # Also check connections between individual segments (original approach)
         # This helps identify which specific segments have gaps
         try:
             connections = find_segment_connections(conn, segment_objids, ROUTE_SCHEMA)
         except Exception:
             connections = {}
-        
+
         if not connections:
             return result
-        
+
         # Check gaps in connections
         # Segments should have perfect mapping - any gap > 0 is an error
         # We're interested in 'end_to_start' connections (normal sequential connections)
         # which should have distance = 0.0 for perfect connection
-        
+
         gaps_found = []
         total_connections_checked = 0
         max_gap = 0.0
-        
+
         for seg1_objid, conn_list in connections.items():
             for conn in conn_list:
                 distance = conn.get('distance', 0.0)
                 conn_type = conn.get('type', '')
                 seg2_objid = conn.get('target')
-                
+
                 # Only check connections that should be continuous
                 # 'end_to_start' is the normal sequential connection
                 if conn_type == 'end_to_start':
                     total_connections_checked += 1
-                    
+
                     # Any gap > 0 is an error (segments should be perfectly connected)
                     if distance > 0.0:
                         max_gap = max(max_gap, distance)
@@ -923,7 +923,7 @@ class SegmentGapValidator(BaseValidator):
                             'distance_m': distance,
                             'connection_type': conn_type
                         })
-        
+
         # Report all gaps as errors (perfect mapping required)
         if gaps_found:
             for gap in gaps_found:
@@ -937,10 +937,10 @@ class SegmentGapValidator(BaseValidator):
                         'connection_type': gap['connection_type']
                     }
                 ))
-            
+
             # Add summary metadata
             result.metadata['segment_gap_count'] = len(gaps_found)
             result.metadata['segment_gap_max_meters'] = max_gap
             result.metadata['segment_gap_total_checked'] = total_connections_checked
-        
+
         return result
