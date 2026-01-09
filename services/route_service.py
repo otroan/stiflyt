@@ -951,8 +951,8 @@ def search_places(query: str, limit: int = 20):
 
 def get_complete_route(conn, rutenummer, include_geometry=True, include_segments=False, include_endpoint_names=True):
     """
-    Get a complete route by combining all segments with the same rutenummer.
-    Includes endpoint names from place name lookup.
+    Get a complete route using the route_geometries column from links_with_routes.
+    The geometry is already ordered and oriented in one direction.
 
     Args:
         conn: Database connection
@@ -964,128 +964,120 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
     Returns:
         dict with complete route information, or None if route not found
     """
-    from .route_geometry import get_corrected_route_geometry
     from .route_endpoints import get_route_endpoint_names, extract_route_endpoints
 
     # Validate schema name
     if not validate_schema_name(ROUTE_SCHEMA):
         raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
 
-    # First, check if route exists and get metadata
-    route_metadata_query = f"""
+    # Get route metadata and geometry from links_with_routes
+    route_query = f"""
         SELECT DISTINCT
             fi.rutenummer,
             fi.rutenavn,
-            fi.vedlikeholdsansvarlig
+            fi.vedlikeholdsansvarlig,
+            lwr.route_geometries->>%s as route_geometry_json,
+            ST_Length(ST_Transform(ST_GeomFromGeoJSON(lwr.route_geometries->>%s), 4326)::geography) as length_meters
         FROM {ROUTE_SCHEMA}.fotruteinfo fi
+        JOIN {ROUTE_SCHEMA}.links_with_routes lwr ON %s = ANY(lwr.rutenummer_list)
         WHERE fi.rutenummer = %s
+          AND lwr.route_geometries->>%s IS NOT NULL
         LIMIT 1
     """
 
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(route_metadata_query, (rutenummer,))
-        metadata_row = cur.fetchone()
+        cur.execute(route_query, (rutenummer, rutenummer, rutenummer, rutenummer, rutenummer))
+        route_row = cur.fetchone()
 
-        if not metadata_row:
+        if not route_row:
             return None  # Route not found
 
-        rutenavn = metadata_row.get('rutenavn')
-        vedlikeholdsansvarlig = metadata_row.get('vedlikeholdsansvarlig')
+        rutenavn = route_row.get('rutenavn')
+        vedlikeholdsansvarlig = route_row.get('vedlikeholdsansvarlig')
+        route_geometry_json = route_row.get('route_geometry_json')
+        total_length_meters = float(route_row.get('length_meters', 0)) if route_row.get('length_meters') is not None else 0.0
 
-    # Get corrected route geometry (combines all segments)
-    route_data = get_corrected_route_geometry(conn, rutenummer)
+    # Parse geometry if available
+    geometry = None
+    if include_geometry and route_geometry_json:
+        try:
+            import json
+            # route_geometry_json is already a GeoJSON string from the database
+            geometry = json.loads(route_geometry_json)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            # If geometry parsing fails, continue without geometry
+            geometry = None
 
-    if not route_data:
-        return None  # No segments found
-
-    # Extract geometry
-    geometry = route_data.get('geometry')
-    total_length_meters = route_data.get('total_length_meters', 0.0)
     total_length_km = total_length_meters / 1000.0 if total_length_meters else 0.0
-    is_connected = route_data.get('is_connected', False)
-    segment_count = len(route_data.get('segments_info', []))
-    component_count = route_data.get('component_count', 1)
+    
+    # Get segment count
+    segment_count_query = f"""
+        SELECT COUNT(DISTINCT f.objid) as segment_count
+        FROM {ROUTE_SCHEMA}.fotrute f
+        JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+        WHERE fi.rutenummer = %s
+    """
+    
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(segment_count_query, (rutenummer,))
+        segment_row = cur.fetchone()
+        segment_count = int(segment_row['segment_count']) if segment_row else 0
+    
+    # Geometry from route_geometries is already connected and ordered
+    is_connected = geometry is not None
+    component_count = 1 if is_connected else 0
 
     # Get endpoint names if requested
-    # Use main component to get actual start/end points
-    # For routes with multiple components, use the main component (not appendices)
+    # Extract start/end points from the route geometry
     from_name = None
     to_name = None
-    if include_endpoint_names:
+    if include_endpoint_names and geometry:
         from .route_endpoints import extract_route_endpoints, lookup_endpoint_name
 
-        segments_info = route_data.get('segments_info', [])
-        report = route_data.get('report', {})
-        components = report.get('components', [])
+        # Extract start and end points from the route geometry
+        start_point, end_point = extract_route_endpoints(geometry)
+        
+        if start_point:
+            start_name_info = lookup_endpoint_name(conn, start_point[0], start_point[1], rutenummer)
+            if start_name_info and start_name_info.get('name'):
+                from_name = {
+                    'name': start_name_info.get('name'),
+                    'source': start_name_info.get('source', 'unknown'),
+                    'distance_meters': start_name_info.get('distance_meters'),
+                    'coordinates': [start_point[0], start_point[1]]
+                }
 
-        # Find main component
-        main_component = None
-        for comp in components:
-            if comp.get('is_main'):
-                main_component = comp
-                break
-
-        # If we have a main component, use it; otherwise use all segments
-        if main_component:
-            main_segment_objids = set(main_component.get('segment_objids', []))
-            main_segments = [s for s in segments_info if s.get('objid') in main_segment_objids]
-        else:
-            main_segments = segments_info
-
-        if main_segments:
-            # Get start point from first segment of main component
-            first_segment = main_segments[0]
-            first_segment_geom = first_segment.get('geometry')
-            if first_segment_geom:
-                first_start, _ = extract_route_endpoints(first_segment_geom)
-                if first_start:
-                    start_name_info = lookup_endpoint_name(conn, first_start[0], first_start[1], rutenummer)
-                    if start_name_info and start_name_info.get('name'):
-                        from_name = {
-                            'name': start_name_info.get('name'),
-                            'source': start_name_info.get('source', 'unknown'),
-                            'distance_meters': start_name_info.get('distance_meters'),
-                            'coordinates': [first_start[0], first_start[1]]
-                        }
-
-            # Get end point from last segment of main component
-            last_segment = main_segments[-1]
-            last_segment_geom = last_segment.get('geometry')
-            if last_segment_geom:
-                _, last_end = extract_route_endpoints(last_segment_geom)
-                if last_end:
-                    end_name_info = lookup_endpoint_name(conn, last_end[0], last_end[1], rutenummer)
-                    if end_name_info and end_name_info.get('name'):
-                        to_name = {
-                            'name': end_name_info.get('name'),
-                            'source': end_name_info.get('source', 'unknown'),
-                            'distance_meters': end_name_info.get('distance_meters'),
-                            'coordinates': [last_end[0], last_end[1]]
-                        }
-
-    # Build components list if multiple components
-    components = None
-    if component_count > 1:
-        components = []
-        # Use report.components which has the full structure
-        report = route_data.get('report', {})
-        report_components = report.get('components', [])
-        for comp in report_components:
-            components.append({
-                'index': comp.get('index', 0),
-                'segment_objids': comp.get('segment_objids', []),
-                'segment_count': comp.get('segment_count', 0),
-                'length_meters': comp.get('length_meters', 0.0),
-                'is_main': comp.get('is_main', False)
-            })
+        if end_point:
+            end_name_info = lookup_endpoint_name(conn, end_point[0], end_point[1], rutenummer)
+            if end_name_info and end_name_info.get('name'):
+                to_name = {
+                    'name': end_name_info.get('name'),
+                    'source': end_name_info.get('source', 'unknown'),
+                    'distance_meters': end_name_info.get('distance_meters'),
+                    'coordinates': [end_point[0], end_point[1]]
+                }
 
     # Build segments list if requested
     segments = None
     if include_segments:
         segments = []
-        segments_info = route_data.get('segments_info', [])
-        for seg_info in segments_info:
-            objid = seg_info.get('objid')
+        # Get all segments for this route
+        segments_query = f"""
+            SELECT
+                f.objid,
+                ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters,
+                CASE WHEN %s THEN ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326))::json ELSE NULL END as geometry
+            FROM {ROUTE_SCHEMA}.fotrute f
+            JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+            WHERE fi.rutenummer = %s
+            ORDER BY f.objid
+        """
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(segments_query, (include_geometry, rutenummer))
+            segment_rows = cur.fetchall()
+        
+        for seg_row in segment_rows:
+            objid = seg_row['objid']
             # Get route info for this segment
             segment_routes_query = f"""
                 SELECT DISTINCT
@@ -1107,11 +1099,11 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
                     'vedlikeholdsansvarlig': route_row.get('vedlikeholdsansvarlig')
                 })
 
-            segment_geom = seg_info.get('geometry') if include_geometry else None
+            segment_geom = parse_geometry(seg_row.get('geometry')) if include_geometry and seg_row.get('geometry') else None
             segments.append({
                 'objid': objid,
                 'routes': route_infos,
-                'length_meters': seg_info.get('length_meters'),
+                'length_meters': float(seg_row['length_meters']) if seg_row.get('length_meters') is not None else 0.0,
                 'geometry': segment_geom
             })
 
@@ -1134,9 +1126,6 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
 
     if include_segments and segments:
         result['segments'] = segments
-
-    if component_count > 1 and components:
-        result['components'] = components
 
     return result
 
