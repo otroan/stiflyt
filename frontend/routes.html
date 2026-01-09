@@ -196,6 +196,58 @@
         </div>
     </div>
 
+    <!-- Edit Segment Modal -->
+    <div id="editSegmentModal" class="modal">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="modal-header">
+                <h2>Rediger segment</h2>
+                <button class="modal-close" id="closeEditSegmentModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="editSegmentInfo" style="margin-bottom: 16px; color: #666;"></p>
+                <div id="editRoutesContainer"></div>
+                <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #ddd;">
+                    <button id="addRouteBtn" class="btn-purple" style="margin-bottom: 16px;">+ Legg til rutenummer</button>
+                    <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                        <button id="cancelEditSegmentBtn" class="btn-secondary">Avbryt</button>
+                        <button id="saveEditSegmentBtn" class="btn-primary">Lagre endringer</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk Edit Route Modal -->
+    <div id="bulkEditRouteModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2>Rediger rutenavn for hele ruten</h2>
+                <button class="modal-close" id="closeBulkEditRouteModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="bulkEditRouteInfo" style="margin-bottom: 16px; color: #666;"></p>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; font-weight: bold; margin-bottom: 8px;">Rutenummer:</label>
+                    <input type="text" id="bulkEditRutenummer" readonly 
+                           style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 100%; background: #f5f5f5;" />
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <label style="display: block; font-weight: bold; margin-bottom: 8px;">Rutenavn (nytt navn for alle segmenter):</label>
+                    <input type="text" id="bulkEditRutenavn" 
+                           style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 100%;" 
+                           placeholder="Skriv inn nytt rutenavn" />
+                </div>
+                <div style="padding: 12px; background: #fff3cd; border-radius: 4px; margin-bottom: 16px;">
+                    <strong>⚠️ Advarsel:</strong> Dette vil oppdatere rutenavn for alle segmenter i ruten <span id="bulkEditSegmentCount"></span> segmenter.
+                </div>
+                <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                    <button id="cancelBulkEditRouteBtn" class="btn-secondary">Avbryt</button>
+                    <button id="saveBulkEditRouteBtn" class="btn-primary">Lagre endringer</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
@@ -448,9 +500,24 @@
             clearSegments();
             clearLinks();
 
-            // Update title
-            document.getElementById('routeTitle').textContent = 
-                `${route.rutenummer}${route.rutenavn ? `: ${route.rutenavn}` : ''}`;
+            // Update title with edit button
+            const routeTitleEl = document.getElementById('routeTitle');
+            routeTitleEl.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>${route.rutenummer}${route.rutenavn ? `: ${route.rutenavn}` : ''}</span>
+                    <button id="bulkEditRouteBtn" class="btn-purple" style="padding: 4px 8px; font-size: 0.85em; margin-left: 8px;">
+                        ✏️ Rediger rutenavn
+                    </button>
+                </div>
+            `;
+            
+            // Add event listener for bulk edit button
+            const bulkEditBtn = document.getElementById('bulkEditRouteBtn');
+            if (bulkEditBtn) {
+                bulkEditBtn.addEventListener('click', () => {
+                    openBulkEditRouteModal(route.rutenummer, route.rutenavn);
+                });
+            }
 
             // Display route geometry
             if (route.route_geometry) {
@@ -1502,8 +1569,11 @@
             ` : '';
 
             content.innerHTML = `
-                <div style="margin-bottom: 16px;">
-                    <h3>Segment ${segment.segment_objid} ${statusBadge}</h3>
+                <div style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0;">Segment ${segment.segment_objid} ${statusBadge}</h3>
+                    <button id="editSegmentBtn" class="btn-purple" style="padding: 6px 12px; font-size: 0.9em;">
+                        ✏️ Rediger
+                    </button>
                 </div>
                 <table class="metadata-table">
                     <tr>
@@ -1548,6 +1618,238 @@
                 ${errorsHtml}
                 ${warningsHtml}
             `;
+            
+            // Store routes data for edit modal
+            segment._editRoutesData = uniqueRoutes;
+            
+            // Add event listener for edit button
+            const editBtn = document.getElementById('editSegmentBtn');
+            if (editBtn) {
+                editBtn.addEventListener('click', () => {
+                    openEditSegmentModal(segment.segment_objid, uniqueRoutes);
+                });
+            }
+        }
+
+        // Edit segment modal functions
+        let currentEditSegmentObjid = null;
+        let currentEditRoutes = [];
+
+        function openEditSegmentModal(segmentObjid, routes) {
+            currentEditSegmentObjid = segmentObjid;
+            currentEditRoutes = JSON.parse(JSON.stringify(routes)); // Deep copy
+            
+            const modal = document.getElementById('editSegmentModal');
+            const infoEl = document.getElementById('editSegmentInfo');
+            const container = document.getElementById('editRoutesContainer');
+            
+            infoEl.textContent = `Rediger ruter for segment ${segmentObjid}`;
+            
+            renderEditRoutesList(container);
+            
+            modal.classList.add('active');
+        }
+
+        function renderEditRoutesList(container) {
+            container.innerHTML = currentEditRoutes.map((route, idx) => {
+                return `
+                    <div class="edit-route-item" style="border: 1px solid #ddd; border-radius: 4px; padding: 12px; margin-bottom: 12px; background: #f8f9fa;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <strong>Rute ${idx + 1}</strong>
+                            <button class="remove-route-btn" data-index="${idx}" style="background: #e74c3c; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 0.85em;">
+                                🗑️ Fjern
+                            </button>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 8px;">
+                            <label style="font-weight: bold;">Rutenummer:</label>
+                            <input type="text" class="route-number-input" data-index="${idx}" value="${route.rutenummer || ''}" 
+                                   style="padding: 6px; border: 1px solid #ccc; border-radius: 4px;" />
+                            
+                            <label style="font-weight: bold;">Rutenavn:</label>
+                            <input type="text" class="route-name-input" data-index="${idx}" value="${route.rutenavn || ''}" 
+                                   style="padding: 6px; border: 1px solid #ccc; border-radius: 4px;" />
+                        </div>
+                        <div style="margin-top: 8px; font-size: 0.85em; color: #666;">
+                            Vedlikeholdsansvarlig: ${route.vedlikeholdsansvarlig || '-'} | 
+                            Rutetype: ${route.rutetype || '-'} | 
+                            Gradering: ${route.gradering || '-'}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            // Add event listeners
+            container.querySelectorAll('.remove-route-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    if (confirm(`Er du sikker på at du vil fjerne rutenummer "${currentEditRoutes[index].rutenummer}"?`)) {
+                        currentEditRoutes.splice(index, 1);
+                        renderEditRoutesList(container);
+                    }
+                });
+            });
+            
+            container.querySelectorAll('.route-number-input').forEach(input => {
+                input.addEventListener('input', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    currentEditRoutes[index].rutenummer = e.target.value.trim();
+                });
+            });
+            
+            container.querySelectorAll('.route-name-input').forEach(input => {
+                input.addEventListener('input', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    currentEditRoutes[index].rutenavn = e.target.value.trim();
+                });
+            });
+        }
+
+        function closeEditSegmentModal() {
+            const modal = document.getElementById('editSegmentModal');
+            modal.classList.remove('active');
+            currentEditSegmentObjid = null;
+            currentEditRoutes = [];
+        }
+
+        async function saveSegmentEdits() {
+            if (!currentEditSegmentObjid || currentEditRoutes.length === 0) {
+                alert('Ingen endringer å lagre');
+                return;
+            }
+            
+            // Validate that all routes have rutenummer
+            const invalidRoutes = currentEditRoutes.filter(r => !r.rutenummer || r.rutenummer.trim() === '');
+            if (invalidRoutes.length > 0) {
+                alert('Alle ruter må ha et rutenummer');
+                return;
+            }
+            
+            // TODO: Send to backend API
+            // For now, just show what would be sent
+            console.log('Would save segment edits:', {
+                segment_objid: currentEditSegmentObjid,
+                routes: currentEditRoutes
+            });
+            
+            alert('Endringer lagret! (Dette er kun frontend - backend API må implementeres)');
+            
+            // Reload segment details to show updated data
+            if (currentValidation && currentValidation.segment_metadata) {
+                const segment = currentValidation.segment_metadata.find(
+                    s => s.segment_objid === currentEditSegmentObjid
+                );
+                if (segment) {
+                    await displaySegmentDetails(segment);
+                }
+            }
+            
+            closeEditSegmentModal();
+        }
+
+        function addNewRouteToEdit() {
+            currentEditRoutes.push({
+                rutenummer: '',
+                rutenavn: '',
+                vedlikeholdsansvarlig: null,
+                rutetype: null,
+                gradering: null,
+                fotruteinfo_objids: []
+            });
+            const container = document.getElementById('editRoutesContainer');
+            renderEditRoutesList(container);
+        }
+
+        // Bulk edit route functions
+        function openBulkEditRouteModal(rutenummer, currentRutenavn) {
+            const modal = document.getElementById('bulkEditRouteModal');
+            const infoEl = document.getElementById('bulkEditRouteInfo');
+            const rutenummerInput = document.getElementById('bulkEditRutenummer');
+            const rutenavnInput = document.getElementById('bulkEditRutenavn');
+            const segmentCountEl = document.getElementById('bulkEditSegmentCount');
+            
+            if (!currentValidation || !currentValidation.segment_metadata) {
+                alert('Ingen valideringsdata tilgjengelig');
+                return;
+            }
+            
+            const segmentCount = currentValidation.segment_metadata.length;
+            
+            infoEl.textContent = `Rediger rutenavn for alle segmenter i ruten "${rutenummer}"`;
+            rutenummerInput.value = rutenummer;
+            rutenavnInput.value = currentRutenavn || '';
+            segmentCountEl.textContent = segmentCount;
+            
+            modal.classList.add('active');
+        }
+
+        function closeBulkEditRouteModal() {
+            const modal = document.getElementById('bulkEditRouteModal');
+            modal.classList.remove('active');
+        }
+
+        async function saveBulkEditRoute() {
+            const rutenummer = document.getElementById('bulkEditRutenummer').value;
+            const newRutenavn = document.getElementById('bulkEditRutenavn').value.trim();
+            
+            if (!rutenummer) {
+                alert('Rutenummer mangler');
+                return;
+            }
+            
+            if (!currentValidation || !currentValidation.segment_metadata) {
+                alert('Ingen valideringsdata tilgjengelig');
+                return;
+            }
+            
+            const segmentCount = currentValidation.segment_metadata.length;
+            
+            if (!confirm(`Er du sikker på at du vil oppdatere rutenavn til "${newRutenavn}" for alle ${segmentCount} segmenter i ruten "${rutenummer}"?`)) {
+                return;
+            }
+            
+            // TODO: Send to backend API
+            // For now, just show what would be sent
+            console.log('Would save bulk edit:', {
+                rutenummer: rutenummer,
+                rutenavn: newRutenavn,
+                segment_count: segmentCount
+            });
+            
+            alert('Endringer lagret! (Dette er kun frontend - backend API må implementeres)');
+            
+            // Reload route to show updated data
+            if (currentRoute) {
+                await loadRoute(currentRoute.rutenummer);
+            }
+            
+            closeBulkEditRouteModal();
+        }
+
+        // Bulk edit route modal event listeners
+        const bulkEditRouteModal = document.getElementById('bulkEditRouteModal');
+        const closeBulkEditRouteModalBtn = document.getElementById('closeBulkEditRouteModal');
+        const cancelBulkEditRouteBtn = document.getElementById('cancelBulkEditRouteBtn');
+        const saveBulkEditRouteBtn = document.getElementById('saveBulkEditRouteBtn');
+
+        if (closeBulkEditRouteModalBtn) {
+            closeBulkEditRouteModalBtn.addEventListener('click', closeBulkEditRouteModal);
+        }
+
+        if (cancelBulkEditRouteBtn) {
+            cancelBulkEditRouteBtn.addEventListener('click', closeBulkEditRouteModal);
+        }
+
+        if (saveBulkEditRouteBtn) {
+            saveBulkEditRouteBtn.addEventListener('click', saveBulkEditRoute);
+        }
+
+        // Close bulk edit modal when clicking outside
+        if (bulkEditRouteModal) {
+            bulkEditRouteModal.addEventListener('click', (e) => {
+                if (e.target === bulkEditRouteModal) {
+                    closeBulkEditRouteModal();
+                }
+            });
         }
 
         // Event listeners
@@ -1660,6 +1962,53 @@
                 }
             });
         }
+
+        // Edit Segment Modal event listeners
+        const editSegmentModal = document.getElementById('editSegmentModal');
+        const closeEditSegmentModalBtn = document.getElementById('closeEditSegmentModal');
+        const cancelEditSegmentBtn = document.getElementById('cancelEditSegmentBtn');
+        const saveEditSegmentBtn = document.getElementById('saveEditSegmentBtn');
+        const addRouteBtn = document.getElementById('addRouteBtn');
+
+        if (closeEditSegmentModalBtn) {
+            closeEditSegmentModalBtn.addEventListener('click', closeEditSegmentModal);
+        }
+
+        if (cancelEditSegmentBtn) {
+            cancelEditSegmentBtn.addEventListener('click', closeEditSegmentModal);
+        }
+
+        if (saveEditSegmentBtn) {
+            saveEditSegmentBtn.addEventListener('click', saveSegmentEdits);
+        }
+
+        if (addRouteBtn) {
+            addRouteBtn.addEventListener('click', addNewRouteToEdit);
+        }
+
+        // Close edit modal when clicking outside
+        if (editSegmentModal) {
+            editSegmentModal.addEventListener('click', (e) => {
+                if (e.target === editSegmentModal) {
+                    closeEditSegmentModal();
+                }
+            });
+        }
+
+        // Close modal with Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                if (editSegmentModal && editSegmentModal.classList.contains('active')) {
+                    closeEditSegmentModal();
+                }
+                if (bulkEditRouteModal && bulkEditRouteModal.classList.contains('active')) {
+                    closeBulkEditRouteModal();
+                }
+                if (aboutModal && aboutModal.classList.contains('active')) {
+                    aboutModal.classList.remove('active');
+                }
+            }
+        });
 
         // Segment hover highlighting functions
         function highlightSegmentOnMap(segmentObjid) {
