@@ -429,13 +429,13 @@ Examples:
                 # Validate metadata consistency
                 errors = []
                 warnings = []
-                
+
                 # First, dump all segment metadata
                 segment_metadata_dump = []
                 for segment_objid, fotruteinfo_rows in sorted(segments_dict.items()):
                     # Get length from first row (should be same for all rows of same segment)
                     segment_length = fotruteinfo_rows[0].get('length_meters') if fotruteinfo_rows else None
-                    
+
                     segment_metadata_dump.append({
                         'segment_objid': segment_objid,
                         'length_meters': float(segment_length) if segment_length is not None else None,
@@ -459,17 +459,17 @@ Examples:
                 all_vedlikeholdsansvarlig = []
                 all_rutetype = []
                 all_gradering = []
-                
+
                 # Track segments missing fields for summary warnings
                 segments_missing_rutenavn = []
                 segments_missing_vedlikeholdsansvarlig = []
-                
+
                 # Track which segments have which values (for inconsistency warnings)
                 rutenavn_by_segment = {}  # value -> [segment_objids]
                 vedlikeholdsansvarlig_by_segment = {}  # value -> [segment_objids]
                 rutetype_by_segment = {}  # value -> [segment_objids]
                 gradering_by_segment = {}  # value -> [segment_objids]
-                
+
                 # Check for duplicates WITHIN each segment and collect values
                 for segment_objid, fotruteinfo_rows in segments_dict.items():
                     # Check for duplicate values within each field for this segment
@@ -477,41 +477,41 @@ Examples:
                     segment_vedlikeholdsansvarlig = [r.get('vedlikeholdsansvarlig') for r in fotruteinfo_rows if r.get('vedlikeholdsansvarlig')]
                     segment_rutetype = [r.get('rutetype') for r in fotruteinfo_rows if r.get('rutetype')]
                     segment_gradering = [r.get('gradering') for r in fotruteinfo_rows if r.get('gradering')]
-                    
+
                     # Track missing fields for this segment
                     has_rutenavn = len(segment_rutenavn) > 0
                     has_vedlikeholdsansvarlig = len(segment_vedlikeholdsansvarlig) > 0
-                    
+
                     if not has_rutenavn:
                         segments_missing_rutenavn.append(segment_objid)
                     if not has_vedlikeholdsansvarlig:
                         segments_missing_vedlikeholdsansvarlig.append(segment_objid)
-                    
+
                     # Track which segments have which values (use first non-null value if multiple)
                     if segment_rutenavn:
                         val = segment_rutenavn[0]  # Use first value if multiple
                         if val not in rutenavn_by_segment:
                             rutenavn_by_segment[val] = []
                         rutenavn_by_segment[val].append(segment_objid)
-                    
+
                     if segment_vedlikeholdsansvarlig:
                         val = segment_vedlikeholdsansvarlig[0]
                         if val not in vedlikeholdsansvarlig_by_segment:
                             vedlikeholdsansvarlig_by_segment[val] = []
                         vedlikeholdsansvarlig_by_segment[val].append(segment_objid)
-                    
+
                     if segment_rutetype:
                         val = segment_rutetype[0]
                         if val not in rutetype_by_segment:
                             rutetype_by_segment[val] = []
                         rutetype_by_segment[val].append(segment_objid)
-                    
+
                     if segment_gradering:
                         val = segment_gradering[0]
                         if val not in gradering_by_segment:
                             gradering_by_segment[val] = []
                         gradering_by_segment[val].append(segment_objid)
-                    
+
                     # Check for duplicates in rutenavn within this segment (only if multiple rows)
                     if len(fotruteinfo_rows) > 1:
                         rutenavn_counts = {}
@@ -527,7 +527,7 @@ Examples:
                                     'value': val,
                                     'count': count
                                 })
-                        
+
                         # Check for duplicates in vedlikeholdsansvarlig within this segment
                         vedlikeholdsansvarlig_counts = {}
                         for val in segment_vedlikeholdsansvarlig:
@@ -542,7 +542,7 @@ Examples:
                                     'value': val,
                                     'count': count
                                 })
-                        
+
                         # Check for duplicates in rutetype within this segment
                         rutetype_counts = {}
                         for val in segment_rutetype:
@@ -557,7 +557,7 @@ Examples:
                                     'value': val,
                                     'count': count
                                 })
-                        
+
                         # Check for duplicates in gradering within this segment
                         gradering_counts = {}
                         for val in segment_gradering:
@@ -572,7 +572,7 @@ Examples:
                                     'value': val,
                                     'count': count
                                 })
-                    
+
                     # Collect values for cross-segment consistency checks
                     for row in fotruteinfo_rows:
                         if row['rutenummer']:
@@ -585,10 +585,10 @@ Examples:
                             all_rutetype.append(row.get('rutetype'))
                         if row.get('gradering'):
                             all_gradering.append(row.get('gradering'))
-                    
+
                     # Check for missing required fields (rutenummer is always required)
                     has_rutenummer = any(r['rutenummer'] for r in fotruteinfo_rows)
-                    
+
                     if not has_rutenummer:
                         errors.append({
                             'type': 'MISSING_REQUIRED_FIELDS',
@@ -610,14 +610,14 @@ Examples:
 
                 # Check 3: rutenavn consistency across segments (it's EXPECTED to be the same)
                 rutenavn_values = set(all_rutenavn)
-                
+
                 if len(rutenavn_values) > 1:
                     # Build detailed message with segment IDs
                     value_details = []
                     for val in sorted(rutenavn_values):
                         segment_ids = sorted(rutenavn_by_segment.get(val, []))
                         value_details.append(f'"{val}" (segments: {segment_ids})')
-                    
+
                     warnings.append({
                         'type': 'INCONSISTENT_RUTENAVN',
                         'message': f'Route has segments with different rutenavn values: {sorted(rutenavn_values)} (Expected: all segments should have the same rutenavn)',
@@ -625,7 +625,7 @@ Examples:
                         'values': sorted(rutenavn_values),
                         'value_by_segment': rutenavn_by_segment
                     })
-                
+
                 # Check for missing rutenavn (regardless of consistency)
                 if segments_missing_rutenavn:
                     if len(rutenavn_values) == 0:
@@ -657,7 +657,7 @@ Examples:
                 # Check 4: vedlikeholdsansvarlig consistency across segments
                 # Note: Different organizations for different segments might be OK, but we still report it
                 vedlikeholdsansvarlig_values = set(all_vedlikeholdsansvarlig)
-                
+
                 if len(vedlikeholdsansvarlig_values) > 1:
                     warnings.append({
                         'type': 'INCONSISTENT_VEDLIKEHOLDSANSVARLIG',
@@ -666,7 +666,7 @@ Examples:
                         'values': sorted(vedlikeholdsansvarlig_values),
                         'value_by_segment': vedlikeholdsansvarlig_by_segment
                     })
-                
+
                 # Check for missing vedlikeholdsansvarlig (regardless of consistency)
                 if segments_missing_vedlikeholdsansvarlig:
                     if len(vedlikeholdsansvarlig_values) == 0:
@@ -697,7 +697,7 @@ Examples:
 
                 # Check 5: rutetype consistency across segments (expected to be the same)
                 rutetype_values = set(all_rutetype)
-                
+
                 if len(rutetype_values) > 1:
                     warnings.append({
                         'type': 'INCONSISTENT_RUTETYPE',
@@ -709,7 +709,7 @@ Examples:
 
                 # Check 6: gradering consistency across segments (expected to be the same)
                 gradering_values = set(all_gradering)
-                
+
                 if len(gradering_values) > 1:
                     warnings.append({
                         'type': 'INCONSISTENT_GRADERING',
@@ -722,29 +722,29 @@ Examples:
                 # ====================================================================
                 # GEOMETRY VALIDATION USING route_geometries
                 # ====================================================================
-                
+
                 geometry_errors = []
                 geometry_warnings = []
                 geometry_info = []
-                
+
                 # Get route geometry from route_geometries column in links_with_routes
                 route_geometry_query = f"""
                     SELECT
                         lwr.route_geometries->>%s as route_geometry_json,
                         ST_Length(ST_Transform(ST_GeomFromGeoJSON(lwr.route_geometries->>%s), 4326)::geography) as length_meters,
-                        (SELECT COUNT(DISTINCT lwr2.link_id) 
-                         FROM {schema_quoted}.links_with_routes lwr2 
+                        (SELECT COUNT(DISTINCT lwr2.link_id)
+                         FROM {schema_quoted}.links_with_routes lwr2
                          WHERE %s = ANY(lwr2.rutenummer_list)) as link_count
                     FROM {schema_quoted}.links_with_routes lwr
                     WHERE %s = ANY(lwr.rutenummer_list)
                       AND lwr.route_geometries->>%s IS NOT NULL
                     LIMIT 1
                 """
-                
+
                 with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute(route_geometry_query, (rutenummer, rutenummer, rutenummer, rutenummer, rutenummer))
                     route_geom_row = cur.fetchone()
-                    
+
                     if not route_geom_row or not route_geom_row.get('route_geometry_json'):
                         geometry_warnings.append({
                             'type': 'NO_ROUTE_GEOMETRY',
@@ -755,7 +755,7 @@ Examples:
                     else:
                         route_geometry_json = route_geom_row['route_geometry_json']
                         link_count = route_geom_row.get('link_count', 0)
-                        
+
                         # Validate route geometry
                         geom_validation_query = """
                             SELECT
@@ -766,34 +766,34 @@ Examples:
                         """
                         cur.execute(geom_validation_query, (route_geometry_json, route_geometry_json, route_geometry_json, route_geometry_json))
                         geom_validation = cur.fetchone()
-                        
+
                         if geom_validation:
                             is_valid = geom_validation['is_valid']
                             is_simple = geom_validation['is_simple']
                             length_meters = geom_validation.get('length_meters')
                             geom_type = geom_validation.get('geom_type')
-                            
+
                             if not is_valid:
                                 geometry_errors.append({
                                     'type': 'INVALID_ROUTE_GEOMETRY',
                                     'message': f'Route geometry is invalid',
                                     'severity': 'error'
                                 })
-                            
+
                             if not is_simple:
                                 geometry_warnings.append({
                                     'type': 'NON_SIMPLE_ROUTE_GEOMETRY',
                                     'message': f'Route geometry has self-intersections or is not simple',
                                     'severity': 'warning'
                                 })
-                            
+
                             if length_meters is None or length_meters == 0:
                                 geometry_errors.append({
                                     'type': 'ZERO_LENGTH_ROUTE',
                                     'message': f'Route has zero or null length',
                                     'severity': 'error'
                                 })
-                            
+
                             if geom_type:
                                 geometry_info.append({
                                     'type': 'ROUTE_GEOMETRY_TYPE',
@@ -802,7 +802,7 @@ Examples:
                                     'geom_type': geom_type,
                                     'length_meters': float(length_meters) if length_meters else None
                                 })
-                        
+
                         # Get links for additional validation (node connectivity, etc.)
                         links_query = f"""
                             SELECT
@@ -823,13 +823,13 @@ Examples:
                         """
                         cur.execute(links_query, (rutenummer,))
                         links = cur.fetchall()
-                        
+
                         if links:
                             # Validate individual links (for node connectivity checks)
                             for link in links:
                                 link_id = link['link_id']
                                 length_m = link.get('length_m')
-                                
+
                                 # Check length
                                 if length_m is None or length_m == 0:
                                     geometry_errors.append({
@@ -846,25 +846,25 @@ Examples:
                                         'link_id': link_id,
                                         'length_m': length_m
                                     })
-                        
+
                         # Build link graph for node connectivity analysis
                         link_graph = {}  # node -> [links where this is a_node or b_node]
                         link_by_id = {}
-                        
+
                         for link in links:
                             link_id = link['link_id']
                             a_node = link['a_node']
                             b_node = link['b_node']
                             link_by_id[link_id] = link
-                            
+
                             if a_node not in link_graph:
                                 link_graph[a_node] = []
                             link_graph[a_node].append(('a', link_id))
-                            
+
                             if b_node not in link_graph:
                                 link_graph[b_node] = []
                             link_graph[b_node].append(('b', link_id))
-                        
+
                         # Check node connectivity (route_geometries should already be continuous, but check node structure)
                         if len(links) > 1:
                             # Find endpoints (nodes with degree 1)
@@ -872,7 +872,7 @@ Examples:
                             for node, link_refs in link_graph.items():
                                 if len(link_refs) == 1:
                                     endpoint_nodes.append(node)
-                            
+
                             if len(endpoint_nodes) != 2:
                                 geometry_warnings.append({
                                     'type': 'UNEXPECTED_ENDPOINT_COUNT',
@@ -881,18 +881,18 @@ Examples:
                                     'endpoint_count': len(endpoint_nodes),
                                     'endpoint_nodes': endpoint_nodes
                                 })
-                            
+
                             # Check for nodes with degree 2 (should be intermediate nodes, not endpoints)
                             degree_2_nodes = []
                             for node, link_refs in link_graph.items():
                                 if len(link_refs) == 2:
                                     degree_2_nodes.append(node)
-                            
+
                             # Check endpoints have correct degree
                             for link in links:
                                 a_degree = link.get('a_node_degree')
                                 b_degree = link.get('b_node_degree')
-                                
+
                                 # Check if a_node is an endpoint but has wrong degree
                                 if link['a_node'] in endpoint_nodes and a_degree is not None and a_degree != 1:
                                     geometry_warnings.append({
@@ -903,7 +903,7 @@ Examples:
                                         'node_id': link['a_node'],
                                         'degree': a_degree
                                     })
-                                
+
                                 # Check if b_node is an endpoint but has wrong degree
                                 if link['b_node'] in endpoint_nodes and b_degree is not None and b_degree != 1:
                                     geometry_warnings.append({
@@ -914,19 +914,19 @@ Examples:
                                         'node_id': link['b_node'],
                                         'degree': b_degree
                                     })
-                        
+
                         # Check for multiple components (disconnected link groups)
                         # Note: route_geometries should already be continuous, but we check node connectivity
                         if len(links) > 1:
                             components = []
                             visited_components = set()
-                            
+
                             def dfs_component(link_id, component):
                                 if link_id in visited_components:
                                     return
                                 visited_components.add(link_id)
                                 component.append(link_id)
-                                
+
                                 link = link_by_id[link_id]
                                 # Find connected links
                                 b_node = link['b_node']
@@ -934,20 +934,20 @@ Examples:
                                     for node_type, connected_link_id in link_graph[b_node]:
                                         if node_type == 'a' and connected_link_id not in visited_components:
                                             dfs_component(connected_link_id, component)
-                            
+
                             for link in links:
                                 link_id = link['link_id']
                                 if link_id not in visited_components:
                                     component = []
                                     dfs_component(link_id, component)
                                     components.append(component)
-                            
+
                             if len(components) > 1:
                                 # Multiple components - identify main component (largest)
                                 components.sort(key=len, reverse=True)
                                 main_component = components[0]
                                 appendix_components = components[1:]
-                                
+
                                 geometry_info.append({
                                     'type': 'MULTIPLE_LINK_COMPONENTS',
                                     'message': f'Route has {len(components)} disconnected link component(s). Main component: {len(main_component)} links, Appendix components: {[len(c) for c in appendix_components]} links. Note: route_geometries should still provide continuous geometry.',
@@ -956,12 +956,12 @@ Examples:
                                     'main_component_link_ids': main_component,
                                     'appendix_component_link_ids': [c for c in appendix_components]
                                 })
-                
+
                 # Add geometry errors and warnings to main lists
                 errors.extend(geometry_errors)
                 warnings.extend(geometry_warnings)
                 # Info items can be added to a separate list or included in warnings
-                
+
                 # Build validation report
                 validation_result = {
                     'rutenummer': rutenummer,
@@ -1000,7 +1000,7 @@ Examples:
                     print(f"Total links: {len(links) if links else 0}")
                     print(f"Status: {validation_result['status']}")
                     print()
-                    
+
                     # Dump all segment metadata first
                     print("SEGMENT METADATA DUMP:")
                     print("-" * 80)
@@ -1122,23 +1122,23 @@ Examples:
                     print(f"Geometry errors: {summary['geometry_error_count']}")
                     print(f"Geometry warnings: {summary['geometry_warning_count']}")
                     print()
-                    
+
                     if summary['rutenavn_values']:
                         print(f"rutenavn: {', '.join(summary['rutenavn_values'])}")
                     else:
                         print("rutenavn: (not set)")
-                    
+
                     if summary['vedlikeholdsansvarlig_values']:
                         print(f"vedlikeholdsansvarlig: {', '.join(summary['vedlikeholdsansvarlig_values'])}")
                     else:
                         print("vedlikeholdsansvarlig: (not set)")
-                    
+
                     if summary['rutetype_values']:
                         print(f"rutetype: {', '.join(summary['rutetype_values'])}")
-                    
+
                     if summary['gradering_values']:
                         print(f"gradering: {', '.join(summary['gradering_values'])}")
-                    
+
                     print("=" * 80)
 
         except Exception as e:
