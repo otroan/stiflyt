@@ -10,7 +10,7 @@
 
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="/static/css/app.css" />
+    <link rel="stylesheet" href="/static/css/app.css?v=2" />
     <style>
         .validation-status {
             display: inline-block;
@@ -95,35 +95,12 @@
             background: transparent !important;
             border: none !important;
         }
-        .toggle-controls {
-            display: flex;
-            gap: 20px;
-            align-items: center;
-            margin-left: 16px;
-            padding: 8px 16px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 4px;
-        }
-        .toggle-label {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-            color: white;
-            font-size: 0.95rem;
-            user-select: none;
-        }
-        .toggle-label:hover {
-            opacity: 0.9;
-        }
-        .toggle-checkbox {
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-            margin: 0;
-        }
-        .toggle-text {
-            white-space: nowrap;
+        .search-result-header {
+            padding: 0.75rem;
+            font-weight: bold;
+            color: #666;
+            border-bottom: 2px solid #ddd;
+            background-color: #f8f9fa;
         }
     </style>
 </head>
@@ -142,20 +119,10 @@
         </div>
         <div class="controls">
             <div class="search-container">
-                <input type="text" id="routeSearchInput" class="input-wide" placeholder="Søk etter rute (f.eks. bre10)" aria-label="Søk etter rute">
+                <input type="text" id="routeSearchInput" class="input-wide" placeholder="Søk etter rute eller område (f.eks. bre10 eller bre)" aria-label="Søk etter rute eller område">
                 <div class="search-results" id="routeSearchResults"></div>
             </div>
             <button id="validateRouteBtn" class="btn-purple" disabled>Valider rute</button>
-            <div class="toggle-controls">
-                <label class="toggle-label">
-                    <input type="checkbox" id="showSegmentsToggle" class="toggle-checkbox">
-                    <span class="toggle-text">Vis segmenter</span>
-                </label>
-                <label class="toggle-label">
-                    <input type="checkbox" id="showLinksToggle" class="toggle-checkbox">
-                    <span class="toggle-text">Vis linker</span>
-                </label>
-            </div>
         </div>
     </div>
 
@@ -233,10 +200,10 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <!-- Constants -->
-    <script src="js/constants.js"></script>
+    <script src="js/constants.js?v=2"></script>
 
     <!-- Common utilities -->
-    <script src="js/common.js"></script>
+    <script src="js/common.js?v=2"></script>
 
     <script>
         // Initialize map
@@ -278,16 +245,70 @@
 
         // Route search
         async function performRouteSearch(query) {
-            if (!query || query.length < 2) {
-                document.getElementById('routeSearchResults').classList.remove('active');
+            const queryTrimmed = query ? query.trim() : '';
+            
+            // If empty query, show all routes (with a reasonable limit)
+            if (queryTrimmed.length === 0) {
+                try {
+                    const response = await apiRequest(`/api/v1/routes?limit=200`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        displayRouteListResults(data.routes, data.total);
+                    } else {
+                        document.getElementById('routeSearchResults').innerHTML =
+                            '<div class="search-result-item">Kunne ikke laste ruter</div>';
+                        document.getElementById('routeSearchResults').classList.add('active');
+                    }
+                } catch (error) {
+                    console.error('Error loading routes:', error);
+                    document.getElementById('routeSearchResults').innerHTML =
+                        '<div class="search-result-item">Søkefeil</div>';
+                    document.getElementById('routeSearchResults').classList.add('active');
+                }
                 return;
             }
 
+            // If query is short (1-2 chars), treat as prefix search
+            if (queryTrimmed.length <= 2) {
+                try {
+                    const response = await apiRequest(`/api/v1/routes?prefix=${encodeURIComponent(queryTrimmed)}&limit=200`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        displayRouteListResults(data.routes, data.total, queryTrimmed);
+                    } else {
+                        document.getElementById('routeSearchResults').innerHTML =
+                            '<div class="search-result-item">Kunne ikke laste ruter</div>';
+                        document.getElementById('routeSearchResults').classList.add('active');
+                    }
+                } catch (error) {
+                    console.error('Error searching routes:', error);
+                    document.getElementById('routeSearchResults').innerHTML =
+                        '<div class="search-result-item">Søkefeil</div>';
+                    document.getElementById('routeSearchResults').classList.add('active');
+                }
+                return;
+            }
+
+            // For longer queries, try exact match first, then prefix search
             try {
-                const data = await searchPlaces(query, 20);
-                // Filter to only show routes
-                const routes = (data.results || []).filter(r => r.type === 'rute');
-                displayRouteSearchResults(routes);
+                // First try exact match via search places
+                const data = await searchPlaces(queryTrimmed, 20);
+                const exactRoutes = (data.results || []).filter(r => r.type === 'rute');
+                
+                if (exactRoutes.length > 0) {
+                    displayRouteSearchResults(exactRoutes);
+                } else {
+                    // If no exact match, try prefix search
+                    const response = await apiRequest(`/api/v1/routes?prefix=${encodeURIComponent(queryTrimmed)}&limit=200`);
+                    if (response.ok) {
+                        const routeData = await response.json();
+                        displayRouteListResults(routeData.routes, routeData.total, queryTrimmed);
+                    } else {
+                        document.getElementById('routeSearchResults').innerHTML =
+                            '<div class="search-result-item">Ingen ruter funnet</div>';
+                        document.getElementById('routeSearchResults').classList.add('active');
+                    }
+                }
             } catch (error) {
                 console.error('Søkefeil:', error);
                 document.getElementById('routeSearchResults').innerHTML = 
@@ -306,12 +327,38 @@
             }
 
             resultsDiv.innerHTML = results.map(result => `
-                <div class="search-result-item" onclick='selectRoute("${result.rutenummer}")'>
-                    <strong>${result.title || result.rutenummer}</strong>
-                    ${result.subtitle ? `<small>${result.subtitle}</small>` : ''}
+                <div class="search-result-item" onclick='selectRoute("${result.rutenummer || result.id}")'>
+                    <strong>${result.title || result.rutenummer || result.id}</strong>
+                    ${result.subtitle ? `<br><small>${result.subtitle}</small>` : ''}
                 </div>
             `).join('');
 
+            resultsDiv.classList.add('active');
+        }
+
+        function displayRouteListResults(routes, total, prefix = null) {
+            const resultsDiv = document.getElementById('routeSearchResults');
+
+            if (routes.length === 0) {
+                resultsDiv.innerHTML = '<div class="search-result-item">Ingen ruter funnet</div>';
+                resultsDiv.classList.add('active');
+                return;
+            }
+
+            // Show total count if there are more routes than displayed
+            const headerHtml = total > routes.length 
+                ? `<div class="search-result-header">Viser ${routes.length} av ${total} ruter${prefix ? ` som starter med "${prefix}"` : ''}</div>`
+                : `<div class="search-result-header">${total} rute${total !== 1 ? 'r' : ''}${prefix ? ` som starter med "${prefix}"` : ''}</div>`;
+
+            const html = headerHtml + routes.map(route => `
+                <div class="search-result-item" onclick='selectRoute("${route.rutenummer}")'>
+                    <strong>${route.rutenummer}</strong>
+                    ${route.rutenavn ? `<br><small>${route.rutenavn}</small>` : ''}
+                    ${route.vedlikeholdsansvarlig ? `<br><small style="color: #666;">${route.vedlikeholdsansvarlig}</small>` : ''}
+                </div>
+            `).join('');
+
+            resultsDiv.innerHTML = html;
             resultsDiv.classList.add('active');
         }
 
@@ -372,13 +419,12 @@
                 // Display validation results
                 displayValidationResults(currentValidation);
 
-                // Update segments display if toggle is on
-                if (showSegments && segmentData) {
+                // Initialize segments and links layers (add to layer control, but not to map)
+                // This makes them available in the layer control immediately
+                if (segmentData && currentValidation) {
                     displaySegmentsOnMap(segmentData, currentValidation);
                 }
-
-                // Update links display if toggle is on
-                if (showLinks && linkData) {
+                if (linkData && currentValidation) {
                     displayLinksOnMap(linkData, currentValidation);
                 }
 
@@ -433,20 +479,26 @@
 
         function clearSegments() {
             if (segmentLayerGroup) {
-                map.removeLayer(segmentLayerGroup);
+                if (map.hasLayer(segmentLayerGroup)) {
+                    map.removeLayer(segmentLayerGroup);
+                }
                 layerControl.removeLayer(segmentLayerGroup);
                 segmentLayerGroup = null;
             }
             segmentLayers = [];
+            showSegments = false;
         }
 
         function clearLinks() {
             if (linkLayerGroup) {
-                map.removeLayer(linkLayerGroup);
+                if (map.hasLayer(linkLayerGroup)) {
+                    map.removeLayer(linkLayerGroup);
+                }
                 layerControl.removeLayer(linkLayerGroup);
                 linkLayerGroup = null;
             }
             linkLayers = [];
+            showLinks = false;
         }
 
         function getSegmentStatus(segmentObjid, validation) {
@@ -470,8 +522,8 @@
                 return;
             }
 
-            // Create layer group for segments
-            segmentLayerGroup = L.layerGroup().addTo(map);
+            // Create layer group for segments (not added to map by default)
+            segmentLayerGroup = L.layerGroup();
             layerControl.addOverlay(segmentLayerGroup, `Segmenter (${segmentsData.segments.length})`);
 
             // Get segment colors from constants
@@ -591,87 +643,32 @@
                         }).bindTooltip(`Segment ${segmentObjid} (start)`, { permanent: false });
                         startMarker.addTo(segmentLayerGroup);
                         
-                        // End marker (arrow pointing in direction)
+                        // End marker (circle)
                         const endCoord = coords[coords.length - 1];
-                        // Calculate direction from second-to-last to last point
-                        let angle = 0;
-                        if (coords.length >= 2) {
-                            const prevCoord = coords[coords.length - 2];
-                            const dx = endCoord[0] - prevCoord[0];
-                            const dy = endCoord[1] - prevCoord[1];
-                            angle = Math.atan2(dy, dx) * 180 / Math.PI;
-                        }
-                        
-                        // Create arrow icon
-                        const arrowSize = 16;
-                        const arrowHtml = `
-                            <svg width="${arrowSize}" height="${arrowSize}" style="transform: rotate(${angle}deg);">
-                                <defs>
-                                    <marker id="arrowhead-${segmentObjid}" markerWidth="10" markerHeight="10" 
-                                            refX="9" refY="3" orient="auto">
-                                        <polygon points="0 0, 10 3, 0 6" fill="${color}" />
-                                    </marker>
-                                </defs>
-                                <line x1="0" y1="${arrowSize/2}" x2="${arrowSize}" y2="${arrowSize/2}" 
-                                      stroke="${color}" stroke-width="3" 
-                                      marker-end="url(#arrowhead-${segmentObjid})" />
-                            </svg>
-                        `;
-                        
                         const endMarker = L.marker([endCoord[1], endCoord[0]], {
                             icon: L.divIcon({
-                                className: 'segment-arrow-marker',
-                                html: arrowHtml,
-                                iconSize: [arrowSize, arrowSize],
-                                iconAnchor: [arrowSize/2, arrowSize/2]
+                                className: 'segment-marker',
+                                html: `<div style="background-color: ${color}; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>`,
+                                iconSize: [12, 12],
+                                iconAnchor: [6, 6]
                             })
                         }).bindTooltip(`Segment ${segmentObjid} (slutt)`, { permanent: false });
                         endMarker.addTo(segmentLayerGroup);
-                        
-                        // Add arrow markers along the segment (every 25% of the way)
-                        if (coords.length >= 2) {
-                            for (let i = 1; i < 4; i++) {
-                                const idx = Math.floor((coords.length - 1) * i / 4);
-                                if (idx > 0 && idx < coords.length - 1) {
-                                    const arrowCoord = coords[idx];
-                                    const prevArrowCoord = coords[idx - 1];
-                                    const dx = arrowCoord[0] - prevArrowCoord[0];
-                                    const dy = arrowCoord[1] - prevArrowCoord[1];
-                                    const arrowAngle = Math.atan2(dy, dx) * 180 / Math.PI;
-                                    
-                                    const midArrowHtml = `
-                                        <svg width="${arrowSize}" height="${arrowSize}" style="transform: rotate(${arrowAngle}deg);">
-                                            <defs>
-                                                <marker id="arrowhead-mid-${segmentObjid}-${i}" markerWidth="8" markerHeight="8" 
-                                                        refX="7" refY="2.5" orient="auto">
-                                                    <polygon points="0 0, 8 2.5, 0 5" fill="${color}" opacity="0.7" />
-                                                </marker>
-                                            </defs>
-                                            <line x1="0" y1="${arrowSize/2}" x2="${arrowSize}" y2="${arrowSize/2}" 
-                                                  stroke="${color}" stroke-width="2" opacity="0.7"
-                                                  marker-end="url(#arrowhead-mid-${segmentObjid}-${i})" />
-                                        </svg>
-                                    `;
-                                    
-                                    const midArrowMarker = L.marker([arrowCoord[1], arrowCoord[0]], {
-                                        icon: L.divIcon({
-                                            className: 'segment-arrow-marker',
-                                            html: midArrowHtml,
-                                            iconSize: [arrowSize, arrowSize],
-                                            iconAnchor: [arrowSize/2, arrowSize/2]
-                                        })
-                                    });
-                                    midArrowMarker.addTo(segmentLayerGroup);
-                                }
-                            }
-                        }
                     }
                 }
 
+                // Store original style for hover highlighting
+                const originalStyle = {
+                    color: color,
+                    weight: weight,
+                    opacity: 0.9
+                };
+                
                 segmentLayers.push({
                     objid: segmentObjid,
                     layer: segmentLayer,
-                    status: status
+                    status: status,
+                    originalStyle: originalStyle
                 });
             });
         }
@@ -700,8 +697,8 @@
 
             console.log('Displaying links on map:', linksData.links.length, 'links');
 
-            // Create layer group for links
-            linkLayerGroup = L.layerGroup().addTo(map);
+            // Create layer group for links (not added to map by default)
+            linkLayerGroup = L.layerGroup();
             layerControl.addOverlay(linkLayerGroup, `Lenker (${linksData.links.length})`);
 
             // Get link colors from constants
@@ -810,19 +807,30 @@
                     endMarker.addTo(linkLayerGroup);
                 }
 
+                // Store original style for hover highlighting
+                const originalLinkStyle = {
+                    color: color,
+                    weight: weight,
+                    opacity: 0.8
+                };
+                
                 linkLayers.push({
                     linkId: linkId,
                     layer: linkLayer,
-                    status: status
+                    status: status,
+                    originalStyle: originalLinkStyle
                 });
             });
         }
 
         function selectLink(linkId) {
+            // Clear hover highlight first
+            clearHighlight();
+            
             // Highlight on map
-            linkLayers.forEach(({ linkId: lid, layer }) => {
+            linkLayers.forEach(({ linkId: lid, layer, originalStyle }) => {
                 if (lid === linkId) {
-                    layer.setStyle({ weight: 7, opacity: 1.0 });
+                    layer.setStyle({ weight: 8, opacity: 1.0 });  // Thicker than hover (7)
                     layer.openPopup();
                     // Zoom to link
                     const bounds = layer.getBounds();
@@ -830,10 +838,14 @@
                         map.fitBounds(bounds, { padding: [100, 100], maxZoom: 16 });
                     }
                 } else {
-                    // Reset other links
-                    const status = getLinkStatus(lid, currentValidation);
-                    const weight = status === 'error' ? 5 : status === 'warning' ? 4 : 3;
-                    layer.setStyle({ weight: weight, opacity: 0.8 });
+                    // Reset other links to original style
+                    if (originalStyle) {
+                        layer.setStyle(originalStyle);
+                    } else {
+                        const status = getLinkStatus(lid, currentValidation);
+                        const weight = status === 'error' ? 5 : status === 'warning' ? 4 : 3;
+                        layer.setStyle({ weight: weight, opacity: 0.8 });
+                    }
                 }
             });
 
@@ -915,6 +927,139 @@
             `;
         }
 
+        // Hover highlighting state
+        let hoverHighlightTimeout = null;
+        let currentlyHighlighted = { segments: [], links: [] };
+        let segmentHoverHighlightTimeout = null;
+        let currentlyHoveredSegment = null;
+
+        function highlightSegmentsAndLinks(segmentIds, linkIds) {
+            // Clear any existing highlight first
+            clearHighlight();
+            
+            // Debug logging
+            console.log('highlightSegmentsAndLinks called with:', { segmentIds, linkIds });
+            console.log('Available segmentLayers:', segmentLayers.length, 'showSegments:', showSegments);
+            console.log('Available linkLayers:', linkLayers.length, 'showLinks:', showLinks);
+            
+            // If segments need to be shown but aren't loaded
+            if (segmentIds.length > 0 && segmentData) {
+                if (segmentLayers.length === 0) {
+                    console.log('Segments not loaded, loading now...');
+                    displaySegmentsOnMap(segmentData, currentValidation);
+                }
+                // Ensure segments layer is visible
+                if (segmentLayerGroup && !map.hasLayer(segmentLayerGroup)) {
+                    map.addLayer(segmentLayerGroup);
+                    // Deactivate links if segments are activated
+                    if (linkLayerGroup && map.hasLayer(linkLayerGroup)) {
+                        map.removeLayer(linkLayerGroup);
+                    }
+                }
+            }
+            
+            // If links need to be shown but aren't loaded
+            if (linkIds.length > 0 && linkData) {
+                if (linkLayers.length === 0) {
+                    console.log('Links not loaded, loading now...');
+                    displayLinksOnMap(linkData, currentValidation);
+                }
+                // Ensure links layer is visible
+                if (linkLayerGroup && !map.hasLayer(linkLayerGroup)) {
+                    map.addLayer(linkLayerGroup);
+                    // Deactivate segments if links are activated
+                    if (segmentLayerGroup && map.hasLayer(segmentLayerGroup)) {
+                        map.removeLayer(segmentLayerGroup);
+                    }
+                }
+            }
+            
+            // Convert to strings for comparison
+            const segmentIdStrings = segmentIds.map(id => String(id));
+            const linkIdStrings = linkIds.map(id => String(id));
+            
+            let highlightedSegments = 0;
+            let highlightedLinks = 0;
+            
+            // Highlight segments
+            segmentLayers.forEach(({objid, layer, originalStyle}) => {
+                if (segmentIdStrings.includes(String(objid))) {
+                    layer.setStyle({
+                        color: '#ff0000',  // Red highlight
+                        weight: 7,  // Thicker than normal (6 for error, 7 for hover)
+                        opacity: 1.0
+                    });
+                    layer.bringToFront();
+                    currentlyHighlighted.segments.push(String(objid));
+                    highlightedSegments++;
+                }
+            });
+            
+            // Highlight links
+            linkLayers.forEach(({linkId, layer, originalStyle}) => {
+                // Convert linkId to string for comparison (affected_links might be integers)
+                const linkIdStr = String(linkId);
+                if (linkIdStrings.includes(linkIdStr)) {
+                    layer.setStyle({
+                        color: '#ff0000',  // Red highlight
+                        weight: 6,  // Thicker than normal
+                        opacity: 1.0
+                    });
+                    layer.bringToFront();
+                    currentlyHighlighted.links.push(linkIdStr);
+                    highlightedLinks++;
+                }
+            });
+            
+            console.log(`Highlighted ${highlightedSegments} segments and ${highlightedLinks} links`);
+        }
+
+        function clearHighlight() {
+            // Restore original styles for highlighted segments
+            segmentLayers.forEach(({objid, layer, originalStyle, status}) => {
+                if (currentlyHighlighted.segments.includes(String(objid))) {
+                    // Re-apply original style or status-based style
+                    if (originalStyle) {
+                        layer.setStyle(originalStyle);
+                    } else {
+                        // Fallback: re-apply based on status
+                        const weight = status === 'error' ? 6 : status === 'warning' ? 5 : 4;
+                        layer.setStyle({ weight: weight, opacity: 0.9 });
+                    }
+                }
+            });
+            
+            // Restore original styles for highlighted links
+            linkLayers.forEach(({linkId, layer, originalStyle, status}) => {
+                if (currentlyHighlighted.links.includes(String(linkId))) {
+                    // Re-apply original style or status-based style
+                    if (originalStyle) {
+                        layer.setStyle(originalStyle);
+                    } else {
+                        // Fallback: re-apply based on status
+                        const weight = status === 'error' ? 5 : status === 'warning' ? 4 : 3;
+                        layer.setStyle({ weight: weight, opacity: 0.8 });
+                    }
+                }
+            });
+            
+            currentlyHighlighted = { segments: [], links: [] };
+        }
+        
+        function handleIssueLeave() {
+            // Clear timeout if mouse leaves before delay completes
+            if (hoverHighlightTimeout) {
+                clearTimeout(hoverHighlightTimeout);
+                hoverHighlightTimeout = null;
+            }
+            
+            // Clear highlight after a small delay (allows moving to child elements)
+            // Note: We don't deactivate toggles here - let user control that manually
+            setTimeout(() => {
+                clearHighlight();
+            }, 100);
+        }
+
         function displayValidationResults(validation) {
             const content = document.getElementById('validationContent');
 
@@ -949,29 +1094,69 @@
             // Errors
             const errorsHtml = validation.errors.length > 0 ? `
                 <h3>Feil (${validation.errors.length})</h3>
-                ${validation.errors.map(err => `
-                    <div class="issue-item issue-error">
+                ${validation.errors.map((err, errIdx) => {
+                    const segmentIds = err.affected_segments || [];
+                    const linkIds = err.affected_links || [];
+                    const hasAffected = segmentIds.length > 0 || linkIds.length > 0;
+                    const itemId = `error-item-${errIdx}`;
+                    
+                    const segmentIdsStr = segmentIds.length > 0 ? segmentIds.map(id => String(id)).join("','") : '';
+                    const linkIdsStr = linkIds.length > 0 ? linkIds.map(id => String(id)).join("','") : '';
+                    
+                    return `
+                    <div class="issue-item issue-error" 
+                         id="${itemId}"
+                         ${hasAffected ? `onmouseenter="handleIssueHover(${segmentIds.length > 0 ? `['${segmentIdsStr}']` : '[]'}, ${linkIds.length > 0 ? `['${linkIdsStr}']` : '[]'})" 
+                                       onmouseleave="handleIssueLeave()" 
+                                       style="cursor: ${hasAffected ? 'pointer' : 'default'};"` : ''}>
                         <strong>${err.type}</strong><br>
                         ${err.message}
-                        ${err.affected_segments && err.affected_segments.length > 0 ? 
-                            `<br><small>Segmenter: ${err.affected_segments.join(', ')}</small>` : ''}
-                        ${err.affected_links && err.affected_links.length > 0 ? 
-                            `<br><small>Lenker: ${err.affected_links.join(', ')}</small>` : ''}
+                        ${segmentIds.length > 0 ? 
+                            `<br><small>Segmenter: ${segmentIds.join(', ')}</small>` : ''}
+                        ${linkIds.length > 0 ? 
+                            `<br><small>Lenker: ${linkIds.join(', ')}</small>` : ''}
                     </div>
-                `).join('')}
+                `;
+                }).join('')}
             ` : '';
 
             // Warnings
             const warningsHtml = validation.warnings.length > 0 ? `
                 <h3>Advarsler (${validation.warnings.length})</h3>
-                ${validation.warnings.map(warn => `
-                    <div class="issue-item issue-warning">
+                ${validation.warnings.map((warn, warnIdx) => {
+                    const segmentIds = warn.affected_segments || [];
+                    const linkIds = warn.affected_links || [];
+                    const hasAffected = segmentIds.length > 0 || linkIds.length > 0;
+                    const itemId = `warning-item-${warnIdx}`;
+                    
+                    // Handle value_by_segment - extract all segment IDs
+                    let allSegmentIds = [...segmentIds];
+                    if (warn.value_by_segment) {
+                        Object.values(warn.value_by_segment).forEach(segs => {
+                            if (Array.isArray(segs)) {
+                                allSegmentIds = allSegmentIds.concat(segs.map(s => String(s)));
+                            }
+                        });
+                    }
+                    // Remove duplicates
+                    allSegmentIds = [...new Set(allSegmentIds)];
+                    
+                    const allSegmentIdsStr = allSegmentIds.length > 0 ? allSegmentIds.map(id => String(id)).join("','") : '';
+                    const linkIdsStr = linkIds.length > 0 ? linkIds.map(id => String(id)).join("','") : '';
+                    const hasAnyAffected = hasAffected || allSegmentIds.length > 0;
+                    
+                    return `
+                    <div class="issue-item issue-warning" 
+                         id="${itemId}"
+                         ${hasAnyAffected ? `onmouseenter="handleIssueHover(${allSegmentIds.length > 0 ? `['${allSegmentIdsStr}']` : '[]'}, ${linkIds.length > 0 ? `['${linkIdsStr}']` : '[]'})" 
+                                       onmouseleave="handleIssueLeave()" 
+                                       style="cursor: ${hasAnyAffected ? 'pointer' : 'default'};"` : ''}>
                         <strong>${warn.type}</strong><br>
                         ${warn.message}
-                        ${warn.affected_segments && warn.affected_segments.length > 0 ? 
-                            `<br><small>Segmenter: ${warn.affected_segments.join(', ')}</small>` : ''}
-                        ${warn.affected_links && warn.affected_links.length > 0 ? 
-                            `<br><small>Lenker: ${warn.affected_links.join(', ')}</small>` : ''}
+                        ${segmentIds.length > 0 ? 
+                            `<br><small>Segmenter: ${segmentIds.join(', ')}</small>` : ''}
+                        ${linkIds.length > 0 ? 
+                            `<br><small>Lenker: ${linkIds.join(', ')}</small>` : ''}
                         ${warn.value_by_segment ? `
                             <br><small>Verdier per segment:</small>
                             <ul style="margin: 4px 0; padding-left: 20px;">
@@ -981,7 +1166,8 @@
                             </ul>
                         ` : ''}
                     </div>
-                `).join('')}
+                `;
+                }).join('')}
             ` : '';
 
             // Info
@@ -1007,6 +1193,24 @@
 
             // Display segments
             displaySegments(validation);
+        }
+
+        // Hover handlers for validation issues
+        function handleIssueHover(segmentIds, linkIds) {
+            console.log('handleIssueHover called with:', { segmentIds, linkIds });
+            
+            // Clear any pending timeout
+            if (hoverHighlightTimeout) {
+                clearTimeout(hoverHighlightTimeout);
+            }
+            
+            // Small delay to prevent flickering on quick mouse movements
+            hoverHighlightTimeout = setTimeout(() => {
+                // Filter out empty strings and ensure arrays
+                const validSegmentIds = Array.isArray(segmentIds) ? segmentIds.filter(id => id && id !== '') : [];
+                const validLinkIds = Array.isArray(linkIds) ? linkIds.filter(id => id && id !== '') : [];
+                highlightSegmentsAndLinks(validSegmentIds, validLinkIds);
+            }, 50);
         }
 
         function displaySegments(validation) {
@@ -1036,7 +1240,10 @@
                     </span>` : '';
 
                 return `
-                    <div class="segment-item" onclick="selectSegment('${seg.segment_objid}')" 
+                    <div class="segment-item" 
+                         onclick="selectSegment('${seg.segment_objid}')" 
+                         onmouseenter="highlightSegmentOnMap('${seg.segment_objid}')"
+                         onmouseleave="clearSegmentHighlight()"
                          data-segment-id="${seg.segment_objid}">
                         <strong>Segment ${seg.segment_objid}</strong> ${issueBadge}
                         <br>
@@ -1057,6 +1264,11 @@
         }
 
         function selectSegment(segmentObjid) {
+            // Clear hover highlight first
+            if (currentlyHoveredSegment) {
+                clearSegmentHighlight();
+            }
+            
             // Update selection in list
             document.querySelectorAll('.segment-item').forEach(item => {
                 item.classList.remove('selected');
@@ -1069,9 +1281,9 @@
             }
 
             // Highlight on map
-            segmentLayers.forEach(({ objid, layer }) => {
+            segmentLayers.forEach(({ objid, layer, originalStyle }) => {
                 if (String(objid) === String(segmentObjid)) {
-                    layer.setStyle({ weight: 8, opacity: 1.0 });
+                    layer.setStyle({ weight: 9, opacity: 1.0, color: '#2196f3' });  // Blue for selection, thicker than hover
                     layer.openPopup();
                     // Zoom to segment
                     const bounds = layer.getBounds();
@@ -1079,10 +1291,14 @@
                         map.fitBounds(bounds, { padding: [100, 100], maxZoom: 16 });
                     }
                 } else {
-                    // Reset other segments
-                    const status = getSegmentStatus(objid, currentValidation);
-                    const weight = status === 'error' ? 6 : status === 'warning' ? 5 : 4;
-                    layer.setStyle({ weight: weight, opacity: 0.9 });
+                    // Reset other segments to original style
+                    if (originalStyle) {
+                        layer.setStyle(originalStyle);
+                    } else {
+                        const status = getSegmentStatus(objid, currentValidation);
+                        const weight = status === 'error' ? 6 : status === 'warning' ? 5 : 4;
+                        layer.setStyle({ weight: weight, opacity: 0.9 });
+                    }
                 }
             });
 
@@ -1200,13 +1416,26 @@
         }
 
         // Event listeners
+        // Debounce search to avoid too many API calls
+        let searchTimeout = null;
         document.getElementById('routeSearchInput').addEventListener('input', (e) => {
             const query = e.target.value.trim();
-            if (query.length >= 2) {
-                performRouteSearch(query);
-            } else {
-                document.getElementById('routeSearchResults').classList.remove('active');
+            
+            // Clear previous timeout
+            if (searchTimeout) {
+                clearTimeout(searchTimeout);
             }
+            
+            // If empty, show all routes immediately
+            if (query.length === 0) {
+                performRouteSearch('');
+                return;
+            }
+            
+            // For non-empty queries, debounce with 300ms delay
+            searchTimeout = setTimeout(() => {
+                performRouteSearch(query);
+            }, 300);
         });
 
         document.getElementById('routeSearchInput').addEventListener('keypress', (e) => {
@@ -1224,31 +1453,40 @@
             }
         });
 
-        // Segment toggle
-        const showSegmentsToggle = document.getElementById('showSegmentsToggle');
-        if (showSegmentsToggle) {
-            showSegmentsToggle.addEventListener('change', (e) => {
-                showSegments = e.target.checked;
-                if (showSegments && segmentData && currentValidation) {
+        // Layer control toggle handling (mutually exclusive: segments or links, not both)
+        map.on('overlayadd', function(e) {
+            if (e.layer === segmentLayerGroup) {
+                // Segments activated - deactivate links
+                showSegments = true;
+                if (linkLayerGroup && map.hasLayer(linkLayerGroup)) {
+                    map.removeLayer(linkLayerGroup);
+                    showLinks = false;
+                }
+                // Ensure segments are loaded
+                if (segmentLayers.length === 0 && segmentData && currentValidation) {
                     displaySegmentsOnMap(segmentData, currentValidation);
-                } else {
-                    clearSegments();
                 }
-            });
-        }
-
-        // Link toggle
-        const showLinksToggle = document.getElementById('showLinksToggle');
-        if (showLinksToggle) {
-            showLinksToggle.addEventListener('change', (e) => {
-                showLinks = e.target.checked;
-                if (showLinks && linkData && currentValidation) {
+            } else if (e.layer === linkLayerGroup) {
+                // Links activated - deactivate segments
+                showLinks = true;
+                if (segmentLayerGroup && map.hasLayer(segmentLayerGroup)) {
+                    map.removeLayer(segmentLayerGroup);
+                    showSegments = false;
+                }
+                // Ensure links are loaded
+                if (linkLayers.length === 0 && linkData && currentValidation) {
                     displayLinksOnMap(linkData, currentValidation);
-                } else {
-                    clearLinks();
                 }
-            });
-        }
+            }
+        });
+
+        map.on('overlayremove', function(e) {
+            if (e.layer === segmentLayerGroup) {
+                showSegments = false;
+            } else if (e.layer === linkLayerGroup) {
+                showLinks = false;
+            }
+        });
 
         // Close search results when clicking outside
         document.addEventListener('click', (e) => {
@@ -1288,8 +1526,79 @@
             });
         }
 
-        // Make selectSegment available globally
+        // Segment hover highlighting functions
+        function highlightSegmentOnMap(segmentObjid) {
+            // Clear any pending timeout
+            if (segmentHoverHighlightTimeout) {
+                clearTimeout(segmentHoverHighlightTimeout);
+            }
+            
+            // Small delay to prevent flickering
+            segmentHoverHighlightTimeout = setTimeout(() => {
+                // Clear previous hover highlight
+                if (currentlyHoveredSegment) {
+                    clearSegmentHighlight();
+                }
+                
+                // Ensure segments are loaded and visible
+                if (segmentLayers.length === 0 && segmentData && currentValidation) {
+                    displaySegmentsOnMap(segmentData, currentValidation);
+                }
+                if (segmentLayerGroup && !map.hasLayer(segmentLayerGroup)) {
+                    map.addLayer(segmentLayerGroup);
+                    if (linkLayerGroup && map.hasLayer(linkLayerGroup)) {
+                        map.removeLayer(linkLayerGroup);
+                    }
+                }
+                
+                // Highlight the segment
+                segmentLayers.forEach(({ objid, layer, originalStyle }) => {
+                    if (String(objid) === String(segmentObjid)) {
+                        layer.setStyle({
+                            color: '#00ff00',  // Green highlight for hover
+                            weight: 8,  // Thicker than normal
+                            opacity: 1.0
+                        });
+                        layer.bringToFront();
+                        currentlyHoveredSegment = String(segmentObjid);
+                    }
+                });
+            }, 50);
+        }
+
+        function clearSegmentHighlight() {
+            // Clear timeout if mouse leaves before delay completes
+            if (segmentHoverHighlightTimeout) {
+                clearTimeout(segmentHoverHighlightTimeout);
+                segmentHoverHighlightTimeout = null;
+            }
+            
+            // Clear highlight after a small delay
+            setTimeout(() => {
+                if (currentlyHoveredSegment) {
+                    segmentLayers.forEach(({ objid, layer, originalStyle, status }) => {
+                        if (String(objid) === currentlyHoveredSegment) {
+                            // Re-apply original style or status-based style
+                            if (originalStyle) {
+                                layer.setStyle(originalStyle);
+                            } else {
+                                // Fallback: re-apply based on status
+                                const weight = status === 'error' ? 6 : status === 'warning' ? 5 : 4;
+                                layer.setStyle({ weight: weight, opacity: 0.9 });
+                            }
+                        }
+                    });
+                    currentlyHoveredSegment = null;
+                }
+            }, 100);
+        }
+
+        // Make selectSegment and hover handlers available globally
         window.selectSegment = selectSegment;
+        window.handleIssueHover = handleIssueHover;
+        window.handleIssueLeave = handleIssueLeave;
+        window.highlightSegmentOnMap = highlightSegmentOnMap;
+        window.clearSegmentHighlight = clearSegmentHighlight;
     </script>
 </body>
 </html>
