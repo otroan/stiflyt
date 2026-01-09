@@ -564,13 +564,26 @@
                 `;
 
                 if (segmentMeta) {
+                    // Extract unique rutenummer from fotruteinfo_rows
+                    const uniqueRutenummer = [...new Set(segmentMeta.fotruteinfo_rows.map(row => row.rutenummer).filter(r => r))];
+                    const isShared = uniqueRutenummer.length > 1 || (uniqueRutenummer.length === 1 && uniqueRutenummer[0] !== currentRoute?.rutenummer);
+                    
                     popupContent += `
                         <table style="font-size: 0.9em; width: 100%;">
                             <tr><td><strong>Lengde:</strong></td><td>${segmentMeta.length_meters !== null ? `${segmentMeta.length_meters.toFixed(1)} m` : 'N/A'}</td></tr>
                             <tr><td><strong>Fotruteinfo-rader:</strong></td><td>${segmentMeta.fotruteinfo_count}</td></tr>
                         </table>
                         <br>
-                        <strong>Metadata:</strong><br>
+                        <strong>Ruter som bruker dette segmentet:</strong><br>
+                        <div style="margin-top: 4px; padding: 4px; background: ${isShared ? '#fff3cd' : '#d4edda'}; border-radius: 4px; font-size: 0.9em;">
+                            ${uniqueRutenummer.length > 0 ? uniqueRutenummer.map(rutenummer => {
+                                const isCurrent = rutenummer === currentRoute?.rutenummer;
+                                return `<span style="display: inline-block; margin: 2px 4px; padding: 2px 6px; background: ${isCurrent ? '#2196f3' : '#6c757d'}; color: white; border-radius: 3px; font-weight: bold;">${rutenummer}${isCurrent ? ' (nåværende)' : ''}</span>`;
+                            }).join('') : 'Ingen ruter'}
+                            ${isShared ? '<br><small style="color: #856404;">⚠️ Delt av flere ruter</small>' : '<br><small style="color: #155724;">✓ Kun denne ruten</small>'}
+                        </div>
+                        <br>
+                        <strong>Metadata (fra nåværende rute):</strong><br>
                     `;
 
                     segmentMeta.fotruteinfo_rows.forEach((row, idx) => {
@@ -612,7 +625,78 @@
                         opacity: 0.9
                     },
                     onEachFeature: function(feature, layer) {
+                        // Bind popup with initial content
                         layer.bindPopup(popupContent);
+                        
+                        // Load all routes for this segment asynchronously and update popup
+                        (async () => {
+                            try {
+                                const routesResponse = await apiRequest(`/api/v1/segments/${segmentObjid}/routes`);
+                                if (routesResponse.ok) {
+                                    const routesData = await routesResponse.json();
+                                    const allRoutes = routesData.routes || [];
+                                    
+                                    // Group by rutenummer
+                                    const routesByNumber = {};
+                                    allRoutes.forEach(route => {
+                                        const rutenummer = route.rutenummer;
+                                        if (!routesByNumber[rutenummer]) {
+                                            routesByNumber[rutenummer] = {
+                                                rutenummer: rutenummer,
+                                                rutenavn: route.rutenavn,
+                                                vedlikeholdsansvarlig: route.vedlikeholdsansvarlig,
+                                                count: 0
+                                            };
+                                        }
+                                        routesByNumber[rutenummer].count++;
+                                    });
+                                    
+                                    const uniqueRoutes = Object.values(routesByNumber);
+                                    const isShared = uniqueRoutes.length > 1 || (uniqueRoutes.length === 1 && uniqueRoutes[0].rutenummer !== currentRoute?.rutenummer);
+                                    
+                                    // Update popup content with all routes
+                                    const updatedPopupContent = `
+                                        <div style="min-width: 250px;">
+                                            <strong>Segment ${segmentObjid}</strong>
+                                            ${status === 'error' ? ' <span style="color: #e74c3c;">⚠️</span>' : ''}
+                                            ${status === 'warning' ? ' <span style="color: #f39c12;">⚠️</span>' : ''}
+                                            <br><br>
+                                            <table style="font-size: 0.9em; width: 100%;">
+                                                <tr><td><strong>Lengde:</strong></td><td>${segmentMeta ? (segmentMeta.length_meters !== null ? `${segmentMeta.length_meters.toFixed(1)} m` : 'N/A') : 'N/A'}</td></tr>
+                                                <tr><td><strong>Fotruteinfo-rader:</strong></td><td>${segmentMeta ? segmentMeta.fotruteinfo_count : 'N/A'}</td></tr>
+                                            </table>
+                                            <br>
+                                            <strong>Alle ruter som bruker dette segmentet (${uniqueRoutes.length}):</strong><br>
+                                            <div style="margin-top: 4px; padding: 6px; background: ${isShared ? '#fff3cd' : '#d4edda'}; border-radius: 4px; font-size: 0.9em;">
+                                                ${uniqueRoutes.length > 0 ? uniqueRoutes.map(route => {
+                                                    const isCurrent = route.rutenummer === currentRoute?.rutenummer;
+                                                    return `<div style="margin: 2px 0;">
+                                                        <span style="display: inline-block; padding: 2px 6px; background: ${isCurrent ? '#2196f3' : '#6c757d'}; color: white; border-radius: 3px; font-weight: bold;">${route.rutenummer}${isCurrent ? ' (nåværende)' : ''}</span>
+                                                        ${route.rutenavn ? ` <small>${route.rutenavn}</small>` : ''}
+                                                        ${route.count > 1 ? ` <small style="color: #666;">(${route.count} rader)</small>` : ''}
+                                                    </div>`;
+                                                }).join('') : 'Ingen ruter'}
+                                                ${isShared ? '<div style="margin-top: 4px; color: #856404; font-weight: bold;">⚠️ Delt av flere ruter</div>' : '<div style="margin-top: 4px; color: #155724; font-weight: bold;">✓ Kun denne ruten</div>'}
+                                            </div>
+                                            <br>
+                                            <small style="color: #666;">Klikk for å se detaljer i sidebar</small>
+                                        </div>
+                                    `;
+                                    
+                                    // Update popup if it's still open
+                                    if (layer.isPopupOpen()) {
+                                        layer.setPopupContent(updatedPopupContent);
+                                    } else {
+                                        // Update the bound popup content for next time
+                                        layer.bindPopup(updatedPopupContent);
+                                    }
+                                }
+                            } catch (error) {
+                                console.error('Error loading all routes for segment popup:', error);
+                                // Keep original popup content on error
+                            }
+                        })();
+                        
                         layer.on('click', () => {
                             selectSegment(String(segmentObjid));
                         });
@@ -1308,15 +1392,23 @@
                     s => s.segment_objid === segmentObjid
                 );
                 if (segment) {
-                    displaySegmentDetails(segment);
-                    // Switch to details tab
-                    document.querySelector('.tab[data-tab="details"]').click();
+                    displaySegmentDetails(segment).then(() => {
+                        // Switch to details tab after details are loaded
+                        document.querySelector('.tab[data-tab="details"]').click();
+                    }).catch(error => {
+                        console.error('Error displaying segment details:', error);
+                        // Switch to details tab anyway
+                        document.querySelector('.tab[data-tab="details"]').click();
+                    });
                 }
             }
         }
 
-        function displaySegmentDetails(segment) {
+        async function displaySegmentDetails(segment) {
             const content = document.getElementById('detailsContent');
+            
+            // Show loading state
+            content.innerHTML = '<p>Laster segmentdetaljer...</p>';
 
             // Find segment in API data for additional info
             const apiSegment = segmentData && segmentData.segments ? 
@@ -1337,16 +1429,57 @@
                 '<span class="validation-status status-warning">ADVARSEL</span>' :
                 '<span class="validation-status status-ok">OK</span>';
 
-            const metadataRows = segment.fotruteinfo_rows.map((row, idx) => `
-                <tr>
-                    <td>Rad ${idx + 1}</td>
-                    <td>${row.rutenummer || '-'}</td>
-                    <td>${row.rutenavn || '-'}</td>
-                    <td>${row.vedlikeholdsansvarlig || '-'}</td>
-                    <td>${row.rutetype || '-'}</td>
-                    <td>${row.gradering || '-'}</td>
+            // Fetch ALL routes for this segment (not just from current route)
+            let allRoutes = [];
+            try {
+                const routesResponse = await apiRequest(`/api/v1/segments/${segment.segment_objid}/routes`);
+                if (routesResponse.ok) {
+                    const routesData = await routesResponse.json();
+                    allRoutes = routesData.routes || [];
+                }
+            } catch (error) {
+                console.error('Error fetching all routes for segment:', error);
+                // Fall back to showing only routes from current validation
+                allRoutes = segment.fotruteinfo_rows || [];
+            }
+
+            // Group routes by rutenummer (deduplicate)
+            const routesByNumber = {};
+            allRoutes.forEach(route => {
+                const rutenummer = route.rutenummer;
+                if (!routesByNumber[rutenummer]) {
+                    routesByNumber[rutenummer] = {
+                        rutenummer: rutenummer,
+                        rutenavn: route.rutenavn,
+                        vedlikeholdsansvarlig: route.vedlikeholdsansvarlig,
+                        rutetype: route.rutetype,
+                        gradering: route.gradering,
+                        fotruteinfo_objids: []
+                    };
+                }
+                if (route.fotruteinfo_objid) {
+                    routesByNumber[rutenummer].fotruteinfo_objids.push(route.fotruteinfo_objid);
+                }
+            });
+
+            const uniqueRoutes = Object.values(routesByNumber);
+            const isShared = uniqueRoutes.length > 1 || (uniqueRoutes.length === 1 && uniqueRoutes[0].rutenummer !== currentRoute?.rutenummer);
+            
+            const metadataRows = uniqueRoutes.map((route, idx) => {
+                const isCurrentRoute = route.rutenummer === currentRoute?.rutenummer;
+                const rowStyle = isCurrentRoute ? 'background-color: #e3f2fd;' : '';
+                return `
+                <tr style="${rowStyle}">
+                    <td>${idx + 1}</td>
+                    <td><strong>${route.rutenummer || '-'}</strong>${isCurrentRoute ? ' <small>(nåværende rute)</small>' : ''}</td>
+                    <td>${route.rutenavn || '-'}</td>
+                    <td>${route.vedlikeholdsansvarlig || '-'}</td>
+                    <td>${route.rutetype || '-'}</td>
+                    <td>${route.gradering || '-'}</td>
+                    <td>${route.fotruteinfo_objids.length} rad(er)</td>
                 </tr>
-            `).join('');
+            `;
+            }).join('');
 
             const errorsHtml = segmentErrors.length > 0 ? `
                 <h4 style="color: #e74c3c; margin-top: 16px;">Feil (${segmentErrors.length})</h4>
@@ -1394,16 +1527,18 @@
                     </tr>
                     ` : ''}
                 </table>
-                <h4>Fotruteinfo-rader:</h4>
+                <h4>Alle ruter som bruker dette segmentet (${uniqueRoutes.length}):</h4>
+                ${isShared ? '<p style="color: #f39c12; font-weight: bold;">⚠️ Dette segmentet deles av flere ruter!</p>' : '<p style="color: #2ecc71;">✓ Dette segmentet tilhører kun denne ruten.</p>'}
                 <table class="metadata-table">
                     <thead>
                         <tr>
-                            <th>Rad</th>
+                            <th>#</th>
                             <th>Rutenummer</th>
                             <th>Rutenavn</th>
                             <th>Vedlikeholdsansvarlig</th>
                             <th>Rutetype</th>
                             <th>Gradering</th>
+                            <th>Fotruteinfo-rader</th>
                         </tr>
                     </thead>
                     <tbody>

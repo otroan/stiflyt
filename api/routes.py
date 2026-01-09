@@ -1196,3 +1196,95 @@ async def validate_route(
             status_code=500,
             detail=f"Error validating route: {str(e)}"
         )
+
+
+@router.get("/segments/{segment_objid}/routes", responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_segment_routes(
+    segment_objid: int
+):
+    """
+    Get all rutenummer (route numbers) that use a specific segment.
+    
+    This endpoint returns all routes that share the same segment, which is useful
+    for understanding if a segment is used by multiple routes or only one.
+    
+    Example:
+    - /api/v1/segments/12345/routes
+    
+    Returns:
+    - List of route information (rutenummer, rutenavn, vedlikeholdsansvarlig) for all routes using this segment
+    - 404 if segment not found
+    """
+    try:
+        with db_connection() as conn:
+            schema_quoted = quote_identifier(ROUTE_SCHEMA)
+            
+            # First verify segment exists
+            segment_check_query = f"""
+                SELECT objid
+                FROM {schema_quoted}.fotrute
+                WHERE objid = %s
+                LIMIT 1
+            """
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(segment_check_query, (segment_objid,))
+                segment_exists = cur.fetchone()
+                
+            if not segment_exists:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Segment with objid '{segment_objid}' not found"
+                )
+            
+            # Get all routes for this segment
+            routes_query = f"""
+                SELECT DISTINCT
+                    fi.rutenummer,
+                    fi.rutenavn,
+                    fi.vedlikeholdsansvarlig,
+                    fi.rutetype,
+                    fi.gradering,
+                    fi.objid as fotruteinfo_objid
+                FROM {schema_quoted}.fotruteinfo fi
+                WHERE fi.fotrute_fk = %s
+                ORDER BY fi.rutenummer
+            """
+            
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(routes_query, (segment_objid,))
+                route_rows = cur.fetchall()
+            
+            if not route_rows:
+                # Segment exists but has no routes (shouldn't happen, but handle gracefully)
+                return {
+                    "segment_objid": segment_objid,
+                    "routes": [],
+                    "total": 0
+                }
+            
+            routes = []
+            for row in route_rows:
+                routes.append({
+                    "rutenummer": row["rutenummer"],
+                    "rutenavn": row.get("rutenavn"),
+                    "vedlikeholdsansvarlig": row.get("vedlikeholdsansvarlig"),
+                    "rutetype": row.get("rutetype"),
+                    "gradering": row.get("gradering"),
+                    "fotruteinfo_objid": row["fotruteinfo_objid"]
+                })
+            
+            return {
+                "segment_objid": segment_objid,
+                "routes": routes,
+                "total": len(routes)
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting routes for segment: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting routes for segment: {str(e)}"
+        )
