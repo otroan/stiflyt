@@ -208,3 +208,49 @@ class RouteLinksResponse(BaseModel):
     links: List[RouteLink]
     total: int
 
+
+# Validation schemas
+class ValidationIssue(BaseModel):
+    """A single validation issue."""
+    type: str
+    message: str
+    severity: str  # 'error' | 'warning' | 'info'
+    affected_segments: Optional[List[str]] = None
+    affected_links: Optional[List[int]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class SegmentMetadata(BaseModel):
+    """Metadata for a route segment."""
+    segment_objid: str
+    length_meters: Optional[float] = None
+    fotruteinfo_count: int
+    fotruteinfo_rows: List[Dict[str, Any]]
+
+
+class ValidationSummary(BaseModel):
+    """Summary of validation results."""
+    total_segments: int
+    total_fotruteinfo_rows: int
+    total_links: int
+    error_count: int
+    warning_count: int
+    geometry_error_count: int
+    geometry_warning_count: int
+    rutenavn_values: Optional[List[str]] = None
+    vedlikeholdsansvarlig_values: Optional[List[str]] = None
+    rutetype_values: Optional[List[str]] = None
+    gradering_values: Optional[List[str]] = None
+
+
+class RouteValidationResponse(BaseModel):
+    """Response for route validation."""
+    rutenummer: str
+    segment_count: int
+    link_count: int
+    status: str  # 'OK' | 'WARNING' | 'ERROR'
+    errors: List[ValidationIssue]
+    warnings: List[ValidationIssue]
+    geometry_info: List[ValidationIssue]
+    segment_metadata: List[SegmentMetadata]
+    summary: ValidationSummary

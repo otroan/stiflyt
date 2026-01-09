@@ -70,6 +70,11 @@ Examples:
   %(prog)s --validate bre10
   %(prog)s --validate bre10 --format json
 
+  # List routes with multilinestring_reason
+  %(prog)s --list-multilinestring-reasons
+  %(prog)s --list-multilinestring-reasons --reason-filter disconnected_components
+  %(prog)s --list-multilinestring-reasons --format json
+
   # Test ruteinfopunkt lookup (debug)
   %(prog)s --test-ruteinfopunkt 7.710764899 61.809237843 --rutenummer bre9
         """
@@ -232,6 +237,17 @@ Examples:
         metavar='RUTENUMMER',
         help='Validate route segment metadata for consistency and correctness'
     )
+    parser.add_argument(
+        '--list-multilinestring-reasons',
+        action='store_true',
+        help='List all routes with their multilinestring_reason values from route_continuous_geometries'
+    )
+    parser.add_argument(
+        '--reason-filter',
+        type=str,
+        metavar='REASON',
+        help='Filter routes by multilinestring_reason value (used with --list-multilinestring-reasons). Valid values: single_linestring, link_is_multilinestring, loop_or_branch, precision_gap, disconnected_components, traversal_issue'
+    )
 
     # Debug/test options
     parser.add_argument(
@@ -377,9 +393,211 @@ Examples:
 
         sys.exit(0)
 
+    # Handle list multilinestring reasons mode
+    if args.list_multilinestring_reasons:
+        from services.database import db_connection, ROUTE_SCHEMA, quote_identifier, validate_schema_name
+        from psycopg.rows import dict_row
+        
+        try:
+            with db_connection() as conn:
+                if not validate_schema_name(ROUTE_SCHEMA):
+                    print(f"Error: Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}", file=sys.stderr)
+                    sys.exit(1)
+                
+                schema_quoted = quote_identifier(ROUTE_SCHEMA)
+                
+                # Check if table exists
+                with conn.cursor(row_factory=dict_row) as cur:
+                    table_check_query = """
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_schema = %s
+                              AND table_name = 'route_continuous_geometries'
+                        ) as table_exists
+                    """
+                    cur.execute(table_check_query, (ROUTE_SCHEMA,))
+                    table_exists_row = cur.fetchone()
+                    table_exists = table_exists_row.get('table_exists') if table_exists_row else False
+                    
+                    if not table_exists:
+                        print(f"Error: route_continuous_geometries table does not exist in schema {ROUTE_SCHEMA}.", file=sys.stderr)
+                        print("       This table is created by build-links. Please run build-links first.", file=sys.stderr)
+                        sys.exit(1)
+                    
+                    # Check if column exists
+                    column_check_query = """
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = %s
+                              AND table_name = 'route_continuous_geometries'
+                              AND column_name = 'multilinestring_reason'
+                        ) as column_exists
+                    """
+                    cur.execute(column_check_query, (ROUTE_SCHEMA,))
+                    column_exists_row = cur.fetchone()
+                    column_exists = column_exists_row.get('column_exists') if column_exists_row else False
+                    
+                    if not column_exists:
+                        print(f"Warning: multilinestring_reason column does not exist in route_continuous_geometries.", file=sys.stderr)
+                        print("         This column was added in a recent version. Please run build-links with the latest version.", file=sys.stderr)
+                        sys.exit(1)
+                    
+                    # Build query - prioritize routes with non-single_linestring reasons
+                    valid_reasons = {
+                        'single_linestring',
+                        'link_is_multilinestring',
+                        'loop_or_branch',
+                        'precision_gap',
+                        'disconnected_components',
+                        'traversal_issue'
+                    }
+                    
+                    if args.reason_filter:
+                        if args.reason_filter not in valid_reasons:
+                            print(f"Error: Invalid reason filter '{args.reason_filter}'. Valid values: {', '.join(sorted(valid_reasons))}", file=sys.stderr)
+                            sys.exit(1)
+                        reason_filter = args.reason_filter
+                    else:
+                        reason_filter = None
+                    
+                    # Query routes - prioritize non-single_linestring if no filter
+                    if reason_filter:
+                        query = f"""
+                            SELECT
+                                rutenummer,
+                                continuous_geometry,
+                                multilinestring_reason,
+                                ST_GeometryType(continuous_geometry) as geom_type,
+                                ST_NumGeometries(continuous_geometry) as num_geoms
+                            FROM {schema_quoted}.route_continuous_geometries
+                            WHERE continuous_geometry IS NOT NULL
+                              AND multilinestring_reason = %s
+                            ORDER BY rutenummer
+                        """
+                        cur.execute(query, (reason_filter,))
+                    else:
+                        # Get routes with non-single_linestring first, then others
+                        query = f"""
+                            (
+                                SELECT
+                                    rutenummer,
+                                    continuous_geometry,
+                                    multilinestring_reason,
+                                    ST_GeometryType(continuous_geometry) as geom_type,
+                                    ST_NumGeometries(continuous_geometry) as num_geoms
+                                FROM {schema_quoted}.route_continuous_geometries
+                                WHERE continuous_geometry IS NOT NULL
+                                  AND multilinestring_reason != 'single_linestring'
+                                ORDER BY rutenummer
+                            )
+                            UNION ALL
+                            (
+                                SELECT
+                                    rutenummer,
+                                    continuous_geometry,
+                                    multilinestring_reason,
+                                    ST_GeometryType(continuous_geometry) as geom_type,
+                                    ST_NumGeometries(continuous_geometry) as num_geoms
+                                FROM {schema_quoted}.route_continuous_geometries
+                                WHERE continuous_geometry IS NOT NULL
+                                  AND multilinestring_reason = 'single_linestring'
+                                ORDER BY rutenummer
+                            )
+                        """
+                        cur.execute(query)
+                    
+                    routes = cur.fetchall()
+                    
+                    if not routes:
+                        print("No routes found in route_continuous_geometries.")
+                        if reason_filter:
+                            print(f"  (filtered by reason: {reason_filter})")
+                        sys.exit(0)
+                    
+                    # Count reasons
+                    reason_counts = {}
+                    for route in routes:
+                        reason = route.get('multilinestring_reason')
+                        if reason:
+                            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                    
+                    # Output based on format
+                    if args.format == 'json':
+                        import json
+                        output = {
+                            'total_routes': len(routes),
+                            'reason_distribution': reason_counts,
+                            'routes': [
+                                {
+                                    'rutenummer': r['rutenummer'],
+                                    'multilinestring_reason': r.get('multilinestring_reason'),
+                                    'geom_type': r.get('geom_type'),
+                                    'num_geoms': r.get('num_geoms')
+                                }
+                                for r in routes
+                            ]
+                        }
+                        print(json.dumps(output, indent=2, ensure_ascii=False))
+                    else:
+                        # Human-readable format
+                        print("=" * 80)
+                        print("ROUTES WITH MULTILINESTRING REASON")
+                        print("=" * 80)
+                        print(f"Total routes: {len(routes)}")
+                        if reason_filter:
+                            print(f"Filtered by reason: {reason_filter}")
+                        print()
+                        
+                        print("Reason distribution:")
+                        print("-" * 80)
+                        for reason in sorted(valid_reasons):
+                            count = reason_counts.get(reason, 0)
+                            if count > 0:
+                                percentage = (count / len(routes)) * 100
+                                print(f"  {reason:30s}: {count:4d} route(s) ({percentage:5.1f}%)")
+                        print()
+                        
+                        print("Routes:")
+                        print("-" * 80)
+                        for route in routes:
+                            reason = route.get('multilinestring_reason')
+                            geom_type = route.get('geom_type')
+                            num_geoms = route.get('num_geoms', 1)
+                            print(f"  {route['rutenummer']:15s} | {reason:30s} | {geom_type:20s} | {num_geoms} part(s)")
+                        print()
+                        
+                        # Show all routes with issues
+                        problematic_routes = [r for r in routes if r.get('multilinestring_reason') != 'single_linestring']
+                        if problematic_routes:
+                            print(f"Routes with issues (non-single_linestring): {len(problematic_routes)}")
+                            print("-" * 80)
+                            for route in problematic_routes:  # Show all
+                                reason = route.get('multilinestring_reason')
+                                geom_type = route.get('geom_type')
+                                num_geoms = route.get('num_geoms', 1)
+                                reason_descriptions = {
+                                    'link_is_multilinestring': 'Individual link is already MultiLineString',
+                                    'loop_or_branch': 'Route has loops or branches',
+                                    'precision_gap': 'Small gaps (< 1cm) due to floating point precision',
+                                    'disconnected_components': 'Large gaps (e.g., lakes, rivers)',
+                                    'traversal_issue': 'Traversal issue (unknown cause)'
+                                }
+                                reason_desc = reason_descriptions.get(reason, reason)
+                                print(f"  {route['rutenummer']:15s} | {reason:30s} | {reason_desc}")
+                            print()
+        
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+        
+        sys.exit(0)
+
     # Handle validation mode
     if args.validate:
         from services.database import db_connection, ROUTE_SCHEMA, quote_identifier, validate_schema_name
+        from services.validators import get_validator_registry
         from psycopg.rows import dict_row
         from collections import defaultdict
 
@@ -426,16 +644,10 @@ Examples:
 
                 segments = list(segments_dict.values())  # List of lists, each inner list is fotruteinfo rows for one segment
 
-                # Validate metadata consistency
-                errors = []
-                warnings = []
-
-                # First, dump all segment metadata
+                # Prepare segment metadata dump for output
                 segment_metadata_dump = []
                 for segment_objid, fotruteinfo_rows in sorted(segments_dict.items()):
-                    # Get length from first row (should be same for all rows of same segment)
                     segment_length = fotruteinfo_rows[0].get('length_meters') if fotruteinfo_rows else None
-
                     segment_metadata_dump.append({
                         'segment_objid': segment_objid,
                         'length_meters': float(segment_length) if segment_length is not None else None,
@@ -453,130 +665,45 @@ Examples:
                         ]
                     })
 
-                # Collect all values across all segments and fotruteinfo rows
-                all_rutenummer = []
+                # Prepare route data for validators
+                route_data = {
+                    'rutenummer': rutenummer,
+                    'segments_dict': segments_dict,
+                    'all_rows': all_rows,
+                }
+
+                # Run validators
+                registry = get_validator_registry()
+                validation_result = registry.run_validators(route_data, conn)
+
+                # Convert ValidationResult to old format for compatibility
+                errors = [issue.to_dict() for issue in validation_result.errors]
+                warnings = [issue.to_dict() for issue in validation_result.warnings]
+                geometry_info = [issue.to_dict() for issue in validation_result.info]
+
+                # Get link count for summary (from validation result metadata if available)
+                link_count = validation_result.metadata.get('link_count', 0)
+                if link_count == 0:
+                    # Fallback: query directly
+                    link_count_query = f"""
+                        SELECT COUNT(DISTINCT lwr.link_id) as link_count
+                        FROM {schema_quoted}.links_with_routes lwr
+                        WHERE %s = ANY(lwr.rutenummer_list)
+                    """
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(link_count_query, (rutenummer,))
+                        link_count_row = cur.fetchone()
+                        link_count = link_count_row.get('link_count', 0) if link_count_row else 0
+
+                # Extract summary values from validation result metadata
+                # Collect unique values for summary
                 all_rutenavn = []
                 all_vedlikeholdsansvarlig = []
                 all_rutetype = []
                 all_gradering = []
-
-                # Track segments missing fields for summary warnings
-                segments_missing_rutenavn = []
-                segments_missing_vedlikeholdsansvarlig = []
-
-                # Track which segments have which values (for inconsistency warnings)
-                rutenavn_by_segment = {}  # value -> [segment_objids]
-                vedlikeholdsansvarlig_by_segment = {}  # value -> [segment_objids]
-                rutetype_by_segment = {}  # value -> [segment_objids]
-                gradering_by_segment = {}  # value -> [segment_objids]
-
-                # Check for duplicates WITHIN each segment and collect values
+                
                 for segment_objid, fotruteinfo_rows in segments_dict.items():
-                    # Check for duplicate values within each field for this segment
-                    segment_rutenavn = [r.get('rutenavn') for r in fotruteinfo_rows if r.get('rutenavn')]
-                    segment_vedlikeholdsansvarlig = [r.get('vedlikeholdsansvarlig') for r in fotruteinfo_rows if r.get('vedlikeholdsansvarlig')]
-                    segment_rutetype = [r.get('rutetype') for r in fotruteinfo_rows if r.get('rutetype')]
-                    segment_gradering = [r.get('gradering') for r in fotruteinfo_rows if r.get('gradering')]
-
-                    # Track missing fields for this segment
-                    has_rutenavn = len(segment_rutenavn) > 0
-                    has_vedlikeholdsansvarlig = len(segment_vedlikeholdsansvarlig) > 0
-
-                    if not has_rutenavn:
-                        segments_missing_rutenavn.append(segment_objid)
-                    if not has_vedlikeholdsansvarlig:
-                        segments_missing_vedlikeholdsansvarlig.append(segment_objid)
-
-                    # Track which segments have which values (use first non-null value if multiple)
-                    if segment_rutenavn:
-                        val = segment_rutenavn[0]  # Use first value if multiple
-                        if val not in rutenavn_by_segment:
-                            rutenavn_by_segment[val] = []
-                        rutenavn_by_segment[val].append(segment_objid)
-
-                    if segment_vedlikeholdsansvarlig:
-                        val = segment_vedlikeholdsansvarlig[0]
-                        if val not in vedlikeholdsansvarlig_by_segment:
-                            vedlikeholdsansvarlig_by_segment[val] = []
-                        vedlikeholdsansvarlig_by_segment[val].append(segment_objid)
-
-                    if segment_rutetype:
-                        val = segment_rutetype[0]
-                        if val not in rutetype_by_segment:
-                            rutetype_by_segment[val] = []
-                        rutetype_by_segment[val].append(segment_objid)
-
-                    if segment_gradering:
-                        val = segment_gradering[0]
-                        if val not in gradering_by_segment:
-                            gradering_by_segment[val] = []
-                        gradering_by_segment[val].append(segment_objid)
-
-                    # Check for duplicates in rutenavn within this segment (only if multiple rows)
-                    if len(fotruteinfo_rows) > 1:
-                        rutenavn_counts = {}
-                        for val in segment_rutenavn:
-                            rutenavn_counts[val] = rutenavn_counts.get(val, 0) + 1
-                        for val, count in rutenavn_counts.items():
-                            if count > 1:
-                                errors.append({
-                                    'type': 'DUPLICATE_RUTENAVN_IN_SEGMENT',
-                                    'message': f'Segment {segment_objid} has duplicate rutenavn "{val}" ({count} times) in its fotruteinfo rows',
-                                    'severity': 'error',
-                                    'segment_objid': segment_objid,
-                                    'value': val,
-                                    'count': count
-                                })
-
-                        # Check for duplicates in vedlikeholdsansvarlig within this segment
-                        vedlikeholdsansvarlig_counts = {}
-                        for val in segment_vedlikeholdsansvarlig:
-                            vedlikeholdsansvarlig_counts[val] = vedlikeholdsansvarlig_counts.get(val, 0) + 1
-                        for val, count in vedlikeholdsansvarlig_counts.items():
-                            if count > 1:
-                                errors.append({
-                                    'type': 'DUPLICATE_VEDLIKEHOLDSANSVARLIG_IN_SEGMENT',
-                                    'message': f'Segment {segment_objid} has duplicate vedlikeholdsansvarlig "{val}" ({count} times) in its fotruteinfo rows',
-                                    'severity': 'error',
-                                    'segment_objid': segment_objid,
-                                    'value': val,
-                                    'count': count
-                                })
-
-                        # Check for duplicates in rutetype within this segment
-                        rutetype_counts = {}
-                        for val in segment_rutetype:
-                            rutetype_counts[val] = rutetype_counts.get(val, 0) + 1
-                        for val, count in rutetype_counts.items():
-                            if count > 1:
-                                warnings.append({
-                                    'type': 'DUPLICATE_RUTETYPE_IN_SEGMENT',
-                                    'message': f'Segment {segment_objid} has duplicate rutetype "{val}" ({count} times) in its fotruteinfo rows',
-                                    'severity': 'warning',
-                                    'segment_objid': segment_objid,
-                                    'value': val,
-                                    'count': count
-                                })
-
-                        # Check for duplicates in gradering within this segment
-                        gradering_counts = {}
-                        for val in segment_gradering:
-                            gradering_counts[val] = gradering_counts.get(val, 0) + 1
-                        for val, count in gradering_counts.items():
-                            if count > 1:
-                                warnings.append({
-                                    'type': 'DUPLICATE_GRADERING_IN_SEGMENT',
-                                    'message': f'Segment {segment_objid} has duplicate gradering "{val}" ({count} times) in its fotruteinfo rows',
-                                    'severity': 'warning',
-                                    'segment_objid': segment_objid,
-                                    'value': val,
-                                    'count': count
-                                })
-
-                    # Collect values for cross-segment consistency checks
                     for row in fotruteinfo_rows:
-                        if row['rutenummer']:
-                            all_rutenummer.append(row['rutenummer'])
                         if row.get('rutenavn'):
                             all_rutenavn.append(row.get('rutenavn'))
                         if row.get('vedlikeholdsansvarlig'):
@@ -585,389 +712,13 @@ Examples:
                             all_rutetype.append(row.get('rutetype'))
                         if row.get('gradering'):
                             all_gradering.append(row.get('gradering'))
-
-                    # Check for missing required fields (rutenummer is always required)
-                    has_rutenummer = any(r['rutenummer'] for r in fotruteinfo_rows)
-
-                    if not has_rutenummer:
-                        errors.append({
-                            'type': 'MISSING_REQUIRED_FIELDS',
-                            'message': f'Segment {segment_objid} is missing required field: rutenummer',
-                            'severity': 'error',
-                            'segment_objid': segment_objid,
-                            'missing_fields': ['rutenummer']
-                        })
-
-                # Check 2: rutenummer consistency (all should be the same)
-                rutenummer_values = set(all_rutenummer)
-                if len(rutenummer_values) > 1:
-                    errors.append({
-                        'type': 'INCONSISTENT_RUTENUMMER',
-                        'message': f'Route has segments with different rutenummer values: {sorted(rutenummer_values)}',
-                        'severity': 'error',
-                        'values': sorted(rutenummer_values)
-                    })
-
-                # Check 3: rutenavn consistency across segments (it's EXPECTED to be the same)
-                rutenavn_values = set(all_rutenavn)
-
-                if len(rutenavn_values) > 1:
-                    # Build detailed message with segment IDs
-                    value_details = []
-                    for val in sorted(rutenavn_values):
-                        segment_ids = sorted(rutenavn_by_segment.get(val, []))
-                        value_details.append(f'"{val}" (segments: {segment_ids})')
-
-                    warnings.append({
-                        'type': 'INCONSISTENT_RUTENAVN',
-                        'message': f'Route has segments with different rutenavn values: {sorted(rutenavn_values)} (Expected: all segments should have the same rutenavn)',
-                        'severity': 'warning',
-                        'values': sorted(rutenavn_values),
-                        'value_by_segment': rutenavn_by_segment
-                    })
-
-                # Check for missing rutenavn (regardless of consistency)
-                if segments_missing_rutenavn:
-                    if len(rutenavn_values) == 0:
-                        # All segments are missing rutenavn
-                        warnings.append({
-                            'type': 'MISSING_RUTENAVN',
-                            'message': f'No segments have rutenavn set. Affected segments: {sorted(segments_missing_rutenavn)}',
-                            'severity': 'warning',
-                            'segment_objids': sorted(segments_missing_rutenavn)
-                        })
-                    else:
-                        # Some segments are missing rutenavn
-                        warnings.append({
-                            'type': 'MISSING_RUTENAVN_SOME_SEGMENTS',
-                            'message': f'Some segments are missing rutenavn. Affected segments: {sorted(segments_missing_rutenavn)}',
-                            'severity': 'warning',
-                            'segment_objids': sorted(segments_missing_rutenavn)
-                        })
-                elif len(rutenavn_values) == 0:
-                    # Edge case: no rutenavn values found but segments_missing_rutenavn is empty (shouldn't happen, but handle it)
-                    all_segment_objids = sorted(segments_dict.keys())
-                    warnings.append({
-                        'type': 'MISSING_RUTENAVN',
-                        'message': f'No segments have rutenavn set. All segments: {all_segment_objids}',
-                        'severity': 'warning',
-                        'segment_objids': all_segment_objids
-                    })
-
-                # Check 4: vedlikeholdsansvarlig consistency across segments
-                # Note: Different organizations for different segments might be OK, but we still report it
-                vedlikeholdsansvarlig_values = set(all_vedlikeholdsansvarlig)
-
-                if len(vedlikeholdsansvarlig_values) > 1:
-                    warnings.append({
-                        'type': 'INCONSISTENT_VEDLIKEHOLDSANSVARLIG',
-                        'message': f'Route has segments with different vedlikeholdsansvarlig values: {sorted(vedlikeholdsansvarlig_values)} (Note: Different organizations may be responsible for different segments - this may be expected)',
-                        'severity': 'warning',
-                        'values': sorted(vedlikeholdsansvarlig_values),
-                        'value_by_segment': vedlikeholdsansvarlig_by_segment
-                    })
-
-                # Check for missing vedlikeholdsansvarlig (regardless of consistency)
-                if segments_missing_vedlikeholdsansvarlig:
-                    if len(vedlikeholdsansvarlig_values) == 0:
-                        # All segments are missing vedlikeholdsansvarlig
-                        warnings.append({
-                            'type': 'MISSING_VEDLIKEHOLDSANSVARLIG',
-                            'message': f'No segments have vedlikeholdsansvarlig set. Affected segments: {sorted(segments_missing_vedlikeholdsansvarlig)}',
-                            'severity': 'warning',
-                            'segment_objids': sorted(segments_missing_vedlikeholdsansvarlig)
-                        })
-                    else:
-                        # Some segments are missing vedlikeholdsansvarlig
-                        warnings.append({
-                            'type': 'MISSING_VEDLIKEHOLDSANSVARLIG_SOME_SEGMENTS',
-                            'message': f'Some segments are missing vedlikeholdsansvarlig. Affected segments: {sorted(segments_missing_vedlikeholdsansvarlig)}',
-                            'severity': 'warning',
-                            'segment_objids': sorted(segments_missing_vedlikeholdsansvarlig)
-                        })
-                elif len(vedlikeholdsansvarlig_values) == 0:
-                    # Edge case: no vedlikeholdsansvarlig values found but segments_missing_vedlikeholdsansvarlig is empty
-                    all_segment_objids = sorted(segments_dict.keys())
-                    warnings.append({
-                        'type': 'MISSING_VEDLIKEHOLDSANSVARLIG',
-                        'message': f'No segments have vedlikeholdsansvarlig set. All segments: {all_segment_objids}',
-                        'severity': 'warning',
-                        'segment_objids': all_segment_objids
-                    })
-
-                # Check 5: rutetype consistency across segments (expected to be the same)
-                rutetype_values = set(all_rutetype)
-
-                if len(rutetype_values) > 1:
-                    warnings.append({
-                        'type': 'INCONSISTENT_RUTETYPE',
-                        'message': f'Route has segments with different rutetype values: {sorted(rutetype_values)} (Expected: all segments should have the same rutetype)',
-                        'severity': 'warning',
-                        'values': sorted(rutetype_values),
-                        'value_by_segment': rutetype_by_segment
-                    })
-
-                # Check 6: gradering consistency across segments (expected to be the same)
-                gradering_values = set(all_gradering)
-
-                if len(gradering_values) > 1:
-                    warnings.append({
-                        'type': 'INCONSISTENT_GRADERING',
-                        'message': f'Route has segments with different gradering values: {sorted(gradering_values)} (Expected: all segments should have the same gradering)',
-                        'severity': 'warning',
-                        'values': sorted(gradering_values),
-                        'value_by_segment': gradering_by_segment
-                    })
-
-                # ====================================================================
-                # GEOMETRY VALIDATION USING route_geometries
-                # ====================================================================
-
-                geometry_errors = []
-                geometry_warnings = []
-                geometry_info = []
-
-                # Get route geometry from route_geometries column in links_with_routes
-                route_geometry_query = f"""
-                    SELECT
-                        lwr.route_geometries->>%s as route_geometry_json,
-                        ST_Length(ST_Transform(ST_GeomFromGeoJSON(lwr.route_geometries->>%s), 4326)::geography) as length_meters,
-                        (SELECT COUNT(DISTINCT lwr2.link_id)
-                         FROM {schema_quoted}.links_with_routes lwr2
-                         WHERE %s = ANY(lwr2.rutenummer_list)) as link_count
-                    FROM {schema_quoted}.links_with_routes lwr
-                    WHERE %s = ANY(lwr.rutenummer_list)
-                      AND lwr.route_geometries->>%s IS NOT NULL
-                    LIMIT 1
-                """
-
-                with conn.cursor(row_factory=dict_row) as cur:
-                    cur.execute(route_geometry_query, (rutenummer, rutenummer, rutenummer, rutenummer, rutenummer))
-                    route_geom_row = cur.fetchone()
-
-                    if not route_geom_row or not route_geom_row.get('route_geometry_json'):
-                        geometry_warnings.append({
-                            'type': 'NO_ROUTE_GEOMETRY',
-                            'message': f'No route_geometries found for route {rutenummer} in links_with_routes. This may mean the route could not be made continuous (e.g., disconnected components) or build-links has not run yet.',
-                            'severity': 'warning'
-                        })
-                        links = []
-                    else:
-                        route_geometry_json = route_geom_row['route_geometry_json']
-                        link_count = route_geom_row.get('link_count', 0)
-
-                        # Validate route geometry
-                        geom_validation_query = """
-                            SELECT
-                                ST_IsValid(ST_GeomFromGeoJSON(%s)::geometry) as is_valid,
-                                ST_IsSimple(ST_GeomFromGeoJSON(%s)::geometry) as is_simple,
-                                ST_Length(ST_Transform(ST_GeomFromGeoJSON(%s)::geometry, 4326)::geography) as length_meters,
-                                ST_GeometryType(ST_GeomFromGeoJSON(%s)::geometry) as geom_type
-                        """
-                        cur.execute(geom_validation_query, (route_geometry_json, route_geometry_json, route_geometry_json, route_geometry_json))
-                        geom_validation = cur.fetchone()
-
-                        if geom_validation:
-                            is_valid = geom_validation['is_valid']
-                            is_simple = geom_validation['is_simple']
-                            length_meters = geom_validation.get('length_meters')
-                            geom_type = geom_validation.get('geom_type')
-
-                            if not is_valid:
-                                geometry_errors.append({
-                                    'type': 'INVALID_ROUTE_GEOMETRY',
-                                    'message': f'Route geometry is invalid',
-                                    'severity': 'error'
-                                })
-
-                            if not is_simple:
-                                geometry_warnings.append({
-                                    'type': 'NON_SIMPLE_ROUTE_GEOMETRY',
-                                    'message': f'Route geometry has self-intersections or is not simple',
-                                    'severity': 'warning'
-                                })
-
-                            if length_meters is None or length_meters == 0:
-                                geometry_errors.append({
-                                    'type': 'ZERO_LENGTH_ROUTE',
-                                    'message': f'Route has zero or null length',
-                                    'severity': 'error'
-                                })
-
-                            if geom_type:
-                                geometry_info.append({
-                                    'type': 'ROUTE_GEOMETRY_TYPE',
-                                    'message': f'Route geometry type: {geom_type}',
-                                    'severity': 'info',
-                                    'geom_type': geom_type,
-                                    'length_meters': float(length_meters) if length_meters else None
-                                })
-
-                        # Get links for additional validation (node connectivity, etc.)
-                        links_query = f"""
-                            SELECT
-                                l.link_id,
-                                l.a_node,
-                                l.b_node,
-                                l.length_m,
-                                l.segment_objids,
-                                an_a.degree as a_node_degree,
-                                an_b.degree as b_node_degree,
-                                an_a.navn as a_node_name,
-                                an_b.navn as b_node_name
-                            FROM {schema_quoted}.links_with_routes l
-                            LEFT JOIN {schema_quoted}.anchor_nodes an_a ON an_a.node_id = l.a_node
-                            LEFT JOIN {schema_quoted}.anchor_nodes an_b ON an_b.node_id = l.b_node
-                            WHERE %s = ANY(l.rutenummer_list)
-                            ORDER BY l.link_id
-                        """
-                        cur.execute(links_query, (rutenummer,))
-                        links = cur.fetchall()
-
-                        if links:
-                            # Validate individual links (for node connectivity checks)
-                            for link in links:
-                                link_id = link['link_id']
-                                length_m = link.get('length_m')
-
-                                # Check length
-                                if length_m is None or length_m == 0:
-                                    geometry_errors.append({
-                                        'type': 'ZERO_LENGTH_LINK',
-                                        'message': f'Link {link_id} has zero or null length',
-                                        'severity': 'error',
-                                        'link_id': link_id
-                                    })
-                                elif length_m < 1.0:
-                                    geometry_warnings.append({
-                                        'type': 'VERY_SHORT_LINK',
-                                        'message': f'Link {link_id} is very short ({length_m:.2f} m)',
-                                        'severity': 'warning',
-                                        'link_id': link_id,
-                                        'length_m': length_m
-                                    })
-
-                        # Build link graph for node connectivity analysis
-                        link_graph = {}  # node -> [links where this is a_node or b_node]
-                        link_by_id = {}
-
-                        for link in links:
-                            link_id = link['link_id']
-                            a_node = link['a_node']
-                            b_node = link['b_node']
-                            link_by_id[link_id] = link
-
-                            if a_node not in link_graph:
-                                link_graph[a_node] = []
-                            link_graph[a_node].append(('a', link_id))
-
-                            if b_node not in link_graph:
-                                link_graph[b_node] = []
-                            link_graph[b_node].append(('b', link_id))
-
-                        # Check node connectivity (route_geometries should already be continuous, but check node structure)
-                        if len(links) > 1:
-                            # Find endpoints (nodes with degree 1)
-                            endpoint_nodes = []
-                            for node, link_refs in link_graph.items():
-                                if len(link_refs) == 1:
-                                    endpoint_nodes.append(node)
-
-                            if len(endpoint_nodes) != 2:
-                                geometry_warnings.append({
-                                    'type': 'UNEXPECTED_ENDPOINT_COUNT',
-                                    'message': f'Route has {len(endpoint_nodes)} endpoint node(s) (expected 2 for a continuous route). Endpoints: {endpoint_nodes}',
-                                    'severity': 'warning',
-                                    'endpoint_count': len(endpoint_nodes),
-                                    'endpoint_nodes': endpoint_nodes
-                                })
-
-                            # Check for nodes with degree 2 (should be intermediate nodes, not endpoints)
-                            degree_2_nodes = []
-                            for node, link_refs in link_graph.items():
-                                if len(link_refs) == 2:
-                                    degree_2_nodes.append(node)
-
-                            # Check endpoints have correct degree
-                            for link in links:
-                                a_degree = link.get('a_node_degree')
-                                b_degree = link.get('b_node_degree')
-
-                                # Check if a_node is an endpoint but has wrong degree
-                                if link['a_node'] in endpoint_nodes and a_degree is not None and a_degree != 1:
-                                    geometry_warnings.append({
-                                        'type': 'ENDPOINT_NODE_WRONG_DEGREE',
-                                        'message': f'Link {link["link_id"]} has a_node {link["a_node"]} marked as endpoint but has degree={a_degree} (expected 1)',
-                                        'severity': 'warning',
-                                        'link_id': link['link_id'],
-                                        'node_id': link['a_node'],
-                                        'degree': a_degree
-                                    })
-
-                                # Check if b_node is an endpoint but has wrong degree
-                                if link['b_node'] in endpoint_nodes and b_degree is not None and b_degree != 1:
-                                    geometry_warnings.append({
-                                        'type': 'ENDPOINT_NODE_WRONG_DEGREE',
-                                        'message': f'Link {link["link_id"]} has b_node {link["b_node"]} marked as endpoint but has degree={b_degree} (expected 1)',
-                                        'severity': 'warning',
-                                        'link_id': link['link_id'],
-                                        'node_id': link['b_node'],
-                                        'degree': b_degree
-                                    })
-
-                        # Check for multiple components (disconnected link groups)
-                        # Note: route_geometries should already be continuous, but we check node connectivity
-                        if len(links) > 1:
-                            components = []
-                            visited_components = set()
-
-                            def dfs_component(link_id, component):
-                                if link_id in visited_components:
-                                    return
-                                visited_components.add(link_id)
-                                component.append(link_id)
-
-                                link = link_by_id[link_id]
-                                # Find connected links
-                                b_node = link['b_node']
-                                if b_node in link_graph:
-                                    for node_type, connected_link_id in link_graph[b_node]:
-                                        if node_type == 'a' and connected_link_id not in visited_components:
-                                            dfs_component(connected_link_id, component)
-
-                            for link in links:
-                                link_id = link['link_id']
-                                if link_id not in visited_components:
-                                    component = []
-                                    dfs_component(link_id, component)
-                                    components.append(component)
-
-                            if len(components) > 1:
-                                # Multiple components - identify main component (largest)
-                                components.sort(key=len, reverse=True)
-                                main_component = components[0]
-                                appendix_components = components[1:]
-
-                                geometry_info.append({
-                                    'type': 'MULTIPLE_LINK_COMPONENTS',
-                                    'message': f'Route has {len(components)} disconnected link component(s). Main component: {len(main_component)} links, Appendix components: {[len(c) for c in appendix_components]} links. Note: route_geometries should still provide continuous geometry.',
-                                    'severity': 'info',
-                                    'component_count': len(components),
-                                    'main_component_link_ids': main_component,
-                                    'appendix_component_link_ids': [c for c in appendix_components]
-                                })
-
-                # Add geometry errors and warnings to main lists
-                errors.extend(geometry_errors)
-                warnings.extend(geometry_warnings)
-                # Info items can be added to a separate list or included in warnings
-
-                # Build validation report
-                validation_result = {
+                
+                # Build validation report (using ValidationResult status)
+                validation_report = {
                     'rutenummer': rutenummer,
                     'segment_count': len(segments_dict),
-                    'link_count': len(links) if links else 0,
-                    'status': 'OK' if not errors else ('ERROR' if errors else 'WARNING'),
+                    'link_count': link_count,
+                    'status': validation_result.get_status(),
                     'errors': errors,
                     'warnings': warnings,
                     'geometry_info': geometry_info,
@@ -975,21 +726,21 @@ Examples:
                     'summary': {
                         'total_segments': len(segments_dict),
                         'total_fotruteinfo_rows': len(all_rows),
-                        'total_links': len(links) if links else 0,
+                        'total_links': link_count,
                         'error_count': len(errors),
                         'warning_count': len(warnings),
-                        'geometry_error_count': len(geometry_errors),
-                        'geometry_warning_count': len(geometry_warnings),
-                        'rutenavn_values': sorted(rutenavn_values) if rutenavn_values else None,
-                        'vedlikeholdsansvarlig_values': sorted(vedlikeholdsansvarlig_values) if vedlikeholdsansvarlig_values else None,
-                        'rutetype_values': sorted(rutetype_values) if rutetype_values else None,
-                        'gradering_values': sorted(gradering_values) if gradering_values else None,
+                        'geometry_error_count': len([e for e in errors if 'geometry' in e.get('type', '').lower() or 'link' in e.get('type', '').lower()]),
+                        'geometry_warning_count': len([w for w in warnings if 'geometry' in w.get('type', '').lower() or 'link' in w.get('type', '').lower()]),
+                        'rutenavn_values': sorted(set(all_rutenavn)) if all_rutenavn else None,
+                        'vedlikeholdsansvarlig_values': sorted(set(all_vedlikeholdsansvarlig)) if all_vedlikeholdsansvarlig else None,
+                        'rutetype_values': sorted(set(all_rutetype)) if all_rutetype else None,
+                        'gradering_values': sorted(set(all_gradering)) if all_gradering else None,
                     }
                 }
 
                 # Output results
                 if args.format == 'json':
-                    print(format_json(validation_result))
+                    print(format_json(validation_report))
                 else:
                     # Human-readable table format
                     print("=" * 80)
@@ -997,8 +748,8 @@ Examples:
                     print("=" * 80)
                     print(f"Total segments: {len(segments_dict)}")
                     print(f"Total fotruteinfo rows: {len(all_rows)}")
-                    print(f"Total links: {len(links) if links else 0}")
-                    print(f"Status: {validation_result['status']}")
+                    print(f"Total links: {link_count}")
+                    print(f"Status: {validation_report['status']}")
                     print()
 
                     # Dump all segment metadata first
@@ -1105,18 +856,50 @@ Examples:
                                     print(f"     Link {conn['link1_id']} {conn['connection_type']} Link {conn['link2_id']} (node: {conn['node_id']})")
                                 if len(info['reversed_connections']) > 5:
                                     print(f"     ... and {len(info['reversed_connections']) - 5} more")
+                            # Show multilinestring_reason if available
+                            if 'multilinestring_reason' in info and info['multilinestring_reason']:
+                                reason_descriptions = {
+                                    'single_linestring': 'Single LineString (not MultiLineString)',
+                                    'link_is_multilinestring': 'Individual link is already MultiLineString',
+                                    'loop_or_branch': 'Route has loops or branches (traversal found duplicates or incomplete)',
+                                    'precision_gap': 'Small gaps (< 1cm) between links due to floating point precision',
+                                    'disconnected_components': 'Large gaps between links (e.g., lakes, rivers)',
+                                    'traversal_issue': 'Traversal found all links in order, but still MultiLineString (unknown cause)'
+                                }
+                                reason = info['multilinestring_reason']
+                                reason_desc = reason_descriptions.get(reason, reason)
+                                print(f"   MultiLineString reason: {reason_desc} ({reason})")
+                        print()
+                    
+                    # Show multilinestring_reason from metadata if available
+                    multilinestring_reason = validation_result.metadata.get('multilinestring_reason')
+                    if multilinestring_reason:
+                        reason_descriptions = {
+                            'single_linestring': 'Single LineString (perfect continuous geometry)',
+                            'link_is_multilinestring': 'Individual link is already MultiLineString',
+                            'loop_or_branch': 'Route has loops or branches (traversal found duplicates or incomplete)',
+                            'precision_gap': 'Small gaps (< 1cm) between links due to floating point precision',
+                            'disconnected_components': 'Large gaps between links (e.g., lakes, rivers)',
+                            'traversal_issue': 'Traversal found all links in order, but still MultiLineString (unknown cause)'
+                        }
+                        reason_desc = reason_descriptions.get(multilinestring_reason, multilinestring_reason)
+                        print("MULTILINESTRING REASON:")
+                        print("-" * 80)
+                        print(f"Reason: {reason_desc} ({multilinestring_reason})")
+                        if multilinestring_reason == 'single_linestring':
+                            print("Note: This indicates perfect continuous geometry (LineString, not MultiLineString)")
+                        else:
+                            print("Note: This explains why the route geometry is MultiLineString instead of LineString")
                         print()
 
                     if not errors and not warnings:
-                        print("✓ All metadata is consistent across all segments")
-                        if not geometry_errors and not geometry_warnings:
-                            print("✓ All geometry validation passed")
+                        print("✓ All validation passed")
                         print()
 
                     # Show summary
                     print("SUMMARY:")
                     print("-" * 80)
-                    summary = validation_result['summary']
+                    summary = validation_report['summary']
                     print(f"Metadata errors: {summary['error_count'] - summary['geometry_error_count']}")
                     print(f"Metadata warnings: {summary['warning_count'] - summary['geometry_warning_count']}")
                     print(f"Geometry errors: {summary['geometry_error_count']}")

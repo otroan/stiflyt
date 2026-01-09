@@ -32,6 +32,26 @@ def format_matrikkelenhet(kommunenummer, gardsnummer, bruksnummer, festenummer=N
     return formatted
 
 
+def parse_geometry(geom_data) -> dict:
+    """
+    Parse geometry from PostGIS ST_AsGeoJSON result.
+    Handles both string and already-parsed dict cases.
+
+    Args:
+        geom_data: Geometry data from database (string or dict)
+
+    Returns:
+        dict: Parsed geometry as dict
+    """
+    if isinstance(geom_data, str):
+        return json.loads(geom_data)
+    elif isinstance(geom_data, dict):
+        return geom_data
+    else:
+        # Fallback: try to convert to dict
+        return geom_data
+
+
 def get_route_segments(conn, rutenummer):
     """
     Get all segments for a route with basic metadata.

@@ -9,8 +9,10 @@ from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse, RouteLink, RouteLinksResponse
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse, RouteLink, RouteLinksResponse, RouteValidationResponse
 from services.route_service import search_places, get_complete_route, get_routes_from_view, get_route_segments_from_view, get_route_links
+from services.validators import get_validator_registry
+from collections import defaultdict
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
 from services.excel_report import generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
@@ -989,4 +991,208 @@ async def get_route_links_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Error getting route links: {str(e)}"
+        )
+
+
+@router.get("/routes/{rutenummer}/validate", response_model=RouteValidationResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def validate_route(
+    rutenummer: str
+) -> RouteValidationResponse:
+    """
+    Validate a route for metadata consistency and geometry errors.
+
+    This endpoint runs all registered validators on the specified route and returns
+    a comprehensive validation report including:
+    - Metadata consistency checks (rutenavn, vedlikeholdsansvarlig, rutetype, gradering)
+    - Duplicate detection within segments
+    - Missing field detection
+    - Geometry validation (validity, simplicity, length)
+    - Link connectivity checks
+
+    Example:
+    - /api/v1/routes/bre10/validate
+
+    Returns:
+    - Validation report with errors, warnings, and info messages
+    - 404 if rutenummer not found
+    """
+    try:
+        with db_connection() as conn:
+            # First verify route exists
+            routes, _ = get_routes_from_view(conn, rutenummer=rutenummer, limit=1, offset=0)
+            if not routes:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Route with rutenummer '{rutenummer}' not found"
+                )
+
+            schema_quoted = quote_identifier(ROUTE_SCHEMA)
+
+            # Get all segments for the route with all metadata including length
+            query = f"""
+                SELECT
+                    f.objid as segment_objid,
+                    fi.rutenummer,
+                    fi.rutenavn,
+                    fi.vedlikeholdsansvarlig,
+                    fi.rutetype,
+                    fi.gradering,
+                    fi.objid as fotruteinfo_objid,
+                    ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
+                FROM {schema_quoted}.fotrute f
+                JOIN {schema_quoted}.fotruteinfo fi ON fi.fotrute_fk = f.objid
+                WHERE fi.rutenummer = %s
+                ORDER BY f.objid, fi.objid
+            """
+
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(query, (rutenummer,))
+                all_rows = cur.fetchall()
+
+            if not all_rows:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No segments found for route '{rutenummer}'"
+                )
+
+            # Group by segment_objid to handle multiple fotruteinfo rows per segment
+            segments_dict = defaultdict(list)
+            for row in all_rows:
+                segments_dict[row['segment_objid']].append(row)
+
+            # Prepare segment metadata dump for output
+            segment_metadata_dump = []
+            for segment_objid, fotruteinfo_rows in sorted(segments_dict.items()):
+                segment_length = fotruteinfo_rows[0].get('length_meters') if fotruteinfo_rows else None
+                segment_metadata_dump.append({
+                    'segment_objid': str(segment_objid),
+                    'length_meters': float(segment_length) if segment_length is not None else None,
+                    'fotruteinfo_count': len(fotruteinfo_rows),
+                    'fotruteinfo_rows': [
+                        {
+                            'fotruteinfo_objid': row['fotruteinfo_objid'],
+                            'rutenummer': row['rutenummer'],
+                            'rutenavn': row.get('rutenavn'),
+                            'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
+                            'rutetype': row.get('rutetype'),
+                            'gradering': row.get('gradering'),
+                        }
+                        for row in fotruteinfo_rows
+                    ]
+                })
+
+            # Prepare route data for validators
+            route_data = {
+                'rutenummer': rutenummer,
+                'segments_dict': segments_dict,
+                'all_rows': all_rows,
+            }
+
+            # Run validators
+            registry = get_validator_registry()
+            validation_result = registry.run_validators(route_data, conn)
+
+            # Get link count for summary
+            link_count = validation_result.metadata.get('link_count', 0)
+            if link_count == 0:
+                # Fallback: query directly
+                link_count_query = f"""
+                    SELECT COUNT(DISTINCT lwr.link_id) as link_count
+                    FROM {schema_quoted}.links_with_routes lwr
+                    WHERE %s = ANY(lwr.rutenummer_list)
+                """
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(link_count_query, (rutenummer,))
+                    link_count_row = cur.fetchone()
+                    link_count = link_count_row.get('link_count', 0) if link_count_row else 0
+
+            # Extract summary values
+            all_rutenavn = []
+            all_vedlikeholdsansvarlig = []
+            all_rutetype = []
+            all_gradering = []
+
+            for segment_objid, fotruteinfo_rows in segments_dict.items():
+                for row in fotruteinfo_rows:
+                    if row.get('rutenavn'):
+                        all_rutenavn.append(row.get('rutenavn'))
+                    if row.get('vedlikeholdsansvarlig'):
+                        all_vedlikeholdsansvarlig.append(row.get('vedlikeholdsansvarlig'))
+                    if row.get('rutetype'):
+                        all_rutetype.append(row.get('rutetype'))
+                    if row.get('gradering'):
+                        all_gradering.append(row.get('gradering'))
+
+            # Convert ValidationResult to API response format
+            errors = []
+            warnings = []
+            geometry_info = []
+
+            for issue in validation_result.errors:
+                errors.append({
+                    'type': issue.type,
+                    'message': issue.message,
+                    'severity': issue.severity.value,
+                    'affected_segments': issue.affected_segments,
+                    'affected_links': issue.affected_links,
+                    'metadata': issue.metadata
+                })
+
+            for issue in validation_result.warnings:
+                warnings.append({
+                    'type': issue.type,
+                    'message': issue.message,
+                    'severity': issue.severity.value,
+                    'affected_segments': issue.affected_segments,
+                    'affected_links': issue.affected_links,
+                    'metadata': issue.metadata
+                })
+
+            for issue in validation_result.info:
+                geometry_info.append({
+                    'type': issue.type,
+                    'message': issue.message,
+                    'severity': issue.severity.value,
+                    'affected_segments': issue.affected_segments,
+                    'affected_links': issue.affected_links,
+                    'metadata': issue.metadata
+                })
+
+            # Count geometry errors/warnings
+            geometry_error_count = len([e for e in errors if 'geometry' in e.get('type', '').lower() or 'link' in e.get('type', '').lower()])
+            geometry_warning_count = len([w for w in warnings if 'geometry' in w.get('type', '').lower() or 'link' in w.get('type', '').lower()])
+
+            # Build response
+            return RouteValidationResponse(
+                rutenummer=rutenummer,
+                segment_count=len(segments_dict),
+                link_count=link_count,
+                status=validation_result.get_status(),
+                errors=errors,
+                warnings=warnings,
+                geometry_info=geometry_info,
+                segment_metadata=segment_metadata_dump,
+                summary={
+                    'total_segments': len(segments_dict),
+                    'total_fotruteinfo_rows': len(all_rows),
+                    'total_links': link_count,
+                    'error_count': len(errors),
+                    'warning_count': len(warnings),
+                    'geometry_error_count': geometry_error_count,
+                    'geometry_warning_count': geometry_warning_count,
+                    'rutenavn_values': sorted(set(all_rutenavn)) if all_rutenavn else None,
+                    'vedlikeholdsansvarlig_values': sorted(set(all_vedlikeholdsansvarlig)) if all_vedlikeholdsansvarlig else None,
+                    'rutetype_values': sorted(set(all_rutetype)) if all_rutetype else None,
+                    'gradering_values': sorted(set(all_gradering)) if all_gradering else None,
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error validating route: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error validating route: {str(e)}"
         )

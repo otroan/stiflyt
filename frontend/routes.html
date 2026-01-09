@@ -1,0 +1,1295 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Stiflyt Route Validator</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/static/css/app.css" />
+    <style>
+        .validation-status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+        .status-ok {
+            background-color: #2ecc71;
+            color: white;
+        }
+        .status-warning {
+            background-color: #f39c12;
+            color: white;
+        }
+        .status-error {
+            background-color: #e74c3c;
+            color: white;
+        }
+        .issue-item {
+            padding: 8px;
+            margin: 4px 0;
+            border-left: 4px solid;
+            background-color: #f8f9fa;
+        }
+        .issue-error {
+            border-left-color: #e74c3c;
+        }
+        .issue-warning {
+            border-left-color: #f39c12;
+        }
+        .issue-info {
+            border-left-color: #3498db;
+        }
+        .segment-item {
+            padding: 8px;
+            margin: 4px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .segment-item:hover {
+            background-color: #f0f0f0;
+        }
+        .segment-item.selected {
+            background-color: #e3f2fd;
+            border-color: #2196f3;
+        }
+        .metadata-table {
+            width: 100%;
+            font-size: 0.9em;
+        }
+        .metadata-table td {
+            padding: 4px 8px;
+        }
+        .metadata-table td:first-child {
+            font-weight: bold;
+            width: 40%;
+        }
+        .validation-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 8px;
+            margin: 16px 0;
+        }
+        .summary-item {
+            padding: 8px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .summary-item-value {
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+        .summary-item-label {
+            font-size: 0.8em;
+            color: #666;
+        }
+        .segment-marker, .link-marker {
+            background: transparent !important;
+            border: none !important;
+        }
+        .toggle-controls {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            margin-left: 16px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+        .toggle-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            color: white;
+            font-size: 0.95rem;
+            user-select: none;
+        }
+        .toggle-label:hover {
+            opacity: 0.9;
+        }
+        .toggle-checkbox {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            margin: 0;
+        }
+        .toggle-text {
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <h1>
+                <img src="/images/stiflyt.png" alt="Stiflyt Logo" class="header-logo">
+                Rutevalidering
+            </h1>
+            <nav class="main-nav">
+                <a href="/" class="nav-link">Grunneier</a>
+                <a href="/routes.html" class="nav-link active">Rutevalidering</a>
+                <a href="#" class="nav-link" id="aboutLink">Om</a>
+            </nav>
+        </div>
+        <div class="controls">
+            <div class="search-container">
+                <input type="text" id="routeSearchInput" class="input-wide" placeholder="Søk etter rute (f.eks. bre10)" aria-label="Søk etter rute">
+                <div class="search-results" id="routeSearchResults"></div>
+            </div>
+            <button id="validateRouteBtn" class="btn-purple" disabled>Valider rute</button>
+            <div class="toggle-controls">
+                <label class="toggle-label">
+                    <input type="checkbox" id="showSegmentsToggle" class="toggle-checkbox">
+                    <span class="toggle-text">Vis segmenter</span>
+                </label>
+                <label class="toggle-label">
+                    <input type="checkbox" id="showLinksToggle" class="toggle-checkbox">
+                    <span class="toggle-text">Vis linker</span>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2 id="routeTitle">Velg en rute</h2>
+            </div>
+            <div class="sidebar-tabs">
+                <button class="tab active" data-tab="validation">Validering</button>
+                <button class="tab" data-tab="segments">Segmenter</button>
+                <button class="tab" data-tab="details">Detaljer</button>
+            </div>
+            <div class="tab-content">
+                <div id="validationTab" class="tab-pane active">
+                    <div id="validationContent">
+                        <p>Velg en rute for å starte validering.</p>
+                    </div>
+                </div>
+                <div id="segmentsTab" class="tab-pane">
+                    <div id="segmentsContent">
+                        <p>Ingen segmenter lastet.</p>
+                    </div>
+                </div>
+                <div id="detailsTab" class="tab-pane">
+                    <div id="detailsContent">
+                        <p>Ingen detaljer tilgjengelig.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="map-container">
+            <div id="map"></div>
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <div>Laster data...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- About Modal -->
+    <div id="aboutModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Om Stiflyt Rutevalidering</h2>
+                <button class="modal-close" id="closeAboutModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>
+                    Stiflyt Rutevalidering er et verktøy for å validere ruter og identifisere feil i metadata og geometri.
+                </p>
+                <h3>Funksjoner</h3>
+                <ul>
+                    <li>Søk etter ruter</li>
+                    <li>Valider metadata-konsistens på tvers av segmenter</li>
+                    <li>Detekter duplikater og manglende felt</li>
+                    <li>Valider geometri (gyldighet, enkelhet, lengde)</li>
+                    <li>Kontroller link-tilkoblinger og node-struktur</li>
+                    <li>Visualiser ruter og segmenter på kartet</li>
+                </ul>
+                <h3>Valideringstyper</h3>
+                <ul>
+                    <li><strong>Metadata:</strong> Konsistens av rutenavn, vedlikeholdsansvarlig, rutetype, gradering</li>
+                    <li><strong>Duplikater:</strong> Duplikate verdier innen segmenter</li>
+                    <li><strong>Manglende felt:</strong> Påkrevde felt som mangler</li>
+                    <li><strong>Geometri:</strong> Gyldighet, enkelhet, lengde</li>
+                    <li><strong>Tilkobling:</strong> Node-grader og link-tilkoblinger</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Constants -->
+    <script src="js/constants.js"></script>
+
+    <!-- Common utilities -->
+    <script src="js/common.js"></script>
+
+    <script>
+        // Initialize map
+        const map = initMap('map');
+
+        // Create layers control
+        const baseMaps = map._baseLayers || {};
+        const overlayMaps = {};
+        const layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+        // Configuration
+        const BACKEND_URL = CommonConfig.getBackendUrl();
+
+        // State
+        let currentRoute = null;
+        let currentValidation = null;
+        let routeLayer = null;
+        let segmentLayers = [];
+        let segmentLayerGroup = null;
+        let segmentData = null;
+        let selectedSegment = null;
+        let showSegments = false;
+        let linkLayers = [];
+        let linkLayerGroup = null;
+        let linkData = null;
+        let showLinks = false;
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+
+                tab.classList.add('active');
+                const tabName = tab.dataset.tab;
+                document.getElementById(`${tabName}Tab`).classList.add('active');
+            });
+        });
+
+        // Route search
+        async function performRouteSearch(query) {
+            if (!query || query.length < 2) {
+                document.getElementById('routeSearchResults').classList.remove('active');
+                return;
+            }
+
+            try {
+                const data = await searchPlaces(query, 20);
+                // Filter to only show routes
+                const routes = (data.results || []).filter(r => r.type === 'rute');
+                displayRouteSearchResults(routes);
+            } catch (error) {
+                console.error('Søkefeil:', error);
+                document.getElementById('routeSearchResults').innerHTML = 
+                    '<div class="search-result-item">Søkefeil</div>';
+                document.getElementById('routeSearchResults').classList.add('active');
+            }
+        }
+
+        function displayRouteSearchResults(results) {
+            const resultsDiv = document.getElementById('routeSearchResults');
+
+            if (results.length === 0) {
+                resultsDiv.innerHTML = '<div class="search-result-item">Ingen ruter funnet</div>';
+                resultsDiv.classList.add('active');
+                return;
+            }
+
+            resultsDiv.innerHTML = results.map(result => `
+                <div class="search-result-item" onclick='selectRoute("${result.rutenummer}")'>
+                    <strong>${result.title || result.rutenummer}</strong>
+                    ${result.subtitle ? `<small>${result.subtitle}</small>` : ''}
+                </div>
+            `).join('');
+
+            resultsDiv.classList.add('active');
+        }
+
+        function selectRoute(rutenummer) {
+            document.getElementById('routeSearchResults').classList.remove('active');
+            document.getElementById('routeSearchInput').value = rutenummer;
+            loadRoute(rutenummer);
+        }
+
+        // Load route and validate
+        async function loadRoute(rutenummer) {
+            const loading = document.getElementById('loading');
+            if (loading) loading.classList.add('active');
+
+            try {
+                // Load route data
+                const routeResponse = await apiRequest(`/api/v1/routes/${rutenummer}?include_geometry=true`);
+                if (!routeResponse.ok) {
+                    if (routeResponse.status === 404) {
+                        alert(`Rute '${rutenummer}' ikke funnet`);
+                        return;
+                    }
+                    throw new Error(`HTTP ${routeResponse.status}: ${routeResponse.statusText}`);
+                }
+                currentRoute = await routeResponse.json();
+
+                // Load validation
+                const validationResponse = await apiRequest(`/api/v1/routes/${rutenummer}/validate`);
+                if (!validationResponse.ok) {
+                    throw new Error(`Validering feilet: ${validationResponse.statusText}`);
+                }
+                currentValidation = await validationResponse.json();
+
+                // Load segments with geometry
+                const segmentsResponse = await apiRequest(`/api/v1/routes/${rutenummer}/segments?include_geometry=true`);
+                if (segmentsResponse.ok) {
+                    segmentData = await segmentsResponse.json();
+                }
+
+                // Load links with geometry
+                try {
+                    const linksResponse = await apiRequest(`/api/v1/routes/${rutenummer}/links?include_geometry=true`);
+                    if (linksResponse.ok) {
+                        linkData = await linksResponse.json();
+                        console.log('Loaded link data:', linkData);
+                    } else {
+                        console.warn('Failed to load links:', linksResponse.status, linksResponse.statusText);
+                        linkData = null;
+                    }
+                } catch (error) {
+                    console.error('Error loading links:', error);
+                    linkData = null;
+                }
+
+                // Display route on map
+                displayRouteOnMap(currentRoute);
+
+                // Display validation results
+                displayValidationResults(currentValidation);
+
+                // Update segments display if toggle is on
+                if (showSegments && segmentData) {
+                    displaySegmentsOnMap(segmentData, currentValidation);
+                }
+
+                // Update links display if toggle is on
+                if (showLinks && linkData) {
+                    displayLinksOnMap(linkData, currentValidation);
+                }
+
+                // Enable validate button
+                document.getElementById('validateRouteBtn').disabled = false;
+                document.getElementById('validateRouteBtn').textContent = 'Oppdater validering';
+
+            } catch (error) {
+                console.error('Feil ved lasting av rute:', error);
+                alert(`Feil ved lasting av rute: ${error.message}`);
+            } finally {
+                if (loading) loading.classList.remove('active');
+            }
+        }
+
+        function displayRouteOnMap(route) {
+            // Clear previous layers
+            if (routeLayer) {
+                map.removeLayer(routeLayer);
+            }
+            clearSegments();
+            clearLinks();
+
+            // Update title
+            document.getElementById('routeTitle').textContent = 
+                `${route.rutenummer}${route.rutenavn ? `: ${route.rutenavn}` : ''}`;
+
+            // Display route geometry
+            if (route.route_geometry) {
+                routeLayer = L.geoJSON(route.route_geometry, {
+                    style: {
+                        color: '#3498db',
+                        weight: 5,
+                        opacity: 0.8
+                    }
+                }).addTo(map);
+
+                routeLayer.bindPopup(`
+                    <strong>${route.rutenummer}</strong><br>
+                    ${route.rutenavn || 'Uten navn'}<br>
+                    Lengde: ${route.total_length_m.toFixed(2)} m<br>
+                    Segmenter: ${route.segment_count}
+                `);
+
+                // Fit map to route
+                const bounds = routeLayer.getBounds();
+                if (bounds && bounds.isValid()) {
+                    map.fitBounds(bounds, { padding: [50, 50] });
+                }
+            }
+        }
+
+        function clearSegments() {
+            if (segmentLayerGroup) {
+                map.removeLayer(segmentLayerGroup);
+                layerControl.removeLayer(segmentLayerGroup);
+                segmentLayerGroup = null;
+            }
+            segmentLayers = [];
+        }
+
+        function clearLinks() {
+            if (linkLayerGroup) {
+                map.removeLayer(linkLayerGroup);
+                layerControl.removeLayer(linkLayerGroup);
+                linkLayerGroup = null;
+            }
+            linkLayers = [];
+        }
+
+        function getSegmentStatus(segmentObjid, validation) {
+            // Check if segment has errors or warnings
+            const hasErrors = validation.errors.some(e => 
+                e.affected_segments && e.affected_segments.includes(String(segmentObjid))
+            );
+            const hasWarnings = validation.warnings.some(w => 
+                w.affected_segments && w.affected_segments.includes(String(segmentObjid))
+            );
+            
+            if (hasErrors) return 'error';
+            if (hasWarnings) return 'warning';
+            return 'ok';
+        }
+
+        function displaySegmentsOnMap(segmentsData, validation) {
+            clearSegments();
+
+            if (!segmentsData || !segmentsData.segments || segmentsData.segments.length === 0) {
+                return;
+            }
+
+            // Create layer group for segments
+            segmentLayerGroup = L.layerGroup().addTo(map);
+            layerControl.addOverlay(segmentLayerGroup, `Segmenter (${segmentsData.segments.length})`);
+
+            // Get segment colors from constants
+            const segmentColors = window.SEGMENT_COLORS || [
+                '#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6',
+                '#1abc9c', '#e67e22', '#34495e', '#16a085', '#27ae60'
+            ];
+
+            segmentsData.segments.forEach((segment, index) => {
+                if (!segment.senterlinje) return;
+
+                const segmentObjid = segment.segment_objid;
+                const status = getSegmentStatus(segmentObjid, validation);
+                
+                // Determine color based on status
+                let color = segmentColors[index % segmentColors.length];
+                let weight = 4;
+                if (status === 'error') {
+                    color = '#e74c3c';
+                    weight = 6;
+                } else if (status === 'warning') {
+                    color = '#f39c12';
+                    weight = 5;
+                }
+
+                // Get segment metadata from validation
+                const segmentMeta = validation.segment_metadata.find(
+                    m => m.segment_objid === String(segmentObjid)
+                );
+
+                // Build popup content with metadata
+                let popupContent = `
+                    <div style="min-width: 250px;">
+                        <strong>Segment ${segmentObjid}</strong>
+                        ${status === 'error' ? ' <span style="color: #e74c3c;">⚠️</span>' : ''}
+                        ${status === 'warning' ? ' <span style="color: #f39c12;">⚠️</span>' : ''}
+                        <br><br>
+                `;
+
+                if (segmentMeta) {
+                    popupContent += `
+                        <table style="font-size: 0.9em; width: 100%;">
+                            <tr><td><strong>Lengde:</strong></td><td>${segmentMeta.length_meters !== null ? `${segmentMeta.length_meters.toFixed(1)} m` : 'N/A'}</td></tr>
+                            <tr><td><strong>Fotruteinfo-rader:</strong></td><td>${segmentMeta.fotruteinfo_count}</td></tr>
+                        </table>
+                        <br>
+                        <strong>Metadata:</strong><br>
+                    `;
+
+                    segmentMeta.fotruteinfo_rows.forEach((row, idx) => {
+                        popupContent += `
+                            <div style="margin-top: 8px; padding: 4px; background: #f8f9fa; border-radius: 4px;">
+                                <strong>Rad ${idx + 1}:</strong><br>
+                                Rutenummer: ${row.rutenummer || '-'}<br>
+                                Rutenavn: ${row.rutenavn || '-'}<br>
+                                Vedlikeholdsansvarlig: ${row.vedlikeholdsansvarlig || '-'}<br>
+                                Rutetype: ${row.rutetype || '-'}<br>
+                                Gradering: ${row.gradering || '-'}
+                            </div>
+                        `;
+                    });
+                } else {
+                    // Fallback to segment data from API
+                    popupContent += `
+                        <table style="font-size: 0.9em; width: 100%;">
+                            <tr><td><strong>Lengde:</strong></td><td>${segment.length_meters ? `${segment.length_meters.toFixed(1)} m` : 'N/A'}</td></tr>
+                            <tr><td><strong>Rutenavn:</strong></td><td>${segment.rutenavn || '-'}</td></tr>
+                            <tr><td><strong>Vedlikeholdsansvarlig:</strong></td><td>${segment.vedlikeholdsansvarlig || '-'}</td></tr>
+                            <tr><td><strong>Rutetype:</strong></td><td>${segment.rutetype || '-'}</td></tr>
+                            <tr><td><strong>Gradering:</strong></td><td>${segment.gradering || '-'}</td></tr>
+                        </table>
+                    `;
+                }
+
+                popupContent += `
+                        <br>
+                        <small style="color: #666;">Klikk for å se detaljer i sidebar</small>
+                    </div>
+                `;
+
+                // Create segment layer
+                const segmentLayer = L.geoJSON(segment.senterlinje, {
+                    style: {
+                        color: color,
+                        weight: weight,
+                        opacity: 0.9
+                    },
+                    onEachFeature: function(feature, layer) {
+                        layer.bindPopup(popupContent);
+                        layer.on('click', () => {
+                            selectSegment(String(segmentObjid));
+                        });
+                        layer.on('mouseover', function() {
+                            this.setStyle({ weight: weight + 2 });
+                        });
+                        layer.on('mouseout', function() {
+                            this.setStyle({ weight: weight });
+                        });
+                    }
+                });
+
+                segmentLayer.addTo(segmentLayerGroup);
+                
+                // Add markers at start and end of segment to distinguish them
+                if (segment.senterlinje && segment.senterlinje.coordinates) {
+                    const coords = segment.senterlinje.coordinates;
+                    if (coords.length > 0) {
+                        // Start marker (circle)
+                        const startCoord = coords[0];
+                        const startMarker = L.marker([startCoord[1], startCoord[0]], {
+                            icon: L.divIcon({
+                                className: 'segment-marker',
+                                html: `<div style="background-color: ${color}; width: 12px; height: 12px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>`,
+                                iconSize: [12, 12],
+                                iconAnchor: [6, 6]
+                            })
+                        }).bindTooltip(`Segment ${segmentObjid} (start)`, { permanent: false });
+                        startMarker.addTo(segmentLayerGroup);
+                        
+                        // End marker (arrow pointing in direction)
+                        const endCoord = coords[coords.length - 1];
+                        // Calculate direction from second-to-last to last point
+                        let angle = 0;
+                        if (coords.length >= 2) {
+                            const prevCoord = coords[coords.length - 2];
+                            const dx = endCoord[0] - prevCoord[0];
+                            const dy = endCoord[1] - prevCoord[1];
+                            angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                        }
+                        
+                        // Create arrow icon
+                        const arrowSize = 16;
+                        const arrowHtml = `
+                            <svg width="${arrowSize}" height="${arrowSize}" style="transform: rotate(${angle}deg);">
+                                <defs>
+                                    <marker id="arrowhead-${segmentObjid}" markerWidth="10" markerHeight="10" 
+                                            refX="9" refY="3" orient="auto">
+                                        <polygon points="0 0, 10 3, 0 6" fill="${color}" />
+                                    </marker>
+                                </defs>
+                                <line x1="0" y1="${arrowSize/2}" x2="${arrowSize}" y2="${arrowSize/2}" 
+                                      stroke="${color}" stroke-width="3" 
+                                      marker-end="url(#arrowhead-${segmentObjid})" />
+                            </svg>
+                        `;
+                        
+                        const endMarker = L.marker([endCoord[1], endCoord[0]], {
+                            icon: L.divIcon({
+                                className: 'segment-arrow-marker',
+                                html: arrowHtml,
+                                iconSize: [arrowSize, arrowSize],
+                                iconAnchor: [arrowSize/2, arrowSize/2]
+                            })
+                        }).bindTooltip(`Segment ${segmentObjid} (slutt)`, { permanent: false });
+                        endMarker.addTo(segmentLayerGroup);
+                        
+                        // Add arrow markers along the segment (every 25% of the way)
+                        if (coords.length >= 2) {
+                            for (let i = 1; i < 4; i++) {
+                                const idx = Math.floor((coords.length - 1) * i / 4);
+                                if (idx > 0 && idx < coords.length - 1) {
+                                    const arrowCoord = coords[idx];
+                                    const prevArrowCoord = coords[idx - 1];
+                                    const dx = arrowCoord[0] - prevArrowCoord[0];
+                                    const dy = arrowCoord[1] - prevArrowCoord[1];
+                                    const arrowAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+                                    
+                                    const midArrowHtml = `
+                                        <svg width="${arrowSize}" height="${arrowSize}" style="transform: rotate(${arrowAngle}deg);">
+                                            <defs>
+                                                <marker id="arrowhead-mid-${segmentObjid}-${i}" markerWidth="8" markerHeight="8" 
+                                                        refX="7" refY="2.5" orient="auto">
+                                                    <polygon points="0 0, 8 2.5, 0 5" fill="${color}" opacity="0.7" />
+                                                </marker>
+                                            </defs>
+                                            <line x1="0" y1="${arrowSize/2}" x2="${arrowSize}" y2="${arrowSize/2}" 
+                                                  stroke="${color}" stroke-width="2" opacity="0.7"
+                                                  marker-end="url(#arrowhead-mid-${segmentObjid}-${i})" />
+                                        </svg>
+                                    `;
+                                    
+                                    const midArrowMarker = L.marker([arrowCoord[1], arrowCoord[0]], {
+                                        icon: L.divIcon({
+                                            className: 'segment-arrow-marker',
+                                            html: midArrowHtml,
+                                            iconSize: [arrowSize, arrowSize],
+                                            iconAnchor: [arrowSize/2, arrowSize/2]
+                                        })
+                                    });
+                                    midArrowMarker.addTo(segmentLayerGroup);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                segmentLayers.push({
+                    objid: segmentObjid,
+                    layer: segmentLayer,
+                    status: status
+                });
+            });
+        }
+
+        function getLinkStatus(linkId, validation) {
+            // Check if link has errors or warnings
+            const hasErrors = validation.errors.some(e => 
+                e.affected_links && e.affected_links.includes(linkId)
+            );
+            const hasWarnings = validation.warnings.some(w => 
+                w.affected_links && w.affected_links.includes(linkId)
+            );
+            
+            if (hasErrors) return 'error';
+            if (hasWarnings) return 'warning';
+            return 'ok';
+        }
+
+        function displayLinksOnMap(linksData, validation) {
+            clearLinks();
+
+            if (!linksData || !linksData.links || linksData.links.length === 0) {
+                console.warn('No link data to display:', linksData);
+                return;
+            }
+
+            console.log('Displaying links on map:', linksData.links.length, 'links');
+
+            // Create layer group for links
+            linkLayerGroup = L.layerGroup().addTo(map);
+            layerControl.addOverlay(linkLayerGroup, `Lenker (${linksData.links.length})`);
+
+            // Get link colors from constants
+            const linkColors = window.SEGMENT_COLORS || [
+                '#9b59b6', '#1abc9c', '#e67e22', '#34495e', '#16a085',
+                '#27ae60', '#2980b9', '#8e44ad', '#c0392b', '#d35400'
+            ];
+
+            linksData.links.forEach((link, index) => {
+                if (!link.geom) {
+                    console.warn(`Link ${link.link_id} has no geometry`);
+                    return;
+                }
+
+                const linkId = link.link_id;
+                const status = getLinkStatus(linkId, validation);
+                
+                // Determine color based on status
+                let color = linkColors[index % linkColors.length];
+                let weight = 3;
+                if (status === 'error') {
+                    color = '#e74c3c';
+                    weight = 5;
+                } else if (status === 'warning') {
+                    color = '#f39c12';
+                    weight = 4;
+                }
+
+                // Build popup content with link metadata
+                let popupContent = `
+                    <div style="min-width: 250px;">
+                        <strong>Link ${linkId}</strong>
+                        ${status === 'error' ? ' <span style="color: #e74c3c;">⚠️</span>' : ''}
+                        ${status === 'warning' ? ' <span style="color: #f39c12;">⚠️</span>' : ''}
+                        <br><br>
+                        <table style="font-size: 0.9em; width: 100%;">
+                            <tr><td><strong>Lengde:</strong></td><td>${link.length_m ? `${link.length_m.toFixed(1)} m` : 'N/A'}</td></tr>
+                            <tr><td><strong>A-node:</strong></td><td>${link.a_node || '-'}${link.a_node_name ? ` (${link.a_node_name})` : ''}</td></tr>
+                            <tr><td><strong>B-node:</strong></td><td>${link.b_node || '-'}${link.b_node_name ? ` (${link.b_node_name})` : ''}</td></tr>
+                            ${link.segment_objids && link.segment_objids.length > 0 ? `
+                            <tr><td><strong>Segmenter:</strong></td><td>${link.segment_objids.join(', ')}</td></tr>
+                            ` : ''}
+                        </table>
+                        <br>
+                        <small style="color: #666;">Klikk for å se detaljer</small>
+                    </div>
+                `;
+
+                // Create link layer
+                const linkLayer = L.geoJSON(link.geom, {
+                    style: {
+                        color: color,
+                        weight: weight,
+                        opacity: 0.8,
+                        dashArray: '5, 5'  // Dashed line to distinguish from segments
+                    },
+                    onEachFeature: function(feature, layer) {
+                        layer.bindPopup(popupContent);
+                        layer.on('click', () => {
+                            selectLink(linkId);
+                        });
+                        layer.on('mouseover', function() {
+                            this.setStyle({ weight: weight + 2, opacity: 1.0 });
+                        });
+                        layer.on('mouseout', function() {
+                            this.setStyle({ weight: weight, opacity: 0.8 });
+                        });
+                    }
+                });
+
+                linkLayer.addTo(linkLayerGroup);
+                
+                // Add markers at start and end of link
+                // Handle both LineString and MultiLineString geometries
+                let coords = [];
+                if (link.geom.type === 'LineString') {
+                    coords = link.geom.coordinates;
+                } else if (link.geom.type === 'MultiLineString') {
+                    // Use first line string for markers
+                    coords = link.geom.coordinates[0] || [];
+                }
+                
+                if (coords && coords.length > 0) {
+                    // Start marker (a_node)
+                    const startCoord = coords[0];
+                    const startMarker = L.marker([startCoord[1], startCoord[0]], {
+                        icon: L.divIcon({
+                            className: 'link-marker',
+                            html: `<div style="background-color: ${color}; width: 10px; height: 10px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>`,
+                            iconSize: [10, 10],
+                            iconAnchor: [5, 5]
+                        })
+                    }).bindTooltip(`Link ${linkId} (A: ${link.a_node || '?'})`, { permanent: false });
+                    startMarker.addTo(linkLayerGroup);
+                    
+                    // End marker (b_node)
+                    const endCoord = coords[coords.length - 1];
+                    const endMarker = L.marker([endCoord[1], endCoord[0]], {
+                        icon: L.divIcon({
+                            className: 'link-marker',
+                            html: `<div style="background-color: ${color}; width: 10px; height: 10px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>`,
+                            iconSize: [10, 10],
+                            iconAnchor: [5, 5]
+                        })
+                    }).bindTooltip(`Link ${linkId} (B: ${link.b_node || '?'})`, { permanent: false });
+                    endMarker.addTo(linkLayerGroup);
+                }
+
+                linkLayers.push({
+                    linkId: linkId,
+                    layer: linkLayer,
+                    status: status
+                });
+            });
+        }
+
+        function selectLink(linkId) {
+            // Highlight on map
+            linkLayers.forEach(({ linkId: lid, layer }) => {
+                if (lid === linkId) {
+                    layer.setStyle({ weight: 7, opacity: 1.0 });
+                    layer.openPopup();
+                    // Zoom to link
+                    const bounds = layer.getBounds();
+                    if (bounds && bounds.isValid()) {
+                        map.fitBounds(bounds, { padding: [100, 100], maxZoom: 16 });
+                    }
+                } else {
+                    // Reset other links
+                    const status = getLinkStatus(lid, currentValidation);
+                    const weight = status === 'error' ? 5 : status === 'warning' ? 4 : 3;
+                    layer.setStyle({ weight: weight, opacity: 0.8 });
+                }
+            });
+
+            // Show link details in sidebar
+            if (linkData && linkData.links) {
+                const link = linkData.links.find(l => l.link_id === linkId);
+                if (link) {
+                    displayLinkDetails(link);
+                    // Switch to details tab
+                    document.querySelector('.tab[data-tab="details"]').click();
+                }
+            }
+        }
+
+        function displayLinkDetails(link) {
+            const content = document.getElementById('detailsContent');
+
+            // Get validation issues for this link
+            const linkErrors = currentValidation.errors.filter(e => 
+                e.affected_links && e.affected_links.includes(link.link_id)
+            );
+            const linkWarnings = currentValidation.warnings.filter(w => 
+                w.affected_links && w.affected_links.includes(link.link_id)
+            );
+
+            const status = getLinkStatus(link.link_id, currentValidation);
+            const statusBadge = status === 'error' ? 
+                '<span class="validation-status status-error">FEIL</span>' :
+                status === 'warning' ? 
+                '<span class="validation-status status-warning">ADVARSEL</span>' :
+                '<span class="validation-status status-ok">OK</span>';
+
+            const errorsHtml = linkErrors.length > 0 ? `
+                <h4 style="color: #e74c3c; margin-top: 16px;">Feil (${linkErrors.length})</h4>
+                ${linkErrors.map(err => `
+                    <div class="issue-item issue-error" style="margin: 8px 0;">
+                        <strong>${err.type}</strong><br>
+                        ${err.message}
+                    </div>
+                `).join('')}
+            ` : '';
+
+            const warningsHtml = linkWarnings.length > 0 ? `
+                <h4 style="color: #f39c12; margin-top: 16px;">Advarsler (${linkWarnings.length})</h4>
+                ${linkWarnings.map(warn => `
+                    <div class="issue-item issue-warning" style="margin: 8px 0;">
+                        <strong>${warn.type}</strong><br>
+                        ${warn.message}
+                    </div>
+                `).join('')}
+            ` : '';
+
+            content.innerHTML = `
+                <div style="margin-bottom: 16px;">
+                    <h3>Link ${link.link_id} ${statusBadge}</h3>
+                </div>
+                <table class="metadata-table">
+                    <tr>
+                        <td>Lengde:</td>
+                        <td>${link.length_m ? `${link.length_m.toFixed(1)} m` : 'N/A'}</td>
+                    </tr>
+                    <tr>
+                        <td>A-node:</td>
+                        <td>${link.a_node || '-'}${link.a_node_name ? ` (${link.a_node_name})` : ''}</td>
+                    </tr>
+                    <tr>
+                        <td>B-node:</td>
+                        <td>${link.b_node || '-'}${link.b_node_name ? ` (${link.b_node_name})` : ''}</td>
+                    </tr>
+                    ${link.segment_objids && link.segment_objids.length > 0 ? `
+                    <tr>
+                        <td>Segmenter:</td>
+                        <td>${link.segment_objids.join(', ')}</td>
+                    </tr>
+                    ` : ''}
+                </table>
+                ${errorsHtml}
+                ${warningsHtml}
+            `;
+        }
+
+        function displayValidationResults(validation) {
+            const content = document.getElementById('validationContent');
+
+            // Status badge
+            const statusClass = validation.status === 'OK' ? 'status-ok' : 
+                               validation.status === 'WARNING' ? 'status-warning' : 'status-error';
+            const statusBadge = `<span class="validation-status ${statusClass}">${validation.status}</span>`;
+
+            // Summary
+            const summary = validation.summary;
+            const summaryHtml = `
+                <div class="validation-summary">
+                    <div class="summary-item">
+                        <div class="summary-item-value">${summary.total_segments}</div>
+                        <div class="summary-item-label">Segmenter</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-item-value">${summary.total_links}</div>
+                        <div class="summary-item-label">Lenker</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-item-value" style="color: #e74c3c;">${summary.error_count}</div>
+                        <div class="summary-item-label">Feil</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-item-value" style="color: #f39c12;">${summary.warning_count}</div>
+                        <div class="summary-item-label">Advarsler</div>
+                    </div>
+                </div>
+            `;
+
+            // Errors
+            const errorsHtml = validation.errors.length > 0 ? `
+                <h3>Feil (${validation.errors.length})</h3>
+                ${validation.errors.map(err => `
+                    <div class="issue-item issue-error">
+                        <strong>${err.type}</strong><br>
+                        ${err.message}
+                        ${err.affected_segments && err.affected_segments.length > 0 ? 
+                            `<br><small>Segmenter: ${err.affected_segments.join(', ')}</small>` : ''}
+                        ${err.affected_links && err.affected_links.length > 0 ? 
+                            `<br><small>Lenker: ${err.affected_links.join(', ')}</small>` : ''}
+                    </div>
+                `).join('')}
+            ` : '';
+
+            // Warnings
+            const warningsHtml = validation.warnings.length > 0 ? `
+                <h3>Advarsler (${validation.warnings.length})</h3>
+                ${validation.warnings.map(warn => `
+                    <div class="issue-item issue-warning">
+                        <strong>${warn.type}</strong><br>
+                        ${warn.message}
+                        ${warn.affected_segments && warn.affected_segments.length > 0 ? 
+                            `<br><small>Segmenter: ${warn.affected_segments.join(', ')}</small>` : ''}
+                        ${warn.affected_links && warn.affected_links.length > 0 ? 
+                            `<br><small>Lenker: ${warn.affected_links.join(', ')}</small>` : ''}
+                        ${warn.value_by_segment ? `
+                            <br><small>Verdier per segment:</small>
+                            <ul style="margin: 4px 0; padding-left: 20px;">
+                                ${Object.entries(warn.value_by_segment).map(([val, segs]) => 
+                                    `<li>"${val}": ${segs.join(', ')}</li>`
+                                ).join('')}
+                            </ul>
+                        ` : ''}
+                    </div>
+                `).join('')}
+            ` : '';
+
+            // Info
+            const infoHtml = validation.geometry_info.length > 0 ? `
+                <h3>Info (${validation.geometry_info.length})</h3>
+                ${validation.geometry_info.map(info => `
+                    <div class="issue-item issue-info">
+                        <strong>${info.type}</strong><br>
+                        ${info.message}
+                    </div>
+                `).join('')}
+            ` : '';
+
+            content.innerHTML = `
+                <div style="margin-bottom: 16px;">
+                    <h3>Status: ${statusBadge}</h3>
+                </div>
+                ${summaryHtml}
+                ${errorsHtml}
+                ${warningsHtml}
+                ${infoHtml}
+            `;
+
+            // Display segments
+            displaySegments(validation);
+        }
+
+        function displaySegments(validation) {
+            const content = document.getElementById('segmentsContent');
+            
+            if (!validation.segment_metadata || validation.segment_metadata.length === 0) {
+                content.innerHTML = '<p>Ingen segmenter tilgjengelig.</p>';
+                return;
+            }
+
+            const segmentsHtml = validation.segment_metadata.map(seg => {
+                const lengthStr = seg.length_meters !== null ? 
+                    `${seg.length_meters.toFixed(1)} m` : 'N/A';
+                
+                // Find errors/warnings for this segment
+                const segmentErrors = currentValidation.errors.filter(e => 
+                    e.affected_segments && e.affected_segments.includes(seg.segment_objid)
+                );
+                const segmentWarnings = currentValidation.warnings.filter(w => 
+                    w.affected_segments && w.affected_segments.includes(seg.segment_objid)
+                );
+
+                const hasIssues = segmentErrors.length > 0 || segmentWarnings.length > 0;
+                const issueBadge = hasIssues ? 
+                    `<span style="color: ${segmentErrors.length > 0 ? '#e74c3c' : '#f39c12'};">
+                        ${segmentErrors.length > 0 ? '⚠️' : 'ℹ️'}
+                    </span>` : '';
+
+                return `
+                    <div class="segment-item" onclick="selectSegment('${seg.segment_objid}')" 
+                         data-segment-id="${seg.segment_objid}">
+                        <strong>Segment ${seg.segment_objid}</strong> ${issueBadge}
+                        <br>
+                        <small>Lengde: ${lengthStr} | ${seg.fotruteinfo_count} fotruteinfo-rad(er)</small>
+                        ${hasIssues ? `
+                            <br><small style="color: #e74c3c;">
+                                ${segmentErrors.length} feil, ${segmentWarnings.length} advarsler
+                            </small>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+
+            content.innerHTML = `
+                <h3>Segmenter (${validation.segment_metadata.length})</h3>
+                <div id="segmentsList">${segmentsHtml}</div>
+            `;
+        }
+
+        function selectSegment(segmentObjid) {
+            // Update selection in list
+            document.querySelectorAll('.segment-item').forEach(item => {
+                item.classList.remove('selected');
+            });
+            const item = document.querySelector(`[data-segment-id="${segmentObjid}"]`);
+            if (item) {
+                item.classList.add('selected');
+                item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                selectedSegment = segmentObjid;
+            }
+
+            // Highlight on map
+            segmentLayers.forEach(({ objid, layer }) => {
+                if (String(objid) === String(segmentObjid)) {
+                    layer.setStyle({ weight: 8, opacity: 1.0 });
+                    layer.openPopup();
+                    // Zoom to segment
+                    const bounds = layer.getBounds();
+                    if (bounds && bounds.isValid()) {
+                        map.fitBounds(bounds, { padding: [100, 100], maxZoom: 16 });
+                    }
+                } else {
+                    // Reset other segments
+                    const status = getSegmentStatus(objid, currentValidation);
+                    const weight = status === 'error' ? 6 : status === 'warning' ? 5 : 4;
+                    layer.setStyle({ weight: weight, opacity: 0.9 });
+                }
+            });
+
+            // Show details
+            if (currentValidation && currentValidation.segment_metadata) {
+                const segment = currentValidation.segment_metadata.find(
+                    s => s.segment_objid === segmentObjid
+                );
+                if (segment) {
+                    displaySegmentDetails(segment);
+                    // Switch to details tab
+                    document.querySelector('.tab[data-tab="details"]').click();
+                }
+            }
+        }
+
+        function displaySegmentDetails(segment) {
+            const content = document.getElementById('detailsContent');
+
+            // Find segment in API data for additional info
+            const apiSegment = segmentData && segmentData.segments ? 
+                segmentData.segments.find(s => s.segment_objid === segment.segment_objid) : null;
+
+            // Get validation issues for this segment
+            const segmentErrors = currentValidation.errors.filter(e => 
+                e.affected_segments && e.affected_segments.includes(segment.segment_objid)
+            );
+            const segmentWarnings = currentValidation.warnings.filter(w => 
+                w.affected_segments && w.affected_segments.includes(segment.segment_objid)
+            );
+
+            const status = getSegmentStatus(segment.segment_objid, currentValidation);
+            const statusBadge = status === 'error' ? 
+                '<span class="validation-status status-error">FEIL</span>' :
+                status === 'warning' ? 
+                '<span class="validation-status status-warning">ADVARSEL</span>' :
+                '<span class="validation-status status-ok">OK</span>';
+
+            const metadataRows = segment.fotruteinfo_rows.map((row, idx) => `
+                <tr>
+                    <td>Rad ${idx + 1}</td>
+                    <td>${row.rutenummer || '-'}</td>
+                    <td>${row.rutenavn || '-'}</td>
+                    <td>${row.vedlikeholdsansvarlig || '-'}</td>
+                    <td>${row.rutetype || '-'}</td>
+                    <td>${row.gradering || '-'}</td>
+                </tr>
+            `).join('');
+
+            const errorsHtml = segmentErrors.length > 0 ? `
+                <h4 style="color: #e74c3c; margin-top: 16px;">Feil (${segmentErrors.length})</h4>
+                ${segmentErrors.map(err => `
+                    <div class="issue-item issue-error" style="margin: 8px 0;">
+                        <strong>${err.type}</strong><br>
+                        ${err.message}
+                    </div>
+                `).join('')}
+            ` : '';
+
+            const warningsHtml = segmentWarnings.length > 0 ? `
+                <h4 style="color: #f39c12; margin-top: 16px;">Advarsler (${segmentWarnings.length})</h4>
+                ${segmentWarnings.map(warn => `
+                    <div class="issue-item issue-warning" style="margin: 8px 0;">
+                        <strong>${warn.type}</strong><br>
+                        ${warn.message}
+                    </div>
+                `).join('')}
+            ` : '';
+
+            content.innerHTML = `
+                <div style="margin-bottom: 16px;">
+                    <h3>Segment ${segment.segment_objid} ${statusBadge}</h3>
+                </div>
+                <table class="metadata-table">
+                    <tr>
+                        <td>Lengde:</td>
+                        <td>${segment.length_meters !== null ? `${segment.length_meters.toFixed(1)} m` : 'N/A'}</td>
+                    </tr>
+                    <tr>
+                        <td>Fotruteinfo-rader:</td>
+                        <td>${segment.fotruteinfo_count}</td>
+                    </tr>
+                    ${apiSegment && apiSegment.source_node ? `
+                    <tr>
+                        <td>Kilde-node:</td>
+                        <td>${apiSegment.source_node}</td>
+                    </tr>
+                    ` : ''}
+                    ${apiSegment && apiSegment.target_node ? `
+                    <tr>
+                        <td>Mål-node:</td>
+                        <td>${apiSegment.target_node}</td>
+                    </tr>
+                    ` : ''}
+                </table>
+                <h4>Fotruteinfo-rader:</h4>
+                <table class="metadata-table">
+                    <thead>
+                        <tr>
+                            <th>Rad</th>
+                            <th>Rutenummer</th>
+                            <th>Rutenavn</th>
+                            <th>Vedlikeholdsansvarlig</th>
+                            <th>Rutetype</th>
+                            <th>Gradering</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${metadataRows}
+                    </tbody>
+                </table>
+                ${errorsHtml}
+                ${warningsHtml}
+            `;
+        }
+
+        // Event listeners
+        document.getElementById('routeSearchInput').addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+            if (query.length >= 2) {
+                performRouteSearch(query);
+            } else {
+                document.getElementById('routeSearchResults').classList.remove('active');
+            }
+        });
+
+        document.getElementById('routeSearchInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const query = e.target.value.trim();
+                if (query) {
+                    loadRoute(query);
+                }
+            }
+        });
+
+        document.getElementById('validateRouteBtn').addEventListener('click', () => {
+            if (currentRoute) {
+                loadRoute(currentRoute.rutenummer);
+            }
+        });
+
+        // Segment toggle
+        const showSegmentsToggle = document.getElementById('showSegmentsToggle');
+        if (showSegmentsToggle) {
+            showSegmentsToggle.addEventListener('change', (e) => {
+                showSegments = e.target.checked;
+                if (showSegments && segmentData && currentValidation) {
+                    displaySegmentsOnMap(segmentData, currentValidation);
+                } else {
+                    clearSegments();
+                }
+            });
+        }
+
+        // Link toggle
+        const showLinksToggle = document.getElementById('showLinksToggle');
+        if (showLinksToggle) {
+            showLinksToggle.addEventListener('change', (e) => {
+                showLinks = e.target.checked;
+                if (showLinks && linkData && currentValidation) {
+                    displayLinksOnMap(linkData, currentValidation);
+                } else {
+                    clearLinks();
+                }
+            });
+        }
+
+        // Close search results when clicking outside
+        document.addEventListener('click', (e) => {
+            const searchContainer = document.querySelector('.search-container');
+            if (!searchContainer.contains(e.target)) {
+                document.getElementById('routeSearchResults').classList.remove('active');
+            }
+        });
+
+        // About modal
+        const aboutLink = document.getElementById('aboutLink');
+        const aboutModal = document.getElementById('aboutModal');
+        const closeAboutModal = document.getElementById('closeAboutModal');
+
+        if (aboutLink) {
+            aboutLink.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (aboutModal) {
+                    aboutModal.classList.add('active');
+                }
+            });
+        }
+
+        if (closeAboutModal) {
+            closeAboutModal.addEventListener('click', () => {
+                if (aboutModal) {
+                    aboutModal.classList.remove('active');
+                }
+            });
+        }
+
+        if (aboutModal) {
+            aboutModal.addEventListener('click', (e) => {
+                if (e.target === aboutModal) {
+                    aboutModal.classList.remove('active');
+                }
+            });
+        }
+
+        // Make selectSegment available globally
+        window.selectSegment = selectSegment;
+    </script>
+</body>
+</html>

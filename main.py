@@ -1,5 +1,5 @@
 """FastAPI application main entry point."""
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -56,6 +56,14 @@ if frontend_path.exists():
         if index_path.exists():
             return FileResponse(str(index_path))
         return {"message": "Stiflyt Route API", "version": "0.1.0", "docs": "/docs"}
+
+    @app.get("/routes.html")
+    async def serve_routes_page():
+        """Serve frontend routes.html."""
+        routes_path = frontend_path / "routes.html"
+        if routes_path.exists():
+            return FileResponse(str(routes_path))
+        raise HTTPException(status_code=404, detail="routes.html not found")
 
     # debug.html route removed - debug functionality no longer used
 
