@@ -7,6 +7,8 @@ import type { Changeset } from '../types';
 import type { GeoJSON as GeoJSONType } from 'geojson';
 import { SnapManager } from '../utils/snap';
 import { api } from '../api/client';
+import { handleApiError } from '../utils/errorHandler';
+import { notificationManager } from '../utils/notifications';
 import 'leaflet/dist/leaflet.css';
 
 // Load Geoman dynamically to avoid Vite resolution issues
@@ -251,7 +253,9 @@ export function MapView({
           });
         })
         .catch(error => {
-          console.error('Failed to load routes:', error);
+          const appError = handleApiError(error, 'Load Routes');
+          // Don't show notification for background route loading - just log
+          // notificationManager.warning(`Kunne ikke laste ruter: ${appError.message}`);
         });
     };
 
@@ -319,7 +323,8 @@ export function MapView({
         });
       })
       .catch(error => {
-        console.error('Failed to load segments:', error);
+        const appError = handleApiError(error, 'Load Segments');
+        notificationManager.warning(`Kunne ikke laste segmenter: ${appError.message}`);
       });
 
     // Load links
@@ -358,7 +363,8 @@ export function MapView({
         });
       })
       .catch(error => {
-        console.error('Failed to load links:', error);
+        const appError = handleApiError(error, 'Load Links');
+        notificationManager.warning(`Kunne ikke laste lenker: ${appError.message}`);
       });
   }, [routeNumber, mapReady]);
 
@@ -606,10 +612,20 @@ export function MapView({
     }
 
     // Load diff layer
-    api.getDiffGeoJSON(changeset.id).then(setDiffLayer).catch(console.error);
+    api.getDiffGeoJSON(changeset.id)
+      .then(setDiffLayer)
+      .catch((error) => {
+        const appError = handleApiError(error, 'Load Diff Layer');
+        notificationManager.error(`Kunne ikke laste diff layer: ${appError.message}`);
+      });
     
     // Load effective layer
-    api.getEffectiveGeoJSON(changeset.id).then(setEffectiveLayer).catch(console.error);
+    api.getEffectiveGeoJSON(changeset.id)
+      .then(setEffectiveLayer)
+      .catch((error) => {
+        const appError = handleApiError(error, 'Load Effective Layer');
+        notificationManager.error(`Kunne ikke laste effective layer: ${appError.message}`);
+      });
 
     // Load snap targets when map moves
     const updateSnapTargets = () => {
@@ -618,7 +634,11 @@ export function MapView({
       const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
       api.getSnapTargets(bbox)
         .then((data) => snapManager.loadTargets(data.targets))
-        .catch(console.error);
+        .catch((error) => {
+          const appError = handleApiError(error, 'Load Snap Targets');
+          // Don't show notification for background snap target loading
+          // notificationManager.warning(`Kunne ikke laste snap targets: ${appError.message}`);
+        });
     };
 
     if (mapRef.current) {
@@ -647,9 +667,10 @@ export function MapView({
     try {
       await api.addEvent(changeset.id, event);
       onEventAdded(event);
+      notificationManager.success('Segment lagt til');
     } catch (error: any) {
-      console.error('Failed to add event:', error);
-      alert(`Failed to add segment: ${error.message || error}`);
+      const appError = handleApiError(error, 'Add Segment');
+      notificationManager.error(`Kunne ikke legge til segment: ${appError.message}`);
     }
   };
 
@@ -666,9 +687,10 @@ export function MapView({
     try {
       await api.addEvent(changeset.id, event);
       onEventAdded(event);
+      notificationManager.success('Geometri oppdatert');
     } catch (error: any) {
-      console.error('Failed to update geometry:', error);
-      alert(`Failed to update geometry: ${error.message || error}`);
+      const appError = handleApiError(error, 'Update Geometry');
+      notificationManager.error(`Kunne ikke oppdatere geometri: ${appError.message}`);
     }
   };
 
@@ -918,10 +940,10 @@ export function MapView({
             onClick={() => {
               if (selectedFeatureId) {
                 // TODO: Open dialog/panel to edit segment data
-                alert('Rediger segment/rutedata: Åpner dialog for å redigere rutenummer, rutenavn, etc.');
+                notificationManager.info('Rediger segment/rutedata: Åpner dialog for å redigere rutenummer, rutenavn, etc.');
                 setActiveTool('edit-data');
               } else {
-                alert('Velg et segment først for å redigere data');
+                notificationManager.warning('Velg et segment først for å redigere data');
               }
             }}
             style={{
@@ -948,7 +970,7 @@ export function MapView({
           <button
             onClick={() => {
               // TODO: Implement split segment
-              alert('Del segment: Klikk på et punkt på segmentet for å dele det');
+              notificationManager.info('Del segment: Klikk på et punkt på segmentet for å dele det');
               setActiveTool('split');
             }}
             style={{
@@ -976,10 +998,10 @@ export function MapView({
             onClick={() => {
               if (selectedFeatureId) {
                 // TODO: Implement delete segment
-                alert('Slett segment: Segment vil bli slettet');
+                notificationManager.info('Slett segment: Segment vil bli slettet');
                 setActiveTool('delete');
               } else {
-                alert('Velg et segment først for å slette det');
+                notificationManager.warning('Velg et segment først for å slette det');
               }
             }}
             style={{

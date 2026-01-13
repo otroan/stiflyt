@@ -6,29 +6,73 @@ import type {
   ValidationResponse,
   SnapTarget,
 } from '../types';
+import { handleApiError, isRetryableError, type AppError } from '../utils/errorHandler';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
+interface RequestOptions extends RequestInit {
+  retries?: number;
+  retryDelay?: number;
+}
+
+/**
+ * Request with automatic retry for retryable errors
+ */
 async function request<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: RequestOptions = {}
 ): Promise<T> {
+  const { retries = 3, retryDelay = 1000, ...fetchOptions } = options;
   const user = localStorage.getItem('user') || 'anonymous';
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User': user,
-      ...options.headers,
-    },
-  });
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(error.detail || `HTTP ${response.status}: ${response.statusText}`);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(`${API_BASE}${endpoint}`, {
+        ...fetchOptions,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User': user,
+          ...fetchOptions.headers,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: response.statusText }));
+        const errorObj = {
+          message: error.detail || `HTTP ${response.status}: ${response.statusText}`,
+          statusCode: response.status,
+          status: response.status,
+        };
+        
+        // If retryable and not last attempt, retry
+        if (isRetryableError(errorObj) && attempt < retries) {
+          lastError = errorObj;
+          await new Promise(resolve => setTimeout(resolve, retryDelay * (attempt + 1)));
+          continue;
+        }
+        
+        throw errorObj;
+      }
+
+      return response.json();
+    } catch (error) {
+      lastError = error;
+      
+      // If retryable and not last attempt, retry
+      if (isRetryableError(error) && attempt < retries) {
+        await new Promise(resolve => setTimeout(resolve, retryDelay * (attempt + 1)));
+        continue;
+      }
+      
+      // Last attempt or non-retryable error
+      throw error;
+    }
   }
 
-  return response.json();
+  // This should never be reached, but TypeScript needs it
+  throw lastError;
 }
 
 export const api = {

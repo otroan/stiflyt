@@ -2,6 +2,8 @@
 import { useState, useEffect } from 'react';
 import type { Changeset, ChangeEvent, ValidationIssue } from '../types';
 import { api } from '../api/client';
+import { handleApiError } from '../utils/errorHandler';
+import { notificationManager } from '../utils/notifications';
 
 interface SidePanelProps {
   changeset: Changeset;
@@ -22,7 +24,10 @@ export function SidePanel({
   useEffect(() => {
     api.getEvents(changeset.id)
       .then((data) => setEvents(data.events))
-      .catch(console.error);
+      .catch((error) => {
+        const appError = handleApiError(error, 'Load Events');
+        notificationManager.error(`Kunne ikke laste events: ${appError.message}`);
+      });
   }, [changeset.id]);
 
   const handleValidate = async () => {
@@ -30,9 +35,16 @@ export function SidePanel({
     try {
       const result = await api.validate(changeset.id);
       setValidation(result);
+      if (result.errors.length === 0 && result.warnings.length === 0) {
+        notificationManager.success('Validering fullført: Ingen feil funnet');
+      } else {
+        notificationManager.warning(
+          `Validering fullført: ${result.errors.length} feil, ${result.warnings.length} advarsler`
+        );
+      }
     } catch (error) {
-      console.error('Validation failed:', error);
-      alert(`Validation failed: ${error}`);
+      const appError = handleApiError(error, 'Validation');
+      notificationManager.error(`Validering feilet: ${appError.message}`);
     } finally {
       setIsValidating(false);
     }
@@ -46,21 +58,32 @@ export function SidePanel({
     setIsPublishing(true);
     try {
       const result = await api.publish(changeset.id);
-      alert(`Changeset published! PR: ${result.pr_url || 'N/A'}`);
+      notificationManager.success(
+        `Changeset publisert! PR: ${result.pr_url || 'N/A'}`,
+        0 // Don't auto-dismiss success for publish
+      );
       onChangesetUpdate();
     } catch (error: any) {
-      console.error('Publish failed:', error);
-      if (error.message?.includes('errors')) {
-        const errorData = await error.response?.json().catch(() => null);
-        if (errorData?.errors) {
-          setValidation({ errors: errorData.errors, warnings: errorData.warnings || [] });
-          alert(`Publish failed: ${errorData.errors.length} errors found. See validation panel.`);
-        } else {
-          alert(`Publish failed: ${error}`);
+      const appError = handleApiError(error, 'Publish');
+      
+      // Try to extract validation errors from response
+      if (error && typeof error === 'object' && 'response' in error) {
+        try {
+          const errorData = await (error as any).response?.json().catch(() => null);
+          if (errorData?.errors) {
+            setValidation({ errors: errorData.errors, warnings: errorData.warnings || [] });
+            notificationManager.error(
+              `Publisering feilet: ${errorData.errors.length} feil funnet. Se valideringspanel.`,
+              0
+            );
+            return;
+          }
+        } catch {
+          // Ignore JSON parse errors
         }
-      } else {
-        alert(`Publish failed: ${error}`);
       }
+      
+      notificationManager.error(`Publisering feilet: ${appError.message}`, 0);
     } finally {
       setIsPublishing(false);
     }

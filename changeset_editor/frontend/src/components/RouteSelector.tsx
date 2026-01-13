@@ -1,5 +1,7 @@
 /** Route selector component for choosing a route to edit */
 import { useState, useEffect } from 'react';
+import { handleApiError } from '../utils/errorHandler';
+import { notificationManager } from '../utils/notifications';
 
 interface Route {
   rutenummer: string;
@@ -73,11 +75,15 @@ export function RouteSelector({ onSelectRoute, loading }: RouteSelectorProps) {
           }
         }
       } catch (error) {
-        console.error('Search error:', error);
+        const appError = handleApiError(error, 'Route Search');
+        // Don't show notification for search errors - just log silently
+        // notificationManager.warning(`Søk feilet: ${appError.message}`);
         setRoutes([]);
       }
     } catch (error) {
-      console.error('Failed to search routes:', error);
+      const appError = handleApiError(error, 'Route Search');
+      // Don't show notification for search errors - just log silently
+      // notificationManager.warning(`Søk feilet: ${appError.message}`);
       setRoutes([]);
     } finally {
       setIsSearching(false);

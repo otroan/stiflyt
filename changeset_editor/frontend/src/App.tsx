@@ -3,7 +3,10 @@ import { useState, useEffect } from 'react';
 import { MapView } from './components/MapView';
 import { SidePanel } from './components/SidePanel';
 import { RouteSelector } from './components/RouteSelector';
+import { NotificationContainer } from './components/NotificationContainer';
 import { api } from './api/client';
+import { handleApiError } from './utils/errorHandler';
+import { notificationManager } from './utils/notifications';
 import type { Changeset } from './types';
 import './App.css';
 
@@ -39,15 +42,18 @@ function App() {
       fetch(`/api/v1/routes/${route}?include_geometry=true`)
         .then(res => res.json())
         .then(data => setRouteGeometry(data.route_geometry || null))
-        .catch(console.error);
+        .catch((error) => {
+          const appError = handleApiError(error, 'Route Geometry Load');
+          notificationManager.error(`Kunne ikke laste rutegeometri: ${appError.message}`);
+        });
     }
 
     if (changesetId) {
       api.getChangeset(changesetId)
         .then(setChangeset)
         .catch((error) => {
-          console.error('Failed to load changeset:', error);
-          alert(`Failed to load changeset: ${error}`);
+          const appError = handleApiError(error, 'Changeset Load');
+          notificationManager.error(`Kunne ikke laste changeset: ${appError.message}`);
         })
         .finally(() => setLoading(false));
     } else {
@@ -73,8 +79,8 @@ function App() {
       // Update URL (without changeset yet)
       window.history.replaceState({}, '', `?route=${rutenummer}`);
     } catch (error: any) {
-      console.error('Failed to load route:', error);
-      alert(`Failed to load route: ${error.message || error}`);
+      const appError = handleApiError(error, 'Route Load');
+      notificationManager.error(`Kunne ikke laste rute: ${appError.message}`);
     } finally {
       setLoading(false);
     }
@@ -88,7 +94,7 @@ function App() {
   // Save/Commit: Create changeset and send all local events
   const handleSaveChanges = async () => {
     if (!routeNumber || localEvents.length === 0) {
-      alert('Ingen endringer å lagre');
+      notificationManager.warning('Ingen endringer å lagre');
       return;
     }
 
@@ -112,10 +118,10 @@ function App() {
       // Update URL with changeset
       window.history.replaceState({}, '', `?route=${routeNumber}&changeset=${newChangeset.id}`);
 
-      alert(`Endringer lagret! ${localEvents.length} endringer sendt til changeset.`);
+      notificationManager.success(`Endringer lagret! ${localEvents.length} endringer sendt til changeset.`);
     } catch (error: any) {
-      console.error('Failed to save changes:', error);
-      alert(`Kunne ikke lagre endringer: ${error.message || error}`);
+      const appError = handleApiError(error, 'Save Changes');
+      notificationManager.error(`Kunne ikke lagre endringer: ${appError.message}`);
     } finally {
       setLoading(false);
     }
@@ -126,7 +132,10 @@ function App() {
     if (changeset) {
       api.getChangeset(changeset.id)
         .then(setChangeset)
-        .catch(console.error);
+        .catch((error) => {
+          const appError = handleApiError(error, 'Reload Changeset');
+          notificationManager.error(`Kunne ikke oppdatere changeset: ${appError.message}`);
+        });
     }
   };
 
@@ -134,12 +143,17 @@ function App() {
     if (changeset) {
       api.getChangeset(changeset.id)
         .then(setChangeset)
-        .catch(console.error);
+        .catch((error) => {
+          const appError = handleApiError(error, 'Update Changeset');
+          notificationManager.error(`Kunne ikke oppdatere changeset: ${appError.message}`);
+        });
     }
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+    <>
+      <NotificationContainer />
+      <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
       {/* Sidebar */}
       <div style={{
         width: '400px',
@@ -232,6 +246,7 @@ function App() {
         />
       </div>
     </div>
+    </>
   );
 }
 
