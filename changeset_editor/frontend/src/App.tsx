@@ -7,14 +7,8 @@ import { NotificationContainer } from './components/NotificationContainer';
 import { api } from './api/client';
 import { handleApiError } from './utils/errorHandler';
 import { notificationManager } from './utils/notifications';
-import type { Changeset } from './types';
+import type { Changeset, LocalEvent, RouteResponse } from './types';
 import './App.css';
-
-// Local event type (before changeset is created)
-type LocalEvent = {
-  type: string;
-  [key: string]: any;
-};
 
 function App() {
   const [changeset, setChangeset] = useState<Changeset | null>(null);
@@ -24,7 +18,7 @@ function App() {
   const [routeNumber, setRouteNumber] = useState<string | null>(null);
   const [selectedRouteNumber, setSelectedRouteNumber] = useState<string | null>(null);
   const [showRouteSelector, setShowRouteSelector] = useState(true);
-  const [routeGeometry, setRouteGeometry] = useState<any>(null);
+  const [routeGeometry, setRouteGeometry] = useState<GeoJSON.Geometry | null>(null);
 
   // Local changes (before changeset is created)
   const [localEvents, setLocalEvents] = useState<LocalEvent[]>([]);
@@ -41,7 +35,7 @@ function App() {
       // Load route geometry
       fetch(`/api/v1/routes/${route}?include_geometry=true`)
         .then(res => res.json())
-        .then(data => setRouteGeometry(data.route_geometry || null))
+        .then((data: RouteResponse) => setRouteGeometry(data.route_geometry || null))
         .catch((error) => {
           const appError = handleApiError(error, 'Route Geometry Load');
           notificationManager.error(`Kunne ikke laste rutegeometri: ${appError.message}`);
@@ -72,13 +66,13 @@ function App() {
       if (!routeResponse.ok) {
         throw new Error(`Failed to load route: ${routeResponse.statusText}`);
       }
-      const routeData = await routeResponse.json();
+      const routeData = await routeResponse.json() as RouteResponse;
       setRouteGeometry(routeData.route_geometry || null);
       setRouteNumber(rutenummer);
       setShowRouteSelector(false);
       // Update URL (without changeset yet)
       window.history.replaceState({}, '', `?route=${rutenummer}`);
-    } catch (error: any) {
+    } catch (error: unknown) {
       const appError = handleApiError(error, 'Route Load');
       notificationManager.error(`Kunne ikke laste rute: ${appError.message}`);
     } finally {
@@ -119,7 +113,7 @@ function App() {
       window.history.replaceState({}, '', `?route=${routeNumber}&changeset=${newChangeset.id}`);
 
       notificationManager.success(`Endringer lagret! ${localEvents.length} endringer sendt til changeset.`);
-    } catch (error: any) {
+    } catch (error: unknown) {
       const appError = handleApiError(error, 'Save Changes');
       notificationManager.error(`Kunne ikke lagre endringer: ${appError.message}`);
     } finally {

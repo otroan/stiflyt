@@ -6,7 +6,7 @@ import type {
   ValidationResponse,
   SnapTarget,
 } from '../types';
-import { handleApiError, isRetryableError, type AppError } from '../utils/errorHandler';
+import { isRetryableError } from '../utils/errorHandler';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 

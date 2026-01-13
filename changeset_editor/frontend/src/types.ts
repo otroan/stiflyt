@@ -33,7 +33,7 @@ export type EventPayload =
 export interface SegmentUpdateAttrsEvent {
   type: 'segment.update_attrs';
   target: { kind: 'segment'; id: string };
-  patch: Array<{ op: 'replace' | 'add' | 'remove'; path: string; value?: any }>;
+  patch: Array<{ op: 'replace' | 'add' | 'remove'; path: string; value?: unknown }>;
   comment?: string;
 }
 
@@ -56,7 +56,7 @@ export interface SegmentAddEvent {
   temp_id: string;
   geometry: GeoJSON.LineString;
   srid: number;
-  attrs: Record<string, any>;
+  attrs: Record<string, unknown>;
   comment?: string;
 }
 
@@ -83,4 +83,117 @@ export interface SnapTarget {
   id: string;
   geometry: GeoJSON.LineString;
   vertices: number[][];
+}
+
+// Route API Response Types
+export interface RouteInfo {
+  rutenummer: string;
+  rutenavn: string | null;
+  vedlikeholdsansvarlig: string | null;
+  rutetype?: string | null;
+}
+
+export interface RouteResponse {
+  rutenummer: string;
+  rutenavn: string | null;
+  vedlikeholdsansvarlig: string | null;
+  rutetype?: string | null;
+  route_geometry: GeoJSON.Geometry | null;
+  total_length_m?: number;
+  total_length_meters?: number;
+  total_length_km?: number;
+  segment_count?: number;
+  segment_objids?: number[] | null;
+  from_name?: string | null;
+  to_name?: string | null;
+}
+
+export interface RoutesResponse {
+  routes: (RouteInfo & { route_geometry?: GeoJSON.Geometry | null })[];
+  total?: number;
+}
+
+export interface RouteSegment {
+  objid?: number;
+  segment_objid?: number;
+  rutenummer: string;
+  rutenavn?: string | null;
+  vedlikeholdsansvarlig?: string | null;
+  rutetype?: string | null;
+  gradering?: string | null;
+  geometry?: GeoJSON.Geometry | null;
+  senterlinje?: GeoJSON.Geometry | null;
+  length_meters?: number | null;
+  length_m?: number | null;
+  source_node?: number | null;
+  target_node?: number | null;
+}
+
+export interface RouteSegmentsResponse {
+  rutenummer: string;
+  segments: RouteSegment[];
+  total?: number;
+}
+
+export interface RouteLink {
+  link_id: number;
+  a_node: number | null;
+  b_node: number | null;
+  a_node_name?: string | null;
+  b_node_name?: string | null;
+  length_m?: number | null;
+  length_meters?: number | null;
+  segment_objids?: number[] | null;
+  geom?: GeoJSON.Geometry | null;
+  geometry?: GeoJSON.Geometry | null;
+  senterlinje?: GeoJSON.Geometry | null;
+}
+
+export interface RouteLinksResponse {
+  rutenummer: string;
+  links: RouteLink[];
+  total?: number;
+}
+
+// Local Event Type (before changeset is created)
+export type LocalEvent = EventPayload;
+
+// Type guards
+export function isSegmentAddEvent(event: EventPayload): event is SegmentAddEvent {
+  return event.type === 'segment.add';
+}
+
+export function isSegmentUpdateGeomEvent(event: EventPayload): event is SegmentUpdateGeomEvent {
+  return event.type === 'segment.update_geom';
+}
+
+export function isSegmentUpdateAttrsEvent(event: EventPayload): event is SegmentUpdateAttrsEvent {
+  return event.type === 'segment.update_attrs';
+}
+
+export function isSegmentRetireEvent(event: EventPayload): event is SegmentRetireEvent {
+  return event.type === 'segment.retire';
+}
+
+export function isSegmentDeleteNewEvent(event: EventPayload): event is SegmentDeleteNewEvent {
+  return event.type === 'segment.delete_new';
+}
+
+// Type guard for GeoJSON Geometry
+export function isLineString(geometry: GeoJSON.Geometry): geometry is GeoJSON.LineString {
+  return geometry.type === 'LineString';
+}
+
+export function isMultiLineString(geometry: GeoJSON.Geometry): geometry is GeoJSON.MultiLineString {
+  return geometry.type === 'MultiLineString';
+}
+
+// Type guard for route response
+export function isRouteResponse(data: unknown): data is RouteResponse {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'rutenummer' in data &&
+    typeof (data as RouteResponse).rutenummer === 'string'
+  );
 }

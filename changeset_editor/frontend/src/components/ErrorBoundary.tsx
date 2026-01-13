@@ -1,7 +1,7 @@
 /**
  * Error Boundary component for catching React errors
  */
-import React, { Component, ErrorInfo, ReactNode } from 'react';
+import { Component, ErrorInfo, ReactNode } from 'react';
 import { handleApiError } from '../utils/errorHandler';
 import { notificationManager } from '../utils/notifications';
 

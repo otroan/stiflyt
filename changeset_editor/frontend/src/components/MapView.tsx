@@ -1,10 +1,10 @@
 /** Map view component with Leaflet and Geoman */
 import { useEffect, useRef, useState } from 'react';
-import { MapContainer, TileLayer, GeoJSON, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { Changeset } from '../types';
-import type { GeoJSON as GeoJSONType } from 'geojson';
+import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo } from '../types';
+import type { GeoJSON } from 'geojson';
 import { SnapManager } from '../utils/snap';
 import { api } from '../api/client';
 import { handleApiError } from '../utils/errorHandler';
@@ -27,11 +27,11 @@ L.Marker.prototype.options.icon = DefaultIcon;
 
 interface MapViewProps {
   changeset: Changeset | null;
-  routeGeometry?: GeoJSONType.Geometry | null;
+  routeGeometry?: GeoJSON.Geometry | null;
   routeNumber?: string | null;
   selectedRouteNumber?: string | null;
   onRouteSelect?: (rutenummer: string) => void;
-  onEventAdded: (event: any) => void;
+  onEventAdded: (event: LocalEvent) => void;
   selectedFeatureId?: string;
   onFeatureSelect?: (id: string) => void;
   localEventsCount?: number;
@@ -55,8 +55,8 @@ function MapInitializer({
 }
 
 function GeomanControl({ onDrawComplete, onEditComplete }: {
-  onDrawComplete: (geometry: GeoJSONType.LineString) => void;
-  onEditComplete: (layerId: string, geometry: GeoJSONType.LineString) => void;
+  onDrawComplete: (geometry: GeoJSON.LineString) => void;
+  onEditComplete: (layerId: string, geometry: GeoJSON.LineString) => void;
 }) {
   const map = useMap();
 
@@ -88,7 +88,7 @@ function GeomanControl({ onDrawComplete, onEditComplete }: {
       if (layer instanceof L.Polyline) {
         const geoJson = layer.toGeoJSON();
         if (geoJson.geometry.type === 'LineString') {
-          onDrawComplete(geoJson.geometry as GeoJSONType.LineString);
+          onDrawComplete(geoJson.geometry as GeoJSON.LineString);
           map.removeLayer(layer);
         }
       }
@@ -96,12 +96,14 @@ function GeomanControl({ onDrawComplete, onEditComplete }: {
 
     // Handle edit complete
     map.on('pm:edit', (e) => {
-      const layer = e.target;
+      const layer = e.layer;
       if (layer instanceof L.Polyline) {
         const geoJson = layer.toGeoJSON();
         if (geoJson.geometry.type === 'LineString') {
-          const layerId = (layer as any).feature?.id || layer._leaflet_id;
-          onEditComplete(String(layerId), geoJson.geometry as GeoJSONType.LineString);
+          // Get layer ID from feature or fallback to Leaflet ID
+          const layerWithFeature = layer as L.Polyline & { feature?: { id?: string | number }; _leaflet_id?: number };
+          const layerId = layerWithFeature.feature?.id || layerWithFeature._leaflet_id;
+          onEditComplete(String(layerId), geoJson.geometry as GeoJSON.LineString);
         }
       }
     });
@@ -183,21 +185,19 @@ export function MapView({
   onFeatureSelect,
   localEventsCount = 0,
 }: MapViewProps) {
-  const [baseLayer, setBaseLayer] = useState<GeoJSONType.FeatureCollection | null>(null);
-  const [diffLayer, setDiffLayer] = useState<GeoJSONType.FeatureCollection | null>(null);
-  const [effectiveLayer, setEffectiveLayer] = useState<GeoJSONType.FeatureCollection | null>(null);
+  const [diffLayer, setDiffLayer] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [effectiveLayer, setEffectiveLayer] = useState<GeoJSON.FeatureCollection | null>(null);
   const [showEffective, setShowEffective] = useState(false);
   const [snapManager] = useState(() => new SnapManager());
   const mapRef = useRef<L.Map | null>(null);
   const routeLayerRef = useRef<L.GeoJSON | null>(null);
-  const routesLayerRef = useRef<L.GeoJSON | null>(null);
   const [mapReady, setMapReady] = useState(false);
-  const [routesInView, setRoutesInView] = useState<GeoJSONType.FeatureCollection | null>(null);
+  const [routesInView, setRoutesInView] = useState<GeoJSON.FeatureCollection | null>(null);
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [showSegments, setShowSegments] = useState(false);
   const [showLinks, setShowLinks] = useState(false);
-  const [segmentsData, setSegmentsData] = useState<GeoJSONType.FeatureCollection | null>(null);
-  const [linksData, setLinksData] = useState<GeoJSONType.FeatureCollection | null>(null);
+  const [segmentsData, setSegmentsData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [linksData, setLinksData] = useState<GeoJSON.FeatureCollection | null>(null);
   const segmentsLayerRef = useRef<L.GeoJSON | null>(null);
   const linksLayerRef = useRef<L.GeoJSON | null>(null);
   const endpointsLayerRef = useRef<L.LayerGroup | null>(null);
@@ -230,21 +230,33 @@ export function MapView({
           }
           return res.json();
         })
-        .then(data => {
+        .then((data: RoutesResponse) => {
           console.log('Routes API response:', data);
           // Convert routes to GeoJSON FeatureCollection
-          const features: GeoJSONType.Feature[] = (data.routes || []).map((route: any) => ({
-            type: 'Feature',
-            id: route.rutenummer,
-            geometry: route.route_geometry,
-            properties: {
-              rutenummer: route.rutenummer,
-              rutenavn: route.rutenavn,
-              vedlikeholdsansvarlig: route.vedlikeholdsansvarlig,
-            },
-          }));
+          // Convert routes to GeoJSON FeatureCollection
+          // Note: RouteInfo doesn't have route_geometry, but RoutesResponse routes might
+          const features: GeoJSON.Feature[] = (data.routes || [])
+            .map((route) => {
+              // Type assertion: routes from API may have route_geometry
+              const routeWithGeometry = route as RouteInfo & { route_geometry?: GeoJSON.Geometry | null };
+              const geometry = routeWithGeometry.route_geometry;
+              if (!geometry) {
+                return null;
+              }
+              return {
+                type: 'Feature' as const,
+                id: route.rutenummer,
+                geometry: geometry,
+                properties: {
+                  rutenummer: route.rutenummer,
+                  rutenavn: route.rutenavn,
+                  vedlikeholdsansvarlig: route.vedlikeholdsansvarlig,
+                },
+              } as GeoJSON.Feature;
+            })
+            .filter((f): f is GeoJSON.Feature => f !== null);
           
-          const filteredFeatures = features.filter((f: any) => f.geometry);
+          const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
           console.log(`Loaded ${filteredFeatures.length} routes with geometry`);
           
           setRoutesInView({
@@ -252,10 +264,9 @@ export function MapView({
             features: filteredFeatures,
           });
         })
-        .catch(error => {
-          const appError = handleApiError(error, 'Load Routes');
-          // Don't show notification for background route loading - just log
-          // notificationManager.warning(`Kunne ikke laste ruter: ${appError.message}`);
+        .catch(() => {
+          // Don't show notification for background route loading - just log silently
+          // Errors are logged by handleApiError
         });
     };
 
@@ -294,25 +305,31 @@ export function MapView({
         }
         return res.json();
       })
-      .then(data => {
+      .then((data: RouteSegmentsResponse) => {
         console.log('Segments API response:', data);
-        const features: GeoJSONType.Feature[] = (data.segments || []).map((seg: any) => {
-          // API returns geometry as 'senterlinje' not 'geometry'
-          // and uses 'segment_objid' not 'objid'
-          const geometry = seg.senterlinje || seg.geometry;
-          return {
-            type: 'Feature',
-            id: seg.segment_objid || seg.objid,
-            geometry: geometry,
-            properties: {
-              objid: seg.segment_objid || seg.objid,
-              rutenummer: seg.rutenummer,
-              rutenavn: seg.rutenavn,
-              length_m: seg.length_meters || seg.length_m,
-            },
-          };
-        });
-        const filteredFeatures = features.filter((f: any) => f.geometry);
+        const features: GeoJSON.Feature[] = (data.segments || [])
+          .map((seg) => {
+            // API returns geometry as 'senterlinje' not 'geometry'
+            // and uses 'segment_objid' not 'objid'
+            const geometry = seg.senterlinje || seg.geometry;
+            const segmentId = seg.segment_objid || seg.objid;
+            if (!geometry || segmentId === undefined) {
+              return null;
+            }
+            return {
+              type: 'Feature' as const,
+              id: segmentId,
+              geometry: geometry,
+              properties: {
+                objid: segmentId,
+                rutenummer: seg.rutenummer,
+                rutenavn: seg.rutenavn || null,
+                length_m: seg.length_meters || seg.length_m || null,
+              },
+            } as GeoJSON.Feature;
+          })
+          .filter((f): f is GeoJSON.Feature => f !== null);
+        const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
         console.log(`Loaded ${filteredFeatures.length} segments with geometry (out of ${features.length} total)`);
         if (filteredFeatures.length === 0 && features.length > 0) {
           console.warn('No segments with geometry found. First segment:', data.segments?.[0]);
@@ -335,24 +352,29 @@ export function MapView({
         }
         return res.json();
       })
-      .then(data => {
+      .then((data: RouteLinksResponse) => {
         console.log('Links API response:', data);
-        const features: GeoJSONType.Feature[] = (data.links || []).map((link: any) => {
-          // API returns geometry as 'geom' not 'geometry'
-          const geometry = link.geom || link.geometry || link.senterlinje;
-          return {
-            type: 'Feature',
-            id: link.link_id,
-            geometry: geometry,
-            properties: {
-              link_id: link.link_id,
-              a_node: link.a_node,
-              b_node: link.b_node,
-              length_m: link.length_m || link.length_meters,
-            },
-          };
-        });
-        const filteredFeatures = features.filter((f: any) => f.geometry);
+        const features: GeoJSON.Feature[] = (data.links || [])
+          .map((link) => {
+            // API returns geometry as 'geom' not 'geometry'
+            const geometry = link.geom || link.geometry || link.senterlinje;
+            if (!geometry) {
+              return null;
+            }
+            return {
+              type: 'Feature' as const,
+              id: link.link_id,
+              geometry: geometry,
+              properties: {
+                link_id: link.link_id,
+                a_node: link.a_node,
+                b_node: link.b_node,
+                length_m: link.length_m || link.length_meters || null,
+              },
+            } as GeoJSON.Feature;
+          })
+          .filter((f): f is GeoJSON.Feature => f !== null);
+        const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
         console.log(`Loaded ${filteredFeatures.length} links with geometry (out of ${features.length} total)`);
         if (filteredFeatures.length === 0 && features.length > 0) {
           console.warn('No links with geometry found. First link:', data.links?.[0]);
@@ -380,7 +402,7 @@ export function MapView({
 
     // Display selected route geometry if available
     if (routeGeometry && routeNumber === selectedRouteNumber) {
-      const routeLayer = L.geoJSON(routeGeometry as any, {
+      const routeLayer = L.geoJSON(routeGeometry, {
         style: {
           color: '#e74c3c',
           weight: 6,
@@ -429,20 +451,22 @@ export function MapView({
     }
 
     console.log('Displaying segments:', segmentsData.features.length, 'features');
-    const segmentsLayer = L.geoJSON(segmentsData as any, {
+    const segmentsLayer = L.geoJSON(segmentsData, {
       style: {
         color: '#9b59b6',
         weight: 4,
         opacity: 0.8,
       },
       onEachFeature: (feature, layer) => {
-        const props = feature.properties as any;
-        layer.bindPopup(`
-          <strong>Segment ${props.objid}</strong><br>
-          Rute: ${props.rutenummer}<br>
+        const props = feature.properties as { objid?: number | string; rutenummer?: string; rutenavn?: string | null; length_m?: number | null; [key: string]: unknown } | null;
+        if (props) {
+          layer.bindPopup(`
+          <strong>Segment ${props.objid ?? 'N/A'}</strong><br>
+          Rute: ${props.rutenummer || 'N/A'}<br>
           Navn: ${props.rutenavn || 'Uten navn'}<br>
-          Lengde: ${props.length_m?.toFixed(2) || 'N/A'} m
+          Lengde: ${typeof props.length_m === 'number' ? props.length_m.toFixed(2) : 'N/A'} m
         `);
+        }
       },
     }).addTo(mapRef.current);
 
@@ -475,7 +499,7 @@ export function MapView({
     }
 
     console.log('Displaying links:', linksData.features.length, 'features');
-    const linksLayer = L.geoJSON(linksData as any, {
+    const linksLayer = L.geoJSON(linksData, {
       style: {
         color: '#16a085',
         weight: 3,
@@ -483,13 +507,15 @@ export function MapView({
         dashArray: '5, 5',
       },
       onEachFeature: (feature, layer) => {
-        const props = feature.properties as any;
-        layer.bindPopup(`
-          <strong>Link ${props.link_id}</strong><br>
-          A-node: ${props.a_node}<br>
-          B-node: ${props.b_node}<br>
-          Lengde: ${props.length_m?.toFixed(2) || 'N/A'} m
+        const props = feature.properties as { link_id?: number; a_node?: number | null; b_node?: number | null; length_m?: number | null; [key: string]: unknown } | null;
+        if (props) {
+          layer.bindPopup(`
+          <strong>Link ${props.link_id ?? 'N/A'}</strong><br>
+          A-node: ${props.a_node ?? 'N/A'}<br>
+          B-node: ${props.b_node ?? 'N/A'}<br>
+          Lengde: ${typeof props.length_m === 'number' ? props.length_m.toFixed(2) : 'N/A'} m
         `);
+        }
       },
     }).addTo(mapRef.current);
 
@@ -653,7 +679,7 @@ export function MapView({
     };
   }, [changeset?.id, snapManager, mapReady]);
 
-  const handleDrawComplete = async (geometry: GeoJSONType.LineString) => {
+  const handleDrawComplete = async (geometry: GeoJSON.LineString) => {
     if (!changeset) return;
     
     const tempId = `tmp_${crypto.randomUUID()}`;
@@ -668,13 +694,13 @@ export function MapView({
       await api.addEvent(changeset.id, event);
       onEventAdded(event);
       notificationManager.success('Segment lagt til');
-    } catch (error: any) {
+    } catch (error: unknown) {
       const appError = handleApiError(error, 'Add Segment');
       notificationManager.error(`Kunne ikke legge til segment: ${appError.message}`);
     }
   };
 
-  const handleEditComplete = async (layerId: string, geometry: GeoJSONType.LineString) => {
+  const handleEditComplete = async (layerId: string, geometry: GeoJSON.LineString) => {
     if (!changeset) return;
     
     // Find if this is a base segment or new segment
@@ -688,14 +714,15 @@ export function MapView({
       await api.addEvent(changeset.id, event);
       onEventAdded(event);
       notificationManager.success('Geometri oppdatert');
-    } catch (error: any) {
+    } catch (error: unknown) {
       const appError = handleApiError(error, 'Update Geometry');
       notificationManager.error(`Kunne ikke oppdatere geometri: ${appError.message}`);
     }
   };
 
-  const getStyle = (feature: GeoJSONType.Feature, layer: L.Layer) => {
-    const op = (feature.properties as any)?.op;
+  const getStyle = (feature: GeoJSON.Feature, layer: L.Layer) => {
+    const props = feature.properties as { op?: string; [key: string]: unknown } | null;
+    const op = props?.op;
     if (op === 'add') {
       return { color: '#2ecc71', weight: 4, opacity: 0.8 };
     } else if (op === 'update') {
@@ -706,8 +733,9 @@ export function MapView({
     return { color: '#95a5a6', weight: 2, opacity: 0.6 };
   };
 
-  const onEachFeature = (feature: GeoJSONType.Feature, layer: L.Layer) => {
-    const featureId = feature.id || (feature.properties as any)?.id;
+  const onEachFeature = (feature: GeoJSON.Feature, layer: L.Layer) => {
+    const props = feature.properties as { id?: string | number; [key: string]: unknown } | null;
+    const featureId = feature.id || props?.id;
     const isSelected = String(featureId) === String(selectedFeatureId);
 
     if (isSelected) {
@@ -722,7 +750,10 @@ export function MapView({
 
     // Enable Geoman editing
     if (layer instanceof L.Polyline && mapRef.current?.pm) {
-      (layer as any).pm.enable({ allowSelfIntersection: false });
+      const layerWithPm = layer as L.Polyline & { pm?: { enable: (options: { allowSelfIntersection: boolean }) => void } };
+      if (layerWithPm.pm) {
+        layerWithPm.pm.enable({ allowSelfIntersection: false });
+      }
     }
   };
 
@@ -753,17 +784,9 @@ export function MapView({
 
         {mapReady && mapRef.current && <SnapLayer map={mapRef.current} snapManager={snapManager} />}
 
-        {/* Base layer (gray, readonly) */}
-        {baseLayer && (
-          <GeoJSON
-            data={baseLayer}
-            style={{ color: '#95a5a6', weight: 2, opacity: 0.4 }}
-          />
-        )}
-
         {/* Diff layer */}
         {diffLayer && !showEffective && changeset && (
-          <GeoJSON
+          <ReactLeafletGeoJSON
             data={diffLayer}
             style={getStyle}
             onEachFeature={onEachFeature}
@@ -772,7 +795,7 @@ export function MapView({
 
         {/* Effective layer */}
         {effectiveLayer && showEffective && changeset && (
-          <GeoJSON
+          <ReactLeafletGeoJSON
             data={effectiveLayer}
             style={{ color: '#3498db', weight: 3, opacity: 0.7 }}
             onEachFeature={onEachFeature}
@@ -781,10 +804,11 @@ export function MapView({
 
         {/* Routes in view - using React Leaflet GeoJSON for better integration */}
         {routesInView && (
-          <GeoJSON
+          <ReactLeafletGeoJSON
             data={routesInView}
             style={(feature) => {
-              const rutenummer = (feature?.properties as any)?.rutenummer;
+              const props = feature?.properties as { rutenummer?: string; [key: string]: unknown } | null;
+              const rutenummer = props?.rutenummer;
               const isSelected = rutenummer === selectedRouteNumber;
               return {
                 color: isSelected ? '#e74c3c' : '#3498db',
@@ -793,7 +817,7 @@ export function MapView({
               };
             }}
             onEachFeature={(feature, layer) => {
-              const props = feature.properties as any;
+              const props = feature.properties as { rutenummer?: string; rutenavn?: string; [key: string]: unknown } | null;
               const rutenummer = props?.rutenummer;
               
               // Add popup

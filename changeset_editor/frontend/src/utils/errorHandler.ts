@@ -22,11 +22,14 @@ export function extractErrorMessage(error: unknown): string {
   if (typeof error === 'string') {
     return error;
   }
-  if (error && typeof error === 'object' && 'message' in error) {
-    return String((error as any).message);
-  }
-  if (error && typeof error === 'object' && 'detail' in error) {
-    return String((error as any).detail);
+  if (error && typeof error === 'object') {
+    const errorObj = error as Record<string, unknown>;
+    if ('message' in errorObj && typeof errorObj.message === 'string') {
+      return errorObj.message;
+    }
+    if ('detail' in errorObj && typeof errorObj.detail === 'string') {
+      return errorObj.detail;
+    }
   }
   return 'En ukjent feil oppstod';
 }
@@ -36,11 +39,12 @@ export function extractErrorMessage(error: unknown): string {
  */
 export function extractErrorCode(error: unknown): string | undefined {
   if (error && typeof error === 'object') {
-    if ('code' in error) {
-      return String((error as any).code);
+    const errorObj = error as Record<string, unknown>;
+    if ('code' in errorObj && typeof errorObj.code === 'string') {
+      return errorObj.code;
     }
-    if ('statusCode' in error) {
-      return `HTTP_${(error as any).statusCode}`;
+    if ('statusCode' in errorObj && typeof errorObj.statusCode === 'number') {
+      return `HTTP_${errorObj.statusCode}`;
     }
   }
   return undefined;
@@ -55,14 +59,15 @@ export function isRetryableError(error: unknown): boolean {
     if (error instanceof TypeError && error.message.includes('fetch')) {
       return true;
     }
+    const errorObj = error as Record<string, unknown>;
     // 5xx server errors
-    if ('statusCode' in error) {
-      const status = (error as any).statusCode;
+    if ('statusCode' in errorObj && typeof errorObj.statusCode === 'number') {
+      const status = errorObj.statusCode;
       return status >= 500 && status < 600;
     }
     // 429 Too Many Requests
-    if ('status' in error) {
-      const status = (error as any).status;
+    if ('status' in errorObj && typeof errorObj.status === 'number') {
+      const status = errorObj.status;
       return status === 429 || (status >= 500 && status < 600);
     }
   }
@@ -79,10 +84,11 @@ export function normalizeError(error: unknown, context?: string): AppError {
 
   let statusCode: number | undefined;
   if (error && typeof error === 'object') {
-    if ('statusCode' in error) {
-      statusCode = (error as any).statusCode;
-    } else if ('status' in error) {
-      statusCode = (error as any).status;
+    const errorObj = error as Record<string, unknown>;
+    if ('statusCode' in errorObj && typeof errorObj.statusCode === 'number') {
+      statusCode = errorObj.statusCode;
+    } else if ('status' in errorObj && typeof errorObj.status === 'number') {
+      statusCode = errorObj.status;
     }
   }
 

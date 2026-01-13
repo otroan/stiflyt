@@ -1,6 +1,7 @@
 /** Side panel for changeset metadata and feature editing */
 import { useState, useEffect } from 'react';
-import type { Changeset, ChangeEvent, ValidationIssue } from '../types';
+import type { Changeset, ChangeEvent, ValidationIssue, EventPayload, SegmentAddEvent, SegmentUpdateGeomEvent } from '../types';
+import { isSegmentAddEvent, isSegmentUpdateGeomEvent } from '../types';
 import { api } from '../api/client';
 import { handleApiError } from '../utils/errorHandler';
 import { notificationManager } from '../utils/notifications';
@@ -63,20 +64,30 @@ export function SidePanel({
         0 // Don't auto-dismiss success for publish
       );
       onChangesetUpdate();
-    } catch (error: any) {
+    } catch (error: unknown) {
       const appError = handleApiError(error, 'Publish');
       
       // Try to extract validation errors from response
       if (error && typeof error === 'object' && 'response' in error) {
         try {
-          const errorData = await (error as any).response?.json().catch(() => null);
-          if (errorData?.errors) {
-            setValidation({ errors: errorData.errors, warnings: errorData.warnings || [] });
-            notificationManager.error(
-              `Publisering feilet: ${errorData.errors.length} feil funnet. Se valideringspanel.`,
-              0
-            );
-            return;
+          const errorWithResponse = error as { response?: { json: () => Promise<unknown> } };
+          const errorData = errorWithResponse.response 
+            ? await errorWithResponse.response.json().catch(() => null)
+            : null;
+          
+          if (errorData && typeof errorData === 'object' && errorData !== null) {
+            const validationData = errorData as { errors?: ValidationIssue[]; warnings?: ValidationIssue[] };
+            if (validationData.errors) {
+              setValidation({ 
+                errors: validationData.errors, 
+                warnings: validationData.warnings || [] 
+              });
+              notificationManager.error(
+                `Publisering feilet: ${validationData.errors.length} feil funnet. Se valideringspanel.`,
+                0
+              );
+              return;
+            }
           }
         } catch {
           // Ignore JSON parse errors
@@ -91,8 +102,16 @@ export function SidePanel({
 
   const selectedEvent = selectedFeatureId
     ? events.find((e) => {
-        const target = (e.event as any).target;
-        return target?.id === selectedFeatureId || (e.event as any).temp_id?.includes(selectedFeatureId);
+        const event = e.event;
+        if (isSegmentUpdateGeomEvent(event) || isSegmentAddEvent(event)) {
+          if (isSegmentUpdateGeomEvent(event)) {
+            return event.target.id === selectedFeatureId;
+          }
+          if (isSegmentAddEvent(event)) {
+            return event.temp_id.includes(selectedFeatureId);
+          }
+        }
+        return false;
       })
     : null;
 
@@ -200,7 +219,7 @@ export function SidePanel({
           <h3 style={{ margin: '0 0 8px 0', fontSize: '1em' }}>Selected Feature</h3>
           <div style={{ fontSize: '0.85em' }}>
             <div>ID: {selectedFeatureId}</div>
-            <div>Type: {(selectedEvent.event as any).type}</div>
+            <div>Type: {selectedEvent.event.type}</div>
             {/* Feature editing form would go here */}
           </div>
         </div>
@@ -221,7 +240,7 @@ export function SidePanel({
               }}
             >
               <div style={{ fontWeight: 'bold' }}>
-                {(event.event as any).type}
+                {event.event.type}
               </div>
               <div style={{ color: '#666', fontSize: '0.9em' }}>
                 {new Date(event.ts).toLocaleString()}
