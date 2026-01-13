@@ -248,8 +248,29 @@
         </div>
     </div>
 
+    <!-- Edit Segment Geometry Modal -->
+    <div id="editSegmentGeometryModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2>Rediger segment geometri</h2>
+                <button class="modal-close" id="closeEditSegmentGeometryModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="editSegmentGeometryInfo" style="margin-bottom: 16px; color: #666;"></p>
+                <div id="editSegmentGeometryContainer"></div>
+                <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #ddd; display: flex; gap: 8px; justify-content: flex-end;">
+                    <button id="cancelEditSegmentGeometryBtn" class="btn-secondary">Avbryt</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <!-- Leaflet Geoman (for geometry editing) -->
+    <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.css" />
+    <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.min.js"></script>
 
     <!-- Constants -->
     <script src="js/constants.js?v=2"></script>
@@ -260,6 +281,46 @@
     <script>
         // Initialize map
         const map = initMap('map');
+
+        // Initialize Geoman for geometry editing
+        if (typeof map.pm !== 'undefined') {
+            // Configure Geoman options
+            map.pm.setGlobalOptions({
+                allowSelfIntersection: false,
+                snappable: true,
+                snapDistance: 20,
+                // Disable drawing modes by default - we only use edit mode
+                drawCircle: false,
+                drawCircleMarker: false,
+                drawRectangle: false,
+                drawPolygon: false,
+                drawPolyline: false,
+                drawMarker: false,
+                drawText: false,
+                editMode: true,  // Enable edit mode
+                dragMode: false,
+                cutPolygon: true,  // Enable cut mode for splitting
+                removalMode: false,
+                rotateMode: false
+            });
+            
+            // Hide Geoman controls - we'll control it programmatically
+            map.pm.addControls({
+                position: 'topleft',
+                drawCircle: false,
+                drawCircleMarker: false,
+                drawRectangle: false,
+                drawPolygon: false,
+                drawPolyline: false,
+                drawMarker: false,
+                drawText: false,
+                editMode: false,  // Hide default edit button
+                dragMode: false,
+                cutPolygon: false,  // Hide default cut button
+                removalMode: false,
+                rotateMode: false
+            });
+        }
 
         // Create layers control
         const baseMaps = map._baseLayers || {};
@@ -603,6 +664,27 @@
                 if (!segment.senterlinje) return;
 
                 const segmentObjid = segment.segment_objid;
+                
+                // Get segment metadata to check if it has any routes
+                const segmentMeta = validation.segment_metadata.find(
+                    m => m.segment_objid === String(segmentObjid)
+                );
+                
+                // Skip segments that have no routes (all rutenummer removed)
+                if (segmentMeta && segmentMeta.fotruteinfo_rows && segmentMeta.fotruteinfo_rows.length === 0) {
+                    console.log(`Skipping segment ${segmentObjid} - no routes`);
+                    return;
+                }
+                
+                // Also check if all routes have been removed by checking if there are any rutenummer
+                if (segmentMeta && segmentMeta.fotruteinfo_rows) {
+                    const hasAnyRutenummer = segmentMeta.fotruteinfo_rows.some(row => row.rutenummer && row.rutenummer.trim() !== '');
+                    if (!hasAnyRutenummer) {
+                        console.log(`Skipping segment ${segmentObjid} - no rutenummer in any rows`);
+                        return;
+                    }
+                }
+                
                 const status = getSegmentStatus(segmentObjid, validation);
                 
                 // Determine color based on status
@@ -616,10 +698,7 @@
                     weight = 5;
                 }
 
-                // Get segment metadata from validation
-                const segmentMeta = validation.segment_metadata.find(
-                    m => m.segment_objid === String(segmentObjid)
-                );
+                // segmentMeta already fetched above
 
                 // Build popup content with metadata
                 let popupContent = `
@@ -719,6 +798,21 @@
                                     });
                                     
                                     const uniqueRoutes = Object.values(routesByNumber);
+                                    
+                                    // Hide segment if no routes remain
+                                    if (uniqueRoutes.length === 0) {
+                                        console.log(`Hiding segment ${segmentObjid} - no routes remaining`);
+                                        if (segmentLayerGroup && layer) {
+                                            segmentLayerGroup.removeLayer(layer);
+                                            // Also remove from segmentLayers array
+                                            const index = segmentLayers.findIndex(s => String(s.objid) === String(segmentObjid));
+                                            if (index !== -1) {
+                                                segmentLayers.splice(index, 1);
+                                            }
+                                        }
+                                        return;
+                                    }
+                                    
                                     const isShared = uniqueRoutes.length > 1 || (uniqueRoutes.length === 1 && uniqueRoutes[0].rutenummer !== currentRoute?.rutenummer);
                                     
                                     // Update popup content with all routes
@@ -1571,9 +1665,17 @@
             content.innerHTML = `
                 <div style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
                     <h3 style="margin: 0;">Segment ${segment.segment_objid} ${statusBadge}</h3>
-                    <button id="editSegmentBtn" class="btn-purple" style="padding: 6px 12px; font-size: 0.9em;">
-                        ✏️ Rediger
-                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="editSegmentBtn" class="btn-purple" style="padding: 6px 12px; font-size: 0.9em;">
+                            ✏️ Rediger
+                        </button>
+                        <button id="editSegmentGeometryBtn" class="btn-purple" style="padding: 6px 12px; font-size: 0.9em;">
+                            📐 Rediger geometri
+                        </button>
+                        <button id="deleteSegmentBtn" class="btn-red" style="padding: 6px 12px; font-size: 0.9em; background: #e74c3c;">
+                            🗑️ Slett
+                        </button>
+                    </div>
                 </div>
                 <table class="metadata-table">
                     <tr>
@@ -1622,11 +1724,25 @@
             // Store routes data for edit modal
             segment._editRoutesData = uniqueRoutes;
             
-            // Add event listener for edit button
+            // Add event listeners for buttons
             const editBtn = document.getElementById('editSegmentBtn');
             if (editBtn) {
                 editBtn.addEventListener('click', () => {
                     openEditSegmentModal(segment.segment_objid, uniqueRoutes);
+                });
+            }
+            
+            const editGeometryBtn = document.getElementById('editSegmentGeometryBtn');
+            if (editGeometryBtn) {
+                editGeometryBtn.addEventListener('click', () => {
+                    openEditSegmentGeometryModal(segment.segment_objid, segment);
+                });
+            }
+            
+            const deleteBtn = document.getElementById('deleteSegmentBtn');
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', () => {
+                    deleteSegment(segment.segment_objid, uniqueRoutes);
                 });
             }
         }
@@ -1733,17 +1849,629 @@
             
             alert('Endringer lagret! (Dette er kun frontend - backend API må implementeres)');
             
-            // Reload segment details to show updated data
-            if (currentValidation && currentValidation.segment_metadata) {
-                const segment = currentValidation.segment_metadata.find(
-                    s => s.segment_objid === currentEditSegmentObjid
-                );
-                if (segment) {
-                    await displaySegmentDetails(segment);
-                }
+            // Reload route to refresh segment display (which will hide segments without routes)
+            if (currentRoute) {
+                await loadRoute(currentRoute.rutenummer);
             }
             
             closeEditSegmentModal();
+        }
+
+        // Delete segment function
+        async function deleteSegment(segmentObjid, routes) {
+            if (!confirm(`Er du sikker på at du vil slette segment ${segmentObjid}?\n\nDette vil påvirke ${routes.length} rute(r): ${routes.map(r => r.rutenummer).join(', ')}\n\nDette kan ikke angres!`)) {
+                return;
+            }
+            
+            // TODO: Send to backend API
+            console.log('Would delete segment:', {
+                segment_objid: segmentObjid,
+                affected_routes: routes.map(r => r.rutenummer)
+            });
+            
+            alert('Segment slettet! (Dette er kun frontend - backend API må implementeres)');
+            
+            // Reload route to refresh display
+            if (currentRoute) {
+                await loadRoute(currentRoute.rutenummer);
+            }
+        }
+
+        // Edit segment geometry functions
+        let currentEditGeometrySegmentObjid = null;
+        let currentEditGeometrySegment = null;
+        let geometryEditMode = null; // 'split' or 'drag_endpoint'
+
+        function openEditSegmentGeometryModal(segmentObjid, segment) {
+            currentEditGeometrySegmentObjid = segmentObjid;
+            currentEditGeometrySegment = segment;
+            
+            const modal = document.getElementById('editSegmentGeometryModal');
+            const infoEl = document.getElementById('editSegmentGeometryInfo');
+            const container = document.getElementById('editSegmentGeometryContainer');
+            
+            infoEl.textContent = `Rediger geometri for segment ${segmentObjid}`;
+            
+            container.innerHTML = `
+                <div style="margin-bottom: 16px;">
+                    <p>Velg hva du vil gjøre:</p>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                    <button id="splitSegmentBtn" class="btn-purple" style="padding: 12px; text-align: left;">
+                        ✂️ Del segment i to<br>
+                        <small style="font-size: 0.85em; opacity: 0.8;">Klikk på et punkt på linjen for å dele segmentet på det punktet</small>
+                    </button>
+                    <button id="dragEndpointBtn" class="btn-purple" style="padding: 12px; text-align: left;">
+                        📍 Dra endepunkt<br>
+                        <small style="font-size: 0.85em; opacity: 0.8;">Dra start- eller sluttpunktet til segmentet til en ny posisjon</small>
+                    </button>
+                </div>
+            `;
+            
+            // Add event listeners
+            const splitBtn = document.getElementById('splitSegmentBtn');
+            if (splitBtn) {
+                splitBtn.addEventListener('click', () => {
+                    startSplitSegmentMode(segmentObjid, segment);
+                });
+            }
+            
+            const dragBtn = document.getElementById('dragEndpointBtn');
+            if (dragBtn) {
+                dragBtn.addEventListener('click', () => {
+                    startDragEndpointMode(segmentObjid, segment);
+                });
+            }
+            
+            modal.classList.add('active');
+        }
+
+        function closeEditSegmentGeometryModal() {
+            const modal = document.getElementById('editSegmentGeometryModal');
+            modal.classList.remove('active');
+            currentEditGeometrySegmentObjid = null;
+            currentEditGeometrySegment = null;
+            geometryEditMode = null;
+            exitGeometryEditMode();
+        }
+
+        function exitGeometryEditMode() {
+            // Disable Geoman if active
+            if (typeof map.pm !== 'undefined') {
+                // Disable cut mode (if enabled)
+                try {
+                    if (map.pm.toggleCut && typeof map.pm.toggleCut === 'function') {
+                        // Check if cut mode is active by checking if any layer has cut enabled
+                        const hasCutActive = segmentLayers.some(({ layer }) => {
+                            return layer && layer.pm && layer.pm.cut && layer.pm.cut.enabled();
+                        });
+                        if (hasCutActive) {
+                            map.pm.toggleCut();
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Could not disable Geoman cut mode:', e);
+                }
+                
+                // Disable edit mode on all layers
+                segmentLayers.forEach(({ layer }) => {
+                    if (layer && layer.pm && layer.pm.enabled && layer.pm.enabled()) {
+                        layer.pm.disable();
+                    }
+                });
+            }
+            
+            // Remove any temporary layers or markers
+            if (window.geometryEditLayer) {
+                map.removeLayer(window.geometryEditLayer);
+                window.geometryEditLayer = null;
+            }
+            if (window.geometryEditMarkers) {
+                window.geometryEditMarkers.forEach(m => map.removeLayer(m));
+                window.geometryEditMarkers = [];
+            }
+            
+            // Remove click handlers
+            if (window.geometryEditClickHandler) {
+                // Find the segment layer and remove handler
+                const segmentLayer = segmentLayers.find(s => s.layer && s.layer.hasEventListeners && s.layer.hasEventListeners('click'));
+                if (segmentLayer && segmentLayer.layer) {
+                    segmentLayer.layer.off('click', window.geometryEditClickHandler);
+                    segmentLayer.layer.off('mouseover');
+                    segmentLayer.layer.off('mouseout');
+                    if (segmentLayer.originalStyle) {
+                        segmentLayer.layer.setStyle(segmentLayer.originalStyle);
+                    }
+                }
+                window.geometryEditClickHandler = null;
+            }
+            
+            // Remove event listeners
+            if (window.geometryEditDisableHandler) {
+                map.off('pm:disable', window.geometryEditDisableHandler);
+                window.geometryEditDisableHandler = null;
+            }
+            
+            // Remove cancel button
+            if (window.geometryEditCancelBtn && window.geometryEditCancelBtn.parentNode) {
+                window.geometryEditCancelBtn.parentNode.removeChild(window.geometryEditCancelBtn);
+                window.geometryEditCancelBtn = null;
+            }
+            
+            // Reset cursor
+            map.getContainer().style.cursor = '';
+        }
+
+        function startSplitSegmentMode(segmentObjid, segment) {
+            geometryEditMode = 'split';
+            closeEditSegmentGeometryModal();
+            
+            // Find the segment layer on the map
+            const segmentLayer = segmentLayers.find(s => String(s.objid) === String(segmentObjid));
+            if (!segmentLayer || !segmentLayer.layer) {
+                alert('Kunne ikke finne segment på kartet');
+                return;
+            }
+            
+            // Enable Geoman cut mode on the segment layer
+            if (typeof map.pm !== 'undefined' && segmentLayer.layer.pm) {
+                // Enable cut mode
+                segmentLayer.layer.pm.enable({ 
+                    allowSelfIntersection: false,
+                    snappable: true,
+                    snapDistance: 20
+                });
+                
+                // Enable cut mode specifically
+                map.pm.toggleCut();
+                
+                // Listen for cut event
+                segmentLayer.layer.on('pm:cut', async (e) => {
+                    const cutEvent = e;
+                    const originalLayer = cutEvent.originalLayer || cutEvent.layer;
+                    const newLayers = cutEvent.layers || []; // Array of new layers after cut
+                    
+                    if (newLayers && newLayers.length >= 2) {
+                        // Get geometries from the new layers
+                        const geometries = newLayers.map(layer => {
+                            const geoJson = layer.toGeoJSON();
+                            return geoJson.geometry;
+                        });
+                        
+                        if (confirm(`Segmentet er delt i ${geometries.length} deler. Vil du lagre endringene?`)) {
+                            await saveSplitSegment(segmentObjid, geometries, segment.senterlinje);
+                        } else {
+                            // Revert: remove new layers and restore original
+                            newLayers.forEach(layer => {
+                                if (map.hasLayer(layer)) {
+                                    map.removeLayer(layer);
+                                }
+                            });
+                            // Restore original layer if it was removed
+                            if (originalLayer && !map.hasLayer(originalLayer)) {
+                                originalLayer.addTo(segmentLayerGroup);
+                            }
+                        }
+                    }
+                    
+                    // Exit cut mode
+                    exitGeometryEditMode();
+                });
+                
+                // Listen for cancel or disable
+                const disableHandler = () => {
+                    if (geometryEditMode === 'split') {
+                        exitGeometryEditMode();
+                    }
+                };
+                map.on('pm:disable', disableHandler);
+                window.geometryEditDisableHandler = disableHandler;
+                
+                // Highlight the segment
+                segmentLayer.layer.setStyle({ weight: 8, color: '#2196f3', opacity: 1.0 });
+                
+                // Add cancel button
+                const cancelBtn = document.createElement('button');
+                cancelBtn.textContent = 'Avbryt';
+                cancelBtn.className = 'btn-secondary';
+                cancelBtn.style.cssText = 'position: absolute; top: 10px; right: 10px; z-index: 1000; padding: 8px 16px;';
+                cancelBtn.onclick = () => {
+                    exitGeometryEditMode();
+                    segmentLayer.layer.pm.disable();
+                    map.pm.toggleCut();
+                    segmentLayer.layer.setStyle(segmentLayer.originalStyle || { weight: 4, opacity: 0.9 });
+                    if (cancelBtn.parentNode) {
+                        cancelBtn.parentNode.removeChild(cancelBtn);
+                    }
+                };
+                map.getContainer().appendChild(cancelBtn);
+                window.geometryEditCancelBtn = cancelBtn;
+                
+                alert('Klikk på segmentet for å tegne en linje som deler det. Klikk "Avbryt" for å avslutte.');
+            } else {
+                alert('Geoman er ikke tilgjengelig. Fallback til manuell modus.');
+                // Fallback to manual mode
+                startSplitSegmentModeManual(segmentObjid, segment);
+            }
+        }
+        
+        // Fallback manual split mode (original implementation)
+        function startSplitSegmentModeManual(segmentObjid, segment) {
+            // Find the segment layer on the map
+            const segmentLayer = segmentLayers.find(s => String(s.objid) === String(segmentObjid));
+            if (!segmentLayer || !segmentLayer.layer) {
+                alert('Kunne ikke finne segment på kartet');
+                return;
+            }
+            
+            // Highlight the segment
+            segmentLayer.layer.setStyle({ weight: 8, color: '#2196f3', opacity: 1.0 });
+            
+            // Add click handler to segment
+            const clickHandler = (e) => {
+                if (geometryEditMode !== 'split') return;
+                
+                const latlng = e.latlng;
+                const clickedPoint = [latlng.lng, latlng.lat]; // GeoJSON format [lng, lat]
+                
+                // Find closest point on the line
+                const geometry = segment.senterlinje;
+                if (!geometry || !geometry.coordinates) {
+                    alert('Kunne ikke finne geometri for segmentet');
+                    return;
+                }
+                
+                const closestPoint = findClosestPointOnLine(clickedPoint, geometry.coordinates);
+                
+                if (confirm(`Vil du dele segmentet på dette punktet?\n\nKoordinater: ${closestPoint[1].toFixed(6)}, ${closestPoint[0].toFixed(6)}`)) {
+                    splitSegmentAtPoint(segmentObjid, closestPoint, geometry);
+                }
+            };
+            
+            segmentLayer.layer.on('click', clickHandler);
+            window.geometryEditClickHandler = clickHandler;
+            
+            // Change cursor
+            segmentLayer.layer.on('mouseover', function() {
+                map.getContainer().style.cursor = 'crosshair';
+            });
+            segmentLayer.layer.on('mouseout', function() {
+                map.getContainer().style.cursor = '';
+            });
+            
+            alert('Klikk på segmentet for å velge hvor det skal deles. Klikk utenfor for å avbryte.');
+            
+            // Add cancel button
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = 'Avbryt';
+            cancelBtn.className = 'btn-secondary';
+            cancelBtn.style.cssText = 'position: absolute; top: 10px; right: 10px; z-index: 1000; padding: 8px 16px;';
+            cancelBtn.onclick = () => {
+                exitGeometryEditMode();
+                segmentLayer.layer.setStyle(segmentLayer.originalStyle || { weight: 4, opacity: 0.9 });
+                segmentLayer.layer.off('click', clickHandler);
+                segmentLayer.layer.off('mouseover');
+                segmentLayer.layer.off('mouseout');
+                map.getContainer().style.cursor = '';
+                if (cancelBtn.parentNode) {
+                    cancelBtn.parentNode.removeChild(cancelBtn);
+                }
+            };
+            map.getContainer().appendChild(cancelBtn);
+            window.geometryEditCancelBtn = cancelBtn;
+        }
+
+        function startDragEndpointMode(segmentObjid, segment) {
+            geometryEditMode = 'drag_endpoint';
+            closeEditSegmentGeometryModal();
+            
+            // Find the segment layer
+            const segmentLayer = segmentLayers.find(s => String(s.objid) === String(segmentObjid));
+            if (!segmentLayer || !segmentLayer.layer) {
+                alert('Kunne ikke finne segment på kartet');
+                return;
+            }
+            
+            // Use Geoman edit mode for dragging endpoints
+            if (typeof map.pm !== 'undefined' && segmentLayer.layer.pm) {
+                // Enable edit mode on the layer
+                segmentLayer.layer.pm.enable({ 
+                    allowSelfIntersection: false,
+                    snappable: true,
+                    snapDistance: 20
+                });
+                
+                // Listen for edit events
+                segmentLayer.layer.on('pm:edit', async (e) => {
+                    const editedLayer = e.target;
+                    const geoJson = editedLayer.toGeoJSON();
+                    const newGeometry = geoJson.geometry;
+                    
+                    if (confirm('Geometri endret. Vil du lagre endringene?')) {
+                        await saveSegmentGeometry(segmentObjid, newGeometry, segment.senterlinje);
+                    } else {
+                        // Revert geometry
+                        const originalGeoJson = L.geoJSON(segment.senterlinje);
+                        editedLayer.setLatLngs(originalGeoJson.getLayers()[0].getLatLngs());
+                    }
+                    
+                    // Exit edit mode
+                    exitGeometryEditMode();
+                });
+                
+                // Listen for disable
+                const disableHandler = () => {
+                    if (geometryEditMode === 'drag_endpoint') {
+                        exitGeometryEditMode();
+                    }
+                };
+                map.on('pm:disable', disableHandler);
+                window.geometryEditDisableHandler = disableHandler;
+                
+                // Highlight the segment
+                segmentLayer.layer.setStyle({ weight: 8, color: '#2196f3', opacity: 1.0 });
+                
+                // Add cancel button
+                const cancelBtn = document.createElement('button');
+                cancelBtn.textContent = 'Avbryt';
+                cancelBtn.className = 'btn-secondary';
+                cancelBtn.style.cssText = 'position: absolute; top: 10px; right: 10px; z-index: 1000; padding: 8px 16px;';
+                cancelBtn.onclick = () => {
+                    exitGeometryEditMode();
+                    segmentLayer.layer.pm.disable();
+                    segmentLayer.layer.setStyle(segmentLayer.originalStyle || { weight: 4, opacity: 0.9 });
+                    if (cancelBtn.parentNode) {
+                        cancelBtn.parentNode.removeChild(cancelBtn);
+                    }
+                };
+                map.getContainer().appendChild(cancelBtn);
+                window.geometryEditCancelBtn = cancelBtn;
+                
+                alert('Dra endepunkter eller mellompunkter for å endre geometrien. Klikk "Avbryt" for å avslutte.');
+            } else {
+                alert('Geoman er ikke tilgjengelig. Fallback til manuell modus.');
+                // Fallback to manual mode
+                startDragEndpointModeManual(segmentObjid, segment);
+            }
+        }
+        
+        // Fallback manual drag endpoint mode (original implementation)
+        function startDragEndpointModeManual(segmentObjid, segment) {
+            // Find the segment layer
+            const segmentLayer = segmentLayers.find(s => String(s.objid) === String(segmentObjid));
+            if (!segmentLayer || !segmentLayer.layer) {
+                alert('Kunne ikke finne segment på kartet');
+                return;
+            }
+            
+            // Highlight the segment
+            segmentLayer.layer.setStyle({ weight: 8, color: '#2196f3', opacity: 1.0 });
+            
+            // Get geometry
+            const geometry = segment.senterlinje;
+            if (!geometry || !geometry.coordinates || geometry.coordinates.length < 2) {
+                alert('Segmentet har ikke gyldig geometri');
+                return;
+            }
+            
+            const coords = geometry.coordinates;
+            const startPoint = coords[0];
+            const endPoint = coords[coords.length - 1];
+            
+            // Create draggable markers at endpoints
+            const startMarker = L.marker([startPoint[1], startPoint[0]], {
+                draggable: true,
+                icon: L.divIcon({
+                    className: 'geometry-edit-marker',
+                    html: '<div style="background-color: #2ecc71; width: 16px; height: 16px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 8px rgba(0,0,0,0.5);"></div>',
+                    iconSize: [16, 16],
+                    iconAnchor: [8, 8]
+                })
+            }).bindTooltip('Startpunkt (dra for å flytte)', { permanent: false });
+            
+            const endMarker = L.marker([endPoint[1], endPoint[0]], {
+                draggable: true,
+                icon: L.divIcon({
+                    className: 'geometry-edit-marker',
+                    html: '<div style="background-color: #e74c3c; width: 16px; height: 16px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 8px rgba(0,0,0,0.5);"></div>',
+                    iconSize: [16, 16],
+                    iconAnchor: [8, 8]
+                })
+            }).bindTooltip('Sluttpunkt (dra for å flytte)', { permanent: false });
+            
+            startMarker.addTo(map);
+            endMarker.addTo(map);
+            
+            window.geometryEditMarkers = [startMarker, endMarker];
+            
+            // Handle drag end
+            const onDragEnd = (e) => {
+                const marker = e.target;
+                const newLatLng = marker.getLatLng();
+                const isStart = marker === startMarker;
+                
+                if (confirm(`${isStart ? 'Start' : 'Slutt'}punkt flyttet til ${newLatLng.lat.toFixed(6)}, ${newLatLng.lng.toFixed(6)}\n\nVil du lagre denne endringen?`)) {
+                    const newPoint = [newLatLng.lng, newLatLng.lat]; // GeoJSON format
+                    updateSegmentEndpoint(segmentObjid, isStart ? 'start' : 'end', newPoint, geometry);
+                } else {
+                    // Reset marker position
+                    marker.setLatLng(isStart ? [startPoint[1], startPoint[0]] : [endPoint[1], endPoint[0]]);
+                }
+            };
+            
+            startMarker.on('dragend', onDragEnd);
+            endMarker.on('dragend', onDragEnd);
+            
+            // Add cancel button
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = 'Avbryt';
+            cancelBtn.className = 'btn-secondary';
+            cancelBtn.style.cssText = 'position: absolute; top: 10px; right: 10px; z-index: 1000; padding: 8px 16px;';
+            cancelBtn.onclick = () => {
+                exitGeometryEditMode();
+                segmentLayer.layer.setStyle(segmentLayer.originalStyle || { weight: 4, opacity: 0.9 });
+                if (cancelBtn.parentNode) {
+                    cancelBtn.parentNode.removeChild(cancelBtn);
+                }
+            };
+            map.getContainer().appendChild(cancelBtn);
+            window.geometryEditCancelBtn = cancelBtn;
+            
+            alert('Dra start- eller sluttpunktet for å flytte det. Klikk "Avbryt" for å avslutte.');
+        }
+
+        function findClosestPointOnLine(clickedPoint, lineCoordinates) {
+            // Find the closest point on the line to the clicked point
+            let minDistance = Infinity;
+            let closestPoint = lineCoordinates[0];
+            let closestIndex = 0;
+            
+            for (let i = 0; i < lineCoordinates.length - 1; i++) {
+                const p1 = lineCoordinates[i];
+                const p2 = lineCoordinates[i + 1];
+                
+                // Calculate distance from clicked point to line segment
+                const dist = pointToLineDistance(clickedPoint, p1, p2);
+                
+                if (dist < minDistance) {
+                    minDistance = dist;
+                    // Find closest point on segment
+                    const t = Math.max(0, Math.min(1, dotProduct(
+                        [clickedPoint[0] - p1[0], clickedPoint[1] - p1[1]],
+                        [p2[0] - p1[0], p2[1] - p1[1]]
+                    ) / Math.pow(distance(p1, p2), 2)));
+                    
+                    closestPoint = [
+                        p1[0] + t * (p2[0] - p1[0]),
+                        p1[1] + t * (p2[1] - p1[1])
+                    ];
+                    closestIndex = i;
+                }
+            }
+            
+            return closestPoint;
+        }
+
+        function pointToLineDistance(point, lineStart, lineEnd) {
+            const A = point[0] - lineStart[0];
+            const B = point[1] - lineStart[1];
+            const C = lineEnd[0] - lineStart[0];
+            const D = lineEnd[1] - lineStart[1];
+            
+            const dot = A * C + B * D;
+            const lenSq = C * C + D * D;
+            let param = -1;
+            
+            if (lenSq !== 0) param = dot / lenSq;
+            
+            let xx, yy;
+            
+            if (param < 0) {
+                xx = lineStart[0];
+                yy = lineStart[1];
+            } else if (param > 1) {
+                xx = lineEnd[0];
+                yy = lineEnd[1];
+            } else {
+                xx = lineStart[0] + param * C;
+                yy = lineStart[1] + param * D;
+            }
+            
+            const dx = point[0] - xx;
+            const dy = point[1] - yy;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        function dotProduct(a, b) {
+            return a[0] * b[0] + a[1] * b[1];
+        }
+
+        function distance(p1, p2) {
+            const dx = p2[0] - p1[0];
+            const dy = p2[1] - p1[1];
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        async function saveSplitSegment(segmentObjid, newGeometries, originalGeometry) {
+            // TODO: Send to backend API
+            console.log('Would save split segment:', {
+                segment_objid: segmentObjid,
+                original_geometry: originalGeometry,
+                new_geometries: newGeometries
+            });
+            
+            alert(`Segment delt i ${newGeometries.length} deler! (Dette er kun frontend - backend API må implementeres)`);
+            
+            exitGeometryEditMode();
+            
+            // Reload route to show updated segments
+            if (currentRoute) {
+                await loadRoute(currentRoute.rutenummer);
+            }
+        }
+
+        async function splitSegmentAtPoint(segmentObjid, splitPoint, originalGeometry) {
+            // Split the line at the closest point
+            const coords = originalGeometry.coordinates;
+            let splitIndex = 0;
+            let minDist = Infinity;
+            
+            // Find the segment to split
+            for (let i = 0; i < coords.length - 1; i++) {
+                const dist = pointToLineDistance(splitPoint, coords[i], coords[i + 1]);
+                if (dist < minDist) {
+                    minDist = dist;
+                    splitIndex = i;
+                }
+            }
+            
+            // Create two new geometries
+            const firstPart = coords.slice(0, splitIndex + 1);
+            firstPart.push(splitPoint);
+            
+            const secondPart = [splitPoint, ...coords.slice(splitIndex + 1)];
+            
+            const newGeometries = [
+                { type: 'LineString', coordinates: firstPart },
+                { type: 'LineString', coordinates: secondPart }
+            ];
+            
+            await saveSplitSegment(segmentObjid, newGeometries, originalGeometry);
+        }
+
+        async function saveSegmentGeometry(segmentObjid, newGeometry, originalGeometry) {
+            // TODO: Send to backend API
+            console.log('Would save segment geometry:', {
+                segment_objid: segmentObjid,
+                original_geometry: originalGeometry,
+                new_geometry: newGeometry
+            });
+            
+            alert('Segment geometri oppdatert! (Dette er kun frontend - backend API må implementeres)');
+            
+            exitGeometryEditMode();
+            
+            // Reload route to show updated segment
+            if (currentRoute) {
+                await loadRoute(currentRoute.rutenummer);
+            }
+        }
+
+        async function updateSegmentEndpoint(segmentObjid, endpoint, newPoint, originalGeometry) {
+            const coords = [...originalGeometry.coordinates];
+            
+            if (endpoint === 'start') {
+                coords[0] = newPoint;
+            } else {
+                coords[coords.length - 1] = newPoint;
+            }
+            
+            const newGeometry = {
+                type: 'LineString',
+                coordinates: coords
+            };
+            
+            await saveSegmentGeometry(segmentObjid, newGeometry, originalGeometry);
         }
 
         function addNewRouteToEdit() {
@@ -1995,17 +2723,47 @@
             });
         }
 
+        // Edit Segment Geometry Modal event listeners
+        const editSegmentGeometryModal = document.getElementById('editSegmentGeometryModal');
+        const closeEditSegmentGeometryModalBtn = document.getElementById('closeEditSegmentGeometryModal');
+        const cancelEditSegmentGeometryBtn = document.getElementById('cancelEditSegmentGeometryBtn');
+
+        if (closeEditSegmentGeometryModalBtn) {
+            closeEditSegmentGeometryModalBtn.addEventListener('click', closeEditSegmentGeometryModal);
+        }
+
+        if (cancelEditSegmentGeometryBtn) {
+            cancelEditSegmentGeometryBtn.addEventListener('click', closeEditSegmentGeometryModal);
+        }
+
+        // Close edit geometry modal when clicking outside
+        if (editSegmentGeometryModal) {
+            editSegmentGeometryModal.addEventListener('click', (e) => {
+                if (e.target === editSegmentGeometryModal) {
+                    closeEditSegmentGeometryModal();
+                }
+            });
+        }
+
         // Close modal with Escape key
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 if (editSegmentModal && editSegmentModal.classList.contains('active')) {
                     closeEditSegmentModal();
                 }
+                if (editSegmentGeometryModal && editSegmentGeometryModal.classList.contains('active')) {
+                    closeEditSegmentGeometryModal();
+                }
                 if (bulkEditRouteModal && bulkEditRouteModal.classList.contains('active')) {
                     closeBulkEditRouteModal();
                 }
                 if (aboutModal && aboutModal.classList.contains('active')) {
                     aboutModal.classList.remove('active');
+                }
+                // Also exit geometry edit mode if active
+                if (geometryEditMode) {
+                    exitGeometryEditMode();
+                    geometryEditMode = null;
                 }
             }
         });
