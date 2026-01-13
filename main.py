@@ -35,6 +35,10 @@ app.add_middleware(
 
 app.include_router(router, prefix="/api/v1", tags=["routes"])
 
+# Include changeset editor routes
+from api.changeset import router as changeset_router
+app.include_router(changeset_router, prefix="/api", tags=["changeset"])
+
 # Serve frontend static files
 frontend_path = Path(__file__).parent / "frontend"
 if frontend_path.exists():

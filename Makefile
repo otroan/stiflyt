@@ -1,4 +1,4 @@
-.PHONY: help install install-dev backend clean test lint format perf-test
+.PHONY: help install install-dev backend backend-prod frontend clean test lint format perf-test
 
 # Default values
 DB_USER ?= $(shell whoami)
@@ -31,6 +31,21 @@ backend-prod: ## Start FastAPI backend server in production mode
 	@export DB_USER=$(DB_USER) && \
 	. $(VENV)/bin/activate && \
 	uvicorn main:app --host 127.0.0.1 --port $(BACKEND_PORT) --workers 4
+
+frontend: ## Start changeset editor frontend (React/Vite)
+	@echo "Starting changeset editor frontend on http://localhost:3000"
+	@echo "Backend should be running on http://127.0.0.1:$(BACKEND_PORT)"
+	@if ! curl -s http://127.0.0.1:$(BACKEND_PORT)/health > /dev/null 2>&1; then \
+		echo "⚠️  WARNING: Backend does not appear to be running on port $(BACKEND_PORT)"; \
+		echo "   Run 'make backend' in another terminal first"; \
+		echo ""; \
+	fi
+	@cd changeset_editor/frontend && \
+	if [ ! -d node_modules ]; then \
+		echo "Installing dependencies..."; \
+		npm install; \
+	fi && \
+	npm run dev
 
 test: ## Run tests
 	. $(VENV)/bin/activate && pytest
@@ -65,11 +80,18 @@ clean-all: clean clean-venv ## Clean everything including venv
 setup: install-dev ## Setup development environment
 	@echo "Development environment setup complete!"
 	@echo "Run 'make backend' to start the API server"
+	@echo "Run 'make frontend' to start the changeset editor frontend"
 
 db-test: ## Test database connection
 	@export DB_USER=$(DB_USER) && \
 	. $(VENV)/bin/activate && \
 	python -c "from services.database import get_db_connection; conn = get_db_connection(); print('✓ Database connection successful'); conn.close()"
+
+db-migrate-changeset: ## Run changeset editor database migrations
+	@echo "Running changeset editor migrations..."
+	@export DB_USER=$(DB_USER) && \
+	. $(VENV)/bin/activate && \
+	python scripts/run_changeset_migration.py
 
 api-test: ## Test API endpoint (requires backend to be running)
 	@echo "Testing API endpoint..."

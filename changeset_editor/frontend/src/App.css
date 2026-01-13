@@ -1,0 +1,44 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.snap-marker {
+  pointer-events: none;
+}
+
+/* Match routes.html styling */
+.main-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 400px;
+  background: #f8f9fa;
+  border-right: 1px solid #dee2e6;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 1rem;
+  background: white;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.sidebar-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
