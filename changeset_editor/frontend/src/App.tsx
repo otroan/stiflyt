@@ -13,6 +13,7 @@ import './App.css';
 function App() {
   const [changeset, setChangeset] = useState<Changeset | null>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | undefined>();
+  const [selectedFeatureProperties, setSelectedFeatureProperties] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [routeNumber, setRouteNumber] = useState<string | null>(null);
@@ -165,17 +166,20 @@ function App() {
         }}>
           {/* Map Container - Full Width */}
           <div style={{ flex: 1, position: 'relative', width: '100%', height: '100%' }}>
-            <MapView
-              changeset={changeset}
-              routeGeometry={routeGeometry}
-              routeNumber={routeNumber}
-              selectedRouteNumber={selectedRouteNumber}
-              onRouteSelect={handleSelectRoute}
-              onEventAdded={changeset ? handleEventAdded : handleLocalEventAdded}
-              selectedFeatureId={selectedFeatureId}
-              onFeatureSelect={setSelectedFeatureId}
-              localEventsCount={localEvents.length}
-            />
+          <MapView
+            changeset={changeset}
+            routeGeometry={routeGeometry}
+            routeNumber={routeNumber}
+            selectedRouteNumber={selectedRouteNumber}
+            onRouteSelect={handleSelectRoute}
+            onEventAdded={changeset ? handleEventAdded : handleLocalEventAdded}
+            selectedFeatureId={selectedFeatureId}
+            onFeatureSelect={(id, properties) => {
+              setSelectedFeatureId(id);
+              setSelectedFeatureProperties(properties || null);
+            }}
+            localEventsCount={localEvents.length}
+          />
           </div>
 
           {/* Info Panel (Collapsible) - Overlays map from right */}
@@ -183,9 +187,11 @@ function App() {
             changeset={changeset}
             routeNumber={routeNumber}
             selectedFeatureId={selectedFeatureId}
+            selectedFeatureProperties={selectedFeatureProperties}
             localEventsCount={localEvents.length}
             onChangesetUpdate={handleChangesetUpdate}
             onSaveChanges={handleSaveChanges}
+            onFeatureUpdate={handleEventAdded}
             loading={loading}
           />
         </div>

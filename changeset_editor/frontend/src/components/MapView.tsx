@@ -3,12 +3,14 @@ import { useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo } from '../types';
+import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent } from '../types';
 import type { GeoJSON } from 'geojson';
 import { SnapManager } from '../utils/snap';
 import { api } from '../api/client';
 import { handleApiError } from '../utils/errorHandler';
 import { notificationManager } from '../utils/notifications';
+import { findClosestPointOnLine, splitLineStringAtPoint, isNewSegment } from '../utils/geometry';
+import { ConfirmDialog } from './ConfirmDialog';
 import 'leaflet/dist/leaflet.css';
 
 // Load Geoman dynamically to avoid Vite resolution issues
@@ -33,7 +35,8 @@ interface MapViewProps {
   onRouteSelect?: (rutenummer: string) => void;
   onEventAdded: (event: LocalEvent) => void;
   selectedFeatureId?: string;
-  onFeatureSelect?: (id: string) => void;
+  onFeatureSelect?: (id: string, properties?: Record<string, unknown>) => void;
+  onOpenEditForm?: () => void; // Callback to open edit form in InfoPanel
   localEventsCount?: number;
 }
 
@@ -183,6 +186,7 @@ export function MapView({
   onEventAdded,
   selectedFeatureId,
   onFeatureSelect,
+  onOpenEditForm,
   localEventsCount = 0,
 }: MapViewProps) {
   const [diffLayer, setDiffLayer] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -201,6 +205,17 @@ export function MapView({
   const segmentsLayerRef = useRef<L.GeoJSON | null>(null);
   const linksLayerRef = useRef<L.GeoJSON | null>(null);
   const endpointsLayerRef = useRef<L.LayerGroup | null>(null);
+
+  // Confirmation dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    variant?: 'danger' | 'warning' | 'info';
+    onConfirm: () => void;
+  } | null>(null);
 
   // Load routes within bounding box
   useEffect(() => {
@@ -452,13 +467,20 @@ export function MapView({
 
     console.log('Displaying segments:', segmentsData.features.length, 'features');
     const segmentsLayer = L.geoJSON(segmentsData, {
-      style: {
-        color: '#9b59b6',
-        weight: 4,
-        opacity: 0.8,
+      style: (feature) => {
+        const props = feature?.properties as { objid?: number | string; [key: string]: unknown } | null;
+        const featureId = feature?.id || props?.objid;
+        const isSelected = String(featureId) === String(selectedFeatureId);
+        return {
+          color: isSelected ? '#2196f3' : '#9b59b6',
+          weight: isSelected ? 6 : 4,
+          opacity: isSelected ? 1.0 : 0.8,
+        };
       },
       onEachFeature: (feature, layer) => {
         const props = feature.properties as { objid?: number | string; rutenummer?: string; rutenavn?: string | null; length_m?: number | null; [key: string]: unknown } | null;
+        const featureId = feature.id || props?.objid;
+        
         if (props) {
           layer.bindPopup(`
           <strong>Segment ${props.objid ?? 'N/A'}</strong><br>
@@ -467,11 +489,19 @@ export function MapView({
           Lengde: ${typeof props.length_m === 'number' ? props.length_m.toFixed(2) : 'N/A'} m
         `);
         }
+
+        // Add click handler for selection
+        layer.on('click', () => {
+          if (onFeatureSelect && featureId) {
+            const featureProps = feature.properties as Record<string, unknown> | null;
+            onFeatureSelect(String(featureId), featureProps || undefined);
+          }
+        });
       },
     }).addTo(mapRef.current);
 
     segmentsLayerRef.current = segmentsLayer;
-  }, [showSegments, segmentsData, mapReady]);
+  }, [showSegments, segmentsData, mapReady, selectedFeatureId, onFeatureSelect]);
 
   // Display links
   useEffect(() => {
@@ -500,14 +530,21 @@ export function MapView({
 
     console.log('Displaying links:', linksData.features.length, 'features');
     const linksLayer = L.geoJSON(linksData, {
-      style: {
-        color: '#16a085',
-        weight: 3,
-        opacity: 0.7,
-        dashArray: '5, 5',
+      style: (feature) => {
+        const props = feature?.properties as { link_id?: number; [key: string]: unknown } | null;
+        const featureId = feature?.id || props?.link_id;
+        const isSelected = String(featureId) === String(selectedFeatureId);
+        return {
+          color: isSelected ? '#2196f3' : '#16a085',
+          weight: isSelected ? 5 : 3,
+          opacity: isSelected ? 1.0 : 0.7,
+          dashArray: '5, 5',
+        };
       },
       onEachFeature: (feature, layer) => {
         const props = feature.properties as { link_id?: number; a_node?: number | null; b_node?: number | null; length_m?: number | null; [key: string]: unknown } | null;
+        const featureId = feature.id || props?.link_id;
+        
         if (props) {
           layer.bindPopup(`
           <strong>Link ${props.link_id ?? 'N/A'}</strong><br>
@@ -516,11 +553,19 @@ export function MapView({
           Lengde: ${typeof props.length_m === 'number' ? props.length_m.toFixed(2) : 'N/A'} m
         `);
         }
+
+        // Add click handler for selection
+        layer.on('click', () => {
+          if (onFeatureSelect && featureId) {
+            const featureProps = feature.properties as Record<string, unknown> | null;
+            onFeatureSelect(String(featureId), featureProps || undefined);
+          }
+        });
       },
     }).addTo(mapRef.current);
 
     linksLayerRef.current = linksLayer;
-  }, [showLinks, linksData, mapReady]);
+  }, [showLinks, linksData, mapReady, selectedFeatureId, onFeatureSelect]);
 
   // Display endpoints (for segments and links)
   useEffect(() => {
@@ -679,6 +724,24 @@ export function MapView({
     };
   }, [changeset?.id, snapManager, mapReady]);
 
+  // Update cursor when split mode is active
+  useEffect(() => {
+    if (!mapRef.current) return;
+
+    const mapContainer = mapRef.current.getContainer();
+    if (activeTool === 'split') {
+      mapContainer.style.cursor = 'crosshair';
+    } else {
+      mapContainer.style.cursor = '';
+    }
+
+    return () => {
+      if (mapContainer) {
+        mapContainer.style.cursor = '';
+      }
+    };
+  }, [activeTool]);
+
   const handleDrawComplete = async (geometry: GeoJSON.LineString) => {
     if (!changeset) return;
     
@@ -720,6 +783,154 @@ export function MapView({
     }
   };
 
+  const handleSplitSegment = async (segmentId: string, splitPoint: number[], originalGeometry: GeoJSON.LineString, originalAttrs: Record<string, unknown>) => {
+    if (!changeset) return;
+
+    try {
+      const [firstPart, secondPart] = splitLineStringAtPoint(originalGeometry, splitPoint);
+      const isNew = isNewSegment(segmentId);
+
+      if (isNew) {
+        // For new segments: delete the original and add two new ones
+        const deleteEvent: SegmentDeleteNewEvent = {
+          type: 'segment.delete_new',
+          target: { kind: 'segment', temp_id: segmentId },
+        };
+
+        const tempId1 = `tmp_${crypto.randomUUID()}`;
+        const tempId2 = `tmp_${crypto.randomUUID()}`;
+
+        const addEvent1: SegmentAddEvent = {
+          type: 'segment.add',
+          temp_id: tempId1,
+          geometry: firstPart,
+          srid: 4326,
+          attrs: originalAttrs,
+        };
+
+        const addEvent2: SegmentAddEvent = {
+          type: 'segment.add',
+          temp_id: tempId2,
+          geometry: secondPart,
+          srid: 4326,
+          attrs: originalAttrs,
+        };
+
+        await api.addEvent(changeset.id, deleteEvent);
+        onEventAdded(deleteEvent);
+        await api.addEvent(changeset.id, addEvent1);
+        onEventAdded(addEvent1);
+        await api.addEvent(changeset.id, addEvent2);
+        onEventAdded(addEvent2);
+
+        notificationManager.success('Segment delt i to nye segmenter');
+      } else {
+        // For existing segments: retire the original and add two new ones
+        const retireEvent: SegmentRetireEvent = {
+          type: 'segment.retire',
+          target: { kind: 'segment', id: segmentId },
+        };
+
+        const tempId1 = `tmp_${crypto.randomUUID()}`;
+        const tempId2 = `tmp_${crypto.randomUUID()}`;
+
+        const addEvent1: SegmentAddEvent = {
+          type: 'segment.add',
+          temp_id: tempId1,
+          geometry: firstPart,
+          srid: 4326,
+          attrs: originalAttrs,
+        };
+
+        const addEvent2: SegmentAddEvent = {
+          type: 'segment.add',
+          temp_id: tempId2,
+          geometry: secondPart,
+          srid: 4326,
+          attrs: originalAttrs,
+        };
+
+        await api.addEvent(changeset.id, retireEvent);
+        onEventAdded(retireEvent);
+        await api.addEvent(changeset.id, addEvent1);
+        onEventAdded(addEvent1);
+        await api.addEvent(changeset.id, addEvent2);
+        onEventAdded(addEvent2);
+
+        notificationManager.success('Segment delt i to nye segmenter');
+      }
+
+      setActiveTool(null);
+      if (onFeatureSelect) {
+        onFeatureSelect('', undefined);
+      }
+    } catch (error: unknown) {
+      const appError = handleApiError(error, 'Split Segment');
+      notificationManager.error(`Kunne ikke dele segment: ${appError.message}`);
+    }
+  };
+
+  const handleDeleteSegment = async (segmentId: string) => {
+    if (!changeset) return;
+
+    const isNew = isNewSegment(segmentId);
+
+    try {
+      if (isNew) {
+        const event: SegmentDeleteNewEvent = {
+          type: 'segment.delete_new',
+          target: { kind: 'segment', temp_id: segmentId },
+        };
+        await api.addEvent(changeset.id, event);
+        onEventAdded(event);
+        notificationManager.success('Segment slettet');
+      } else {
+        const event: SegmentRetireEvent = {
+          type: 'segment.retire',
+          target: { kind: 'segment', id: segmentId },
+        };
+        await api.addEvent(changeset.id, event);
+        onEventAdded(event);
+        notificationManager.success('Segment pensjonert');
+      }
+
+      setActiveTool(null);
+      if (onFeatureSelect) {
+        onFeatureSelect('', undefined);
+      }
+    } catch (error: unknown) {
+      const appError = handleApiError(error, 'Delete Segment');
+      notificationManager.error(`Kunne ikke slette segment: ${appError.message}`);
+    }
+  };
+
+  const handleRetireSegment = async (segmentId: string) => {
+    if (!changeset) return;
+
+    if (isNewSegment(segmentId)) {
+      notificationManager.warning('Nye segmenter kan ikke pensjoneres. Bruk slett i stedet.');
+      return;
+    }
+
+    try {
+      const event: SegmentRetireEvent = {
+        type: 'segment.retire',
+        target: { kind: 'segment', id: segmentId },
+      };
+      await api.addEvent(changeset.id, event);
+      onEventAdded(event);
+      notificationManager.success('Segment pensjonert');
+
+      setActiveTool(null);
+      if (onFeatureSelect) {
+        onFeatureSelect('', undefined);
+      }
+    } catch (error: unknown) {
+      const appError = handleApiError(error, 'Retire Segment');
+      notificationManager.error(`Kunne ikke pensjonere segment: ${appError.message}`);
+    }
+  };
+
   const getStyle = (feature: GeoJSON.Feature, layer: L.Layer) => {
     const props = feature.properties as { op?: string; [key: string]: unknown } | null;
     const op = props?.op;
@@ -742,9 +953,38 @@ export function MapView({
       (layer as L.Path).setStyle({ weight: 6, color: '#2196f3', opacity: 1.0 });
     }
 
-    layer.on('click', () => {
+    layer.on('click', (e: L.LeafletMouseEvent) => {
+      // Handle split mode
+      if (activeTool === 'split' && feature.geometry.type === 'LineString') {
+        const latlng = e.latlng;
+        const clickedPoint: number[] = [latlng.lng, latlng.lat]; // GeoJSON format [lng, lat]
+        const originalGeometry = feature.geometry;
+        const originalAttrs = (feature.properties as Record<string, unknown>) || {};
+        
+        const closestPoint = findClosestPointOnLine(clickedPoint, originalGeometry.coordinates);
+        
+        setConfirmDialog({
+          isOpen: true,
+          title: 'Del segment',
+          message: `Vil du dele segmentet på dette punktet?\n\nKoordinater: ${closestPoint[1].toFixed(6)}, ${closestPoint[0].toFixed(6)}`,
+          confirmLabel: 'Del',
+          cancelLabel: 'Avbryt',
+          variant: 'warning',
+          onConfirm: () => {
+            if (featureId) {
+              handleSplitSegment(String(featureId), closestPoint, originalGeometry, originalAttrs);
+            }
+            setConfirmDialog(null);
+          },
+        });
+        return;
+      }
+
+      // Normal selection
       if (onFeatureSelect && featureId) {
-        onFeatureSelect(String(featureId));
+        // Pass feature properties (which contain segment attributes)
+        const featureProps = feature.properties as Record<string, unknown> | null;
+        onFeatureSelect(String(featureId), featureProps || undefined);
       }
     });
 
@@ -963,11 +1203,22 @@ export function MapView({
           <button
             onClick={() => {
               if (selectedFeatureId) {
-                // TODO: Open dialog/panel to edit segment data
-                notificationManager.info('Rediger segment/rutedata: Åpner dialog for å redigere rutenummer, rutenavn, etc.');
+                // Segment selected - open edit form in InfoPanel
+                if (onOpenEditForm) {
+                  onOpenEditForm();
+                } else {
+                  notificationManager.info('Rediger metadata: Åpner redigeringsform');
+                }
                 setActiveTool('edit-data');
+              } else if (routeNumber && changeset) {
+                // Route selected but no segment - open route edit form in InfoPanel
+                if (onOpenEditForm) {
+                  onOpenEditForm();
+                } else {
+                  notificationManager.info('Rediger rute-metadata: Åpner redigeringsform');
+                }
               } else {
-                notificationManager.warning('Velg et segment først for å redigere data');
+                notificationManager.warning('Velg en rute eller et segment først for å redigere data');
               }
             }}
             style={{
@@ -993,9 +1244,13 @@ export function MapView({
           {/* Split segment */}
           <button
             onClick={() => {
-              // TODO: Implement split segment
-              notificationManager.info('Del segment: Klikk på et punkt på segmentet for å dele det');
-              setActiveTool('split');
+              if (activeTool === 'split') {
+                setActiveTool(null);
+                notificationManager.info('Deling av segment avbrutt');
+              } else {
+                notificationManager.info('Del segment: Klikk på et punkt på segmentet for å dele det');
+                setActiveTool('split');
+              }
             }}
             style={{
               padding: '12px',
@@ -1020,13 +1275,26 @@ export function MapView({
           {/* Delete segment */}
           <button
             onClick={() => {
-              if (selectedFeatureId) {
-                // TODO: Implement delete segment
-                notificationManager.info('Slett segment: Segment vil bli slettet');
-                setActiveTool('delete');
-              } else {
+              if (!selectedFeatureId) {
                 notificationManager.warning('Velg et segment først for å slette det');
+                return;
               }
+
+              const isNew = isNewSegment(selectedFeatureId);
+              setConfirmDialog({
+                isOpen: true,
+                title: isNew ? 'Slett segment' : 'Pensjoner segment',
+                message: isNew
+                  ? 'Er du sikker på at du vil slette dette segmentet? Dette kan ikke angres.'
+                  : 'Er du sikker på at du vil pensjonere dette segmentet? Dette kan ikke angres.',
+                confirmLabel: isNew ? 'Slett' : 'Pensjoner',
+                cancelLabel: 'Avbryt',
+                variant: 'danger',
+                onConfirm: () => {
+                  handleDeleteSegment(selectedFeatureId);
+                  setConfirmDialog(null);
+                },
+              });
             }}
             style={{
               padding: '12px',
@@ -1127,6 +1395,48 @@ export function MapView({
             </div>
             <div style={{ fontSize: '12px', color: '#666' }}>
               Klikk "Lagre endringer" i sidepanelet
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation dialog */}
+      {confirmDialog && (
+        <ConfirmDialog
+          isOpen={confirmDialog.isOpen}
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel={confirmDialog.confirmLabel}
+          cancelLabel={confirmDialog.cancelLabel}
+          variant={confirmDialog.variant}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+        />
+      )}
+
+      {/* Split mode indicator */}
+      {activeTool === 'split' && (
+        <div style={{
+          position: 'absolute',
+          top: 20,
+          left: 20,
+          zIndex: 1000,
+          background: '#fff3cd',
+          border: '2px solid #ffc107',
+          borderRadius: '8px',
+          padding: '12px 16px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+        }}>
+          <span style={{ fontSize: '18px' }}>✂️</span>
+          <div>
+            <div style={{ fontWeight: 'bold', fontSize: '14px' }}>
+              Del segment-modus aktiv
+            </div>
+            <div style={{ fontSize: '12px', color: '#666' }}>
+              Klikk på et segment for å dele det
             </div>
           </div>
         </div>
