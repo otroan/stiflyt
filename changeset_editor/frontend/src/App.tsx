@@ -1,8 +1,8 @@
 /** Main App component */
 import { useState, useEffect } from 'react';
 import { MapView } from './components/MapView';
-import { SidePanel } from './components/SidePanel';
-import { RouteSelector } from './components/RouteSelector';
+import { Header } from './components/Header';
+import { InfoPanel } from './components/InfoPanel';
 import { NotificationContainer } from './components/NotificationContainer';
 import { api } from './api/client';
 import { handleApiError } from './utils/errorHandler';
@@ -17,7 +17,6 @@ function App() {
 
   const [routeNumber, setRouteNumber] = useState<string | null>(null);
   const [selectedRouteNumber, setSelectedRouteNumber] = useState<string | null>(null);
-  const [showRouteSelector, setShowRouteSelector] = useState(true);
   const [routeGeometry, setRouteGeometry] = useState<GeoJSON.Geometry | null>(null);
 
   // Local changes (before changeset is created)
@@ -31,7 +30,7 @@ function App() {
 
     if (route) {
       setRouteNumber(route);
-      setShowRouteSelector(false);
+      setSelectedRouteNumber(route);
       // Load route geometry
       fetch(`/api/v1/routes/${route}?include_geometry=true`)
         .then(res => res.json())
@@ -69,7 +68,7 @@ function App() {
       const routeData = await routeResponse.json() as RouteResponse;
       setRouteGeometry(routeData.route_geometry || null);
       setRouteNumber(rutenummer);
-      setShowRouteSelector(false);
+      setSelectedRouteNumber(rutenummer);
       // Update URL (without changeset yet)
       window.history.replaceState({}, '', `?route=${rutenummer}`);
     } catch (error: unknown) {
@@ -147,99 +146,50 @@ function App() {
   return (
     <>
       <NotificationContainer />
-      <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
-      {/* Sidebar */}
-      <div style={{
-        width: '400px',
-        backgroundColor: '#f8f9fa',
-        borderRight: '1px solid #dee2e6',
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-      }}>
-        <div style={{
-          padding: '1rem',
-          borderBottom: '1px solid #dee2e6',
-          backgroundColor: 'white',
-        }}>
-          <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 600 }}>
-            {changeset ? `Redigering: ${routeNumber || 'Rute'}` : 'Velg en rute'}
-          </h2>
-        </div>
-
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1rem' }}>
-          {showRouteSelector ? (
-            <RouteSelector onSelectRoute={handleSelectRoute} loading={loading} />
-          ) : changeset ? (
-            <SidePanel
-              changeset={changeset}
-              selectedFeatureId={selectedFeatureId}
-              onChangesetUpdate={handleChangesetUpdate}
-            />
-          ) : routeNumber ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <div>
-                <h3 style={{ margin: '0 0 8px 0' }}>Rute: {routeNumber}</h3>
-                <p style={{ color: '#666', margin: '0 0 16px 0' }}>
-                  Ruten er valgt og vises på kartet. Gjør endringer på kartet eller i listen nedenfor.
-                </p>
-
-                {/* Show pending changes count and Save button */}
-                {localEvents.length > 0 && (
-                  <div style={{
-                    padding: '12px',
-                    backgroundColor: '#fff3cd',
-                    borderRadius: '4px',
-                    marginBottom: '16px',
-                    border: '1px solid #ffc107',
-                  }}>
-                    <div style={{ marginBottom: '8px' }}>
-                      <strong>Ulagrede endringer: {localEvents.length}</strong>
-                    </div>
-                    <button
-                      onClick={handleSaveChanges}
-                      disabled={loading}
-                      style={{
-                        padding: '8px 16px',
-                        fontSize: '14px',
-                        backgroundColor: '#28a745',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: loading ? 'not-allowed' : 'pointer',
-                        fontWeight: 'bold',
-                        width: '100%',
-                      }}
-                    >
-                      {loading ? 'Lagrer...' : '💾 Lagre endringer'}
-                    </button>
-                  </div>
-                )}
-
-                <p style={{ marginTop: '12px', fontSize: '12px', color: '#666', fontStyle: 'italic' }}>
-                  Bruk verktøyene på venstre side av kartet for å gjøre endringer.
-                </p>
-              </div>
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      {/* Map Container */}
-      <div style={{ flex: 1, position: 'relative' }}>
-        <MapView
-          changeset={changeset}
-          routeGeometry={routeGeometry}
-          routeNumber={routeNumber}
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+        {/* Header - Fixed at top */}
+        <Header
+          onSelectRoute={handleSelectRoute}
           selectedRouteNumber={selectedRouteNumber}
-          onRouteSelect={handleSelectRoute}
-          onEventAdded={changeset ? handleEventAdded : handleLocalEventAdded}
-          selectedFeatureId={selectedFeatureId}
-          onFeatureSelect={setSelectedFeatureId}
-          localEventsCount={localEvents.length}
+          loading={loading}
         />
+
+        {/* Main Content Area - Below header */}
+        <div style={{
+          display: 'flex',
+          flex: 1,
+          marginTop: '60px', // Header height (fixed header)
+          position: 'relative',
+          overflow: 'hidden',
+          height: 'calc(100vh - 60px)' // Full height minus header
+        }}>
+          {/* Map Container - Full Width */}
+          <div style={{ flex: 1, position: 'relative', width: '100%', height: '100%' }}>
+            <MapView
+              changeset={changeset}
+              routeGeometry={routeGeometry}
+              routeNumber={routeNumber}
+              selectedRouteNumber={selectedRouteNumber}
+              onRouteSelect={handleSelectRoute}
+              onEventAdded={changeset ? handleEventAdded : handleLocalEventAdded}
+              selectedFeatureId={selectedFeatureId}
+              onFeatureSelect={setSelectedFeatureId}
+              localEventsCount={localEvents.length}
+            />
+          </div>
+
+          {/* Info Panel (Collapsible) - Overlays map from right */}
+          <InfoPanel
+            changeset={changeset}
+            routeNumber={routeNumber}
+            selectedFeatureId={selectedFeatureId}
+            localEventsCount={localEvents.length}
+            onChangesetUpdate={handleChangesetUpdate}
+            onSaveChanges={handleSaveChanges}
+            loading={loading}
+          />
+        </div>
       </div>
-    </div>
     </>
   );
 }

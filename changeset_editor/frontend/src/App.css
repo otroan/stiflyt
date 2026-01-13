@@ -10,6 +10,13 @@ body {
   overflow: hidden;
 }
 
+/* Ensure app container takes full viewport */
+#root {
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
 .snap-marker {
   pointer-events: none;
 }
