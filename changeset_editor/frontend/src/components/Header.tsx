@@ -152,6 +152,12 @@ export function Header({
     onSelectRoute(rutenummer);
   };
 
+  const handleShowAllRoutes = () => {
+    setSearchQuery('');
+    setShowResults(true);
+    performRouteSearch('');
+  };
+
   // Close results when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -260,6 +266,16 @@ export function Header({
             disabled={loading}
             aria-label="Søk etter rute"
           />
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ marginLeft: '8px' }}
+            onClick={handleShowAllRoutes}
+            disabled={loading}
+            title="Vis alle ruter"
+          >
+            Alle ruter
+          </button>
           {isSearching && (
             <span className="header-search-spinner">⏳</span>
           )}

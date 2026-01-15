@@ -337,6 +337,7 @@ function App() {
             selectedFeatureIds={selectedFeatureIds}
             selectedFeatureProperties={selectedFeatureProperties}
             selectedFeaturesMap={selectedFeaturesMap}
+          localEvents={localEvents}
             localEventsCount={localEvents.length}
             onChangesetUpdate={handleChangesetUpdate}
             onSaveChanges={handleSaveLocally}

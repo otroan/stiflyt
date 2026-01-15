@@ -40,26 +40,26 @@ function generatePatch(
   newAttrs: SegmentAttributes
 ): Array<{ op: 'replace' | 'add' | 'remove'; path: string; value?: unknown }> {
   const patch: Array<{ op: 'replace' | 'add' | 'remove'; path: string; value?: unknown }> = [];
-  
+
   // Normalize old attributes (handle both route_ref/rutenummer and name/rutenavn)
   const normalizedOld: SegmentAttributes = {
     ...oldAttrs,
     rutenummer: oldAttrs.rutenummer || oldAttrs.route_ref as string,
     rutenavn: oldAttrs.rutenavn || oldAttrs.name as string,
   };
-  
+
   // Fields to check (common segment attributes)
   const fieldsToCheck = ['rutenummer', 'rutenavn', 'vedlikeholdsansvarlig', 'rutetype', 'gradering'];
-  
+
   // Also check for any other keys in newAttrs that aren't in the standard list
   const allKeys = new Set([...Object.keys(normalizedOld), ...Object.keys(newAttrs)]);
-  
+
   for (const key of allKeys) {
     // Skip internal fields and normalized duplicates
     if (key === 'route_ref' || key === 'name' || key === 'op' || key === 'id' || key === 'objid') {
       continue;
     }
-    
+
     const oldValue = normalizedOld[key];
     const newValue = newAttrs[key];
 
@@ -153,7 +153,7 @@ export function SegmentEditForm({
       rutenummer: currentAttributes.rutenummer || currentAttributes.route_ref as string || '',
       rutenavn: currentAttributes.rutenavn || currentAttributes.name as string || '',
     };
-    
+
     // Generate JSON Patch
     const patch = generatePatch(normalizedCurrent, attributes);
 
@@ -182,7 +182,7 @@ export function SegmentEditForm({
       } else {
         throw new Error('Ingen changeset eller onEventAdded callback tilgjengelig');
       }
-      
+
       onSave();
     } catch (error: unknown) {
       const appError = handleApiError(error, 'Update Segment Attributes');

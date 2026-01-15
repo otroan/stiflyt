@@ -81,6 +81,15 @@ async function request<T>(
   throw lastError;
 }
 
+function buildHeaders(headers?: HeadersInit): HeadersInit {
+  const user = localStorage.getItem('user') || 'anonymous';
+  return {
+    'Content-Type': 'application/json',
+    'X-User': user,
+    ...headers,
+  };
+}
+
 export const isAbortError = (error: unknown): boolean => {
   if (!error || typeof error !== 'object') {
     return false;
@@ -162,6 +171,25 @@ export const api = {
     requestWithAbort(`/changesets/${changesetId}/publish`, {
       method: 'POST',
     }),
+
+  downloadChangesetArtifact: async (
+    changesetId: string,
+    filename: string
+  ): Promise<Blob> => {
+    const response = await fetch(`${API_BASE}/changesets/${changesetId}/artifacts/${filename}`, {
+      headers: buildHeaders(),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: response.statusText }));
+      const errorObj = {
+        message: error.detail || `HTTP ${response.status}: ${response.statusText}`,
+        statusCode: response.status,
+        status: response.status,
+      };
+      throw errorObj;
+    }
+    return response.blob();
+  },
 
   // Snap targets
   getSnapTargets: (bbox: string): Promise<{ targets: SnapTarget[] }> =>

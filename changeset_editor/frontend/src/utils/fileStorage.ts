@@ -35,13 +35,13 @@ export function saveChangesetToFile(
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  
+
   // Generate filename
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
   const filename = changeset
     ? `changeset-${changeset.id}-${timestamp}.json`
     : `changeset-local-${routeNumber || 'unsaved'}-${timestamp}.json`;
-  
+
   a.download = filename;
   document.body.appendChild(a);
   a.click();
@@ -57,12 +57,12 @@ export async function loadChangesetFromFile(
 ): Promise<ChangesetFileData> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    
+
     reader.onload = (e) => {
       try {
         const text = e.target?.result as string;
         const data = JSON.parse(text) as ChangesetFileData;
-        
+
         // Validate file format
         if (!data.version) {
           throw new Error('Ugyldig filformat: mangler versjon');
@@ -73,17 +73,17 @@ export async function loadChangesetFromFile(
         if (!data.events || !Array.isArray(data.events)) {
           throw new Error('Ugyldig filformat: mangler events array');
         }
-        
+
         resolve(data);
       } catch (error) {
         reject(new Error(`Kunne ikke lese fil: ${error instanceof Error ? error.message : 'Ukjent feil'}`));
       }
     };
-    
+
     reader.onerror = () => {
       reject(new Error('Kunne ikke lese fil'));
     };
-    
+
     reader.readAsText(file);
   });
 }
@@ -104,11 +104,11 @@ export function saveToLocalStorage(
       exportedAt: new Date().toISOString(),
       version: FILE_VERSION,
     };
-    
+
     const key = changeset
       ? `changeset-${changeset.id}`
       : `changeset-local-${routeNumber || 'unsaved'}`;
-    
+
     localStorage.setItem(key, JSON.stringify(data));
   } catch (error) {
     console.warn('Kunne ikke lagre til localStorage:', error);
@@ -124,7 +124,7 @@ export function loadFromLocalStorage(
   try {
     const data = localStorage.getItem(key);
     if (!data) return null;
-    
+
     return JSON.parse(data) as ChangesetFileData;
   } catch (error) {
     console.warn('Kunne ikke laste fra localStorage:', error);

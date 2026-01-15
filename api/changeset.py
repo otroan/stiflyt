@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Header, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from services.changeset.models import (
     CreateChangesetRequest,
     ChangesetResponse,
@@ -165,6 +165,28 @@ async def get_effective_geojson(changeset_id: str):
     materializer = Materializer()
     effective = materializer.materialize_effective(changeset_id)
     return JSONResponse(content=effective)
+
+
+@router.get("/changesets/{changeset_id}/artifacts/{filename}")
+async def download_changeset_artifact(changeset_id: str, filename: str):
+    """Download changeset artifact (JSON only)."""
+    if not filename.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Only JSON artifacts are supported")
+
+    artifact_path = (ARTIFACTS_DIR / "changesets" / changeset_id / filename).resolve()
+    artifacts_root = (ARTIFACTS_DIR / "changesets" / changeset_id).resolve()
+
+    if not str(artifact_path).startswith(str(artifacts_root)):
+        raise HTTPException(status_code=400, detail="Invalid artifact path")
+
+    if not artifact_path.exists():
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    return FileResponse(
+        path=str(artifact_path),
+        media_type="application/json",
+        filename=filename,
+    )
 
 
 @router.post("/changesets/{changeset_id}/publish", response_model=PublishResponse)

@@ -3,7 +3,7 @@
  * Displays route info, changeset info, validation results, and events
  */
 import { useState, useEffect } from 'react';
-import type { Changeset, ChangeEvent, ValidationIssue, RouteValidationResponse } from '../types';
+import type { Changeset, ChangeEvent, ValidationIssue, RouteValidationResponse, LocalEvent } from '../types';
 import { isSegmentAddEvent, isSegmentUpdateGeomEvent } from '../types';
 import { api, isAbortError } from '../api/client';
 import { handleApiError } from '../utils/errorHandler';
@@ -21,6 +21,7 @@ interface InfoPanelProps {
   selectedFeatureIds?: Set<string>; // Multi-select support
   selectedFeatureProperties?: Record<string, unknown> | null;
   selectedFeaturesMap?: Map<string, Record<string, unknown>>; // Map of all selected features
+  localEvents?: LocalEvent[];
   localEventsCount?: number;
   onChangesetUpdate: () => void;
   onSaveChanges?: () => void;
@@ -39,6 +40,7 @@ export function InfoPanel({
   selectedFeatureIds = new Set(),
   selectedFeatureProperties,
   selectedFeaturesMap = new Map(),
+  localEvents = [],
   localEventsCount = 0,
   onChangesetUpdate,
   onSaveChanges,
@@ -292,6 +294,33 @@ export function InfoPanel({
         return false;
       })
     : null;
+
+  const extractTarget = (event: LocalEvent | ChangeEvent): string => {
+    const payload = 'event' in event ? event.event : event;
+    if ('target' in payload && payload.target) {
+      const target = payload.target as { kind?: string; id?: string; temp_id?: string };
+      if (target.id) return `${target.kind || 'segment'}:${target.id}`;
+      if (target.temp_id) return `${target.kind || 'segment'}:${target.temp_id}`;
+    }
+    if ('temp_id' in payload && payload.temp_id) {
+      return `segment:${payload.temp_id}`;
+    }
+    return 'n/a';
+  };
+
+  const changesRows: Array<{ kind: string; type: string; target: string; ts?: string }> = [
+    ...localEvents.map((event) => ({
+      kind: 'lokal',
+      type: event.type,
+      target: extractTarget(event),
+    })),
+    ...events.map((event) => ({
+      kind: 'changeset',
+      type: event.event.type,
+      target: extractTarget(event),
+      ts: event.ts,
+    })),
+  ];
   
   // Extract segment attributes from properties
   // Properties from effective/diff layer contain the current attributes
@@ -446,6 +475,32 @@ export function InfoPanel({
                       title="Eksporter changeset til JSON-fil"
                     >
                       💾 Eksporter til fil
+                    </button>
+                  )}
+                  {changeset && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          const blob = await api.downloadChangesetArtifact(changeset.id, 'diff.json');
+                          const url = URL.createObjectURL(blob);
+                          const link = document.createElement('a');
+                          link.href = url;
+                          link.download = `changeset-${changeset.id}-diff.json`;
+                          document.body.appendChild(link);
+                          link.click();
+                          document.body.removeChild(link);
+                          URL.revokeObjectURL(url);
+                          notificationManager.success('JSON eksport lastet ned');
+                        } catch (error: unknown) {
+                          const appError = handleApiError(error, 'Export JSON');
+                          notificationManager.error(`Kunne ikke eksportere JSON: ${appError.message}`);
+                        }
+                      }}
+                      disabled={loading}
+                      className="btn btn-secondary"
+                      title="Eksporter endringer som JSON (backend)"
+                    >
+                      📦 Eksporter JSON
                     </button>
                   )}
                   <button
@@ -707,6 +762,30 @@ export function InfoPanel({
                   ))}
                 </div>
               </div>
+              {routeNumber && (
+                <div className="info-panel-section">
+                  <h3>Endringer for rute</h3>
+                  {changesRows.length === 0 ? (
+                    <div style={{ color: '#666', fontStyle: 'italic' }}>
+                      Ingen registrerte endringer
+                    </div>
+                  ) : (
+                    <div className="events-list">
+                      {changesRows.map((row, index) => (
+                        <div key={`${row.kind}-${row.type}-${row.target}-${index}`} className="event-item">
+                          <div className="event-type">
+                            {row.type} <span style={{ color: '#999' }}>({row.kind})</span>
+                          </div>
+                          <div className="event-time">
+                            {row.target}
+                            {row.ts ? ` • ${new Date(row.ts).toLocaleString()}` : ''}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           ) : routeNumber ? (
             <>
