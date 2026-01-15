@@ -47,8 +47,28 @@ frontend: ## Start changeset editor frontend (React/Vite)
 	fi && \
 	npm run dev
 
-test: ## Run tests
+test: ## Run backend tests
 	. $(VENV)/bin/activate && pytest
+
+test-frontend: ## Run frontend tests
+	@echo "Running frontend tests..."
+	@cd changeset_editor/frontend && \
+	if [ ! -d node_modules ]; then \
+		echo "Installing dependencies..."; \
+		npm install; \
+	fi && \
+	npm run test:run
+
+test-frontend-coverage: ## Run frontend tests with coverage
+	@echo "Running frontend tests with coverage..."
+	@cd changeset_editor/frontend && \
+	if [ ! -d node_modules ]; then \
+		echo "Installing dependencies..."; \
+		npm install; \
+	fi && \
+	npm run test:coverage
+
+test-all: test test-frontend ## Run all tests (backend + frontend)
 
 perf-test: ## Run performance tests against API
 	@echo "Running performance tests..."

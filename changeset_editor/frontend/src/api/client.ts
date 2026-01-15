@@ -5,6 +5,12 @@ import type {
   EventPayload,
   ValidationResponse,
   SnapTarget,
+  RouteResponse,
+  RoutesResponse,
+  RouteSegmentsResponse,
+  RouteLinksResponse,
+  RouteValidationResponse,
+  RouteInfo,
 } from '../types';
 import { isRetryableError } from '../utils/errorHandler';
 
@@ -75,6 +81,30 @@ async function request<T>(
   throw lastError;
 }
 
+export const isAbortError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return true;
+  }
+  return 'name' in error && (error as { name?: string }).name === 'AbortError';
+};
+
+export async function requestWithAbort<T>(
+  endpoint: string,
+  options: RequestOptions = {}
+): Promise<T> {
+  try {
+    return await request<T>(endpoint, options);
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+    throw error;
+  }
+}
+
 export const api = {
   // Changesets
   createChangeset: (data: {
@@ -84,41 +114,41 @@ export const api = {
     linked_issue_url?: string;
     base_snapshot?: string;
   }): Promise<Changeset> =>
-    request<Changeset>('/changesets', {
+    requestWithAbort<Changeset>('/changesets', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
 
   getChangeset: (id: string): Promise<Changeset> =>
-    request<Changeset>(`/changesets/${id}`),
+    requestWithAbort<Changeset>(`/changesets/${id}`),
 
   listChangesets: (limit = 100, offset = 0): Promise<Changeset[]> =>
-    request<Changeset[]>(`/changesets?limit=${limit}&offset=${offset}`),
+    requestWithAbort<Changeset[]>(`/changesets?limit=${limit}&offset=${offset}`),
 
   // Events
   addEvent: (changesetId: string, event: EventPayload): Promise<ChangeEvent> =>
-    request<ChangeEvent>(`/changesets/${changesetId}/events`, {
+    requestWithAbort<ChangeEvent>(`/changesets/${changesetId}/events`, {
       method: 'POST',
       body: JSON.stringify({ event }),
     }),
 
   getEvents: (changesetId: string): Promise<{ events: ChangeEvent[] }> =>
-    request<{ events: ChangeEvent[] }>(`/changesets/${changesetId}/events`),
+    requestWithAbort<{ events: ChangeEvent[] }>(`/changesets/${changesetId}/events`),
 
   // Validation
   validate: (changesetId: string): Promise<ValidationResponse> =>
-    request<ValidationResponse>(`/changesets/${changesetId}/validate`, {
+    requestWithAbort<ValidationResponse>(`/changesets/${changesetId}/validate`, {
       method: 'POST',
     }),
 
   // GeoJSON
   getDiffGeoJSON: (changesetId: string): Promise<GeoJSON.FeatureCollection> =>
-    request<GeoJSON.FeatureCollection>(`/changesets/${changesetId}/diff.geojson`),
+    requestWithAbort<GeoJSON.FeatureCollection>(`/changesets/${changesetId}/diff.geojson`),
 
   getEffectiveGeoJSON: (
     changesetId: string
   ): Promise<GeoJSON.FeatureCollection> =>
-    request<GeoJSON.FeatureCollection>(
+    requestWithAbort<GeoJSON.FeatureCollection>(
       `/changesets/${changesetId}/effective.geojson`
     ),
 
@@ -129,11 +159,78 @@ export const api = {
     pr_url: string;
     artifacts: Record<string, string>;
   }> =>
-    request(`/changesets/${changesetId}/publish`, {
+    requestWithAbort(`/changesets/${changesetId}/publish`, {
       method: 'POST',
     }),
 
   // Snap targets
   getSnapTargets: (bbox: string): Promise<{ targets: SnapTarget[] }> =>
-    request<{ targets: SnapTarget[] }>(`/snap-targets?bbox=${bbox}`),
+    requestWithAbort<{ targets: SnapTarget[] }>(`/snap-targets?bbox=${bbox}`),
+
+  // Routes
+  getRoute: (
+    rutenummer: string,
+    includeGeometry = false,
+    options: RequestOptions = {}
+  ): Promise<RouteResponse> =>
+    requestWithAbort<RouteResponse>(
+      `/v1/routes/${rutenummer}?include_geometry=${includeGeometry ? 'true' : 'false'}`,
+      options
+    ),
+
+  listRoutes: (
+    params: { limit?: number; prefix?: string } = {},
+    options: RequestOptions = {}
+  ): Promise<RoutesResponse> => {
+    const query = new URLSearchParams();
+    if (params.limit) query.set('limit', String(params.limit));
+    if (params.prefix) query.set('prefix', params.prefix);
+    const qs = query.toString();
+    return requestWithAbort<RoutesResponse>(`/v1/routes${qs ? `?${qs}` : ''}`, options);
+  },
+
+  getRoutesInBbox: (
+    bbox: string,
+    options: RequestOptions = {}
+  ): Promise<RoutesResponse> =>
+    requestWithAbort<RoutesResponse>(
+      `/v1/routes?bbox=${bbox}&include_geometry=true&limit=500`,
+      options
+    ),
+
+  getRouteSegments: (
+    rutenummer: string,
+    includeGeometry = true,
+    options: RequestOptions = {}
+  ): Promise<RouteSegmentsResponse> =>
+    requestWithAbort<RouteSegmentsResponse>(
+      `/v1/routes/${rutenummer}/segments?include_geometry=${includeGeometry ? 'true' : 'false'}`,
+      options
+    ),
+
+  getRouteLinks: (
+    rutenummer: string,
+    includeGeometry = true,
+    options: RequestOptions = {}
+  ): Promise<RouteLinksResponse> =>
+    requestWithAbort<RouteLinksResponse>(
+      `/v1/routes/${rutenummer}/links?include_geometry=${includeGeometry ? 'true' : 'false'}`,
+      options
+    ),
+
+  validateRoute: (
+    rutenummer: string,
+    options: RequestOptions = {}
+  ): Promise<RouteValidationResponse> =>
+    requestWithAbort<RouteValidationResponse>(`/v1/routes/${rutenummer}/validate`, options),
+
+  searchPlaces: (
+    query: string,
+    limit = 20,
+    options: RequestOptions = {}
+  ): Promise<{ results: RouteInfo[] }> =>
+    requestWithAbort<{ results: RouteInfo[] }>(
+      `/v1/search/places?q=${encodeURIComponent(query)}&limit=${limit}`,
+      options
+    ),
 };

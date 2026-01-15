@@ -131,11 +131,21 @@ export function splitLineStringAtPoint(
   if (splitT > 0 && splitT < 1) {
     firstPart.push(splitPoint);
   }
-  // If splitT === 1, the split point is at coords[splitIndex + 1], which is already included
+  // If splitT === 1, include the next vertex in the first part
+  if (splitT === 1) {
+    const nextPoint = coords[splitIndex + 1];
+    if (nextPoint) {
+      firstPart.push(nextPoint);
+    }
+  }
 
   const secondPart: number[][] = [];
   // If split point is not at an existing vertex, add it to the second part
   if (splitT > 0 && splitT < 1) {
+    secondPart.push(splitPoint);
+  }
+  // If splitT === 0, include the split point at the start of the second part
+  if (splitT === 0) {
     secondPart.push(splitPoint);
   }
   // Add remaining coordinates (starting from splitIndex + 1, or splitIndex + 2 if we added the point)

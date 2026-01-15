@@ -1,12 +1,12 @@
 /** Map view component with Leaflet and Geoman */
 import { useEffect, useRef, useState } from 'react';
-import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent } from '../types';
 import type { GeoJSON } from 'geojson';
 import { SnapManager } from '../utils/snap';
-import { api } from '../api/client';
+import { api, isAbortError } from '../api/client';
 import { handleApiError } from '../utils/errorHandler';
 import { notificationManager } from '../utils/notifications';
 import { findClosestPointOnLine, splitLineStringAtPoint, isNewSegment } from '../utils/geometry';
@@ -15,6 +15,12 @@ import 'leaflet/dist/leaflet.css';
 
 // Load Geoman dynamically to avoid Vite resolution issues
 // Import is done in GeomanControl component when needed
+const debugLog = (...args: unknown[]) => {
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.log(...args);
+  }
+};
 
 // Fix Leaflet default icon issue
 import icon from 'leaflet/dist/images/marker-icon.png';
@@ -35,7 +41,8 @@ interface MapViewProps {
   onRouteSelect?: (rutenummer: string) => void;
   onEventAdded: (event: LocalEvent) => void;
   selectedFeatureId?: string;
-  onFeatureSelect?: (id: string, properties?: Record<string, unknown>) => void;
+  selectedFeatureIds?: Set<string>; // Multi-select support - all selected feature IDs
+  onFeatureSelect?: (id: string, properties?: Record<string, unknown>, isMultiSelect?: boolean) => void;
   onOpenEditForm?: () => void; // Callback to open edit form in InfoPanel
   localEventsCount?: number;
 }
@@ -49,7 +56,7 @@ function MapInitializer({
   const map = useMap();
   
   useEffect(() => {
-    console.log('MapInitializer: map is ready', map);
+    debugLog('MapInitializer: map is ready', map);
     onMapReady(map);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map]); // Only depend on map, not onMapReady to avoid re-runs
@@ -185,6 +192,7 @@ export function MapView({
   onRouteSelect,
   onEventAdded,
   selectedFeatureId,
+  selectedFeatureIds = new Set(),
   onFeatureSelect,
   onOpenEditForm,
   localEventsCount = 0,
@@ -219,34 +227,41 @@ export function MapView({
 
   // Load routes within bounding box
   useEffect(() => {
-    console.log('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current });
+    debugLog('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current });
     
     if (!mapRef.current || !mapReady) {
-      console.log('Skipping routes load - map not ready');
+      debugLog('Skipping routes load - map not ready');
       return;
     }
 
+    let requestId = 0;
+    let activeController: AbortController | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
     const loadRoutesInView = () => {
       if (!mapRef.current) {
-        console.log('mapRef.current is null in loadRoutesInView');
+        debugLog('mapRef.current is null in loadRoutesInView');
         return;
       }
       
       const bounds = mapRef.current.getBounds();
       const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
       
-      console.log('Loading routes in bbox:', bbox);
-      
-      fetch(`/api/v1/routes?bbox=${bbox}&include_geometry=true&limit=500`)
-        .then(res => {
-          console.log('Routes API response status:', res.status);
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-          }
-          return res.json();
-        })
+      debugLog('Loading routes in bbox:', bbox);
+
+      requestId += 1;
+      const currentRequestId = requestId;
+      if (activeController) {
+        activeController.abort();
+      }
+      activeController = new AbortController();
+
+      api.getRoutesInBbox(bbox, { signal: activeController.signal })
         .then((data: RoutesResponse) => {
-          console.log('Routes API response:', data);
+          if (currentRequestId !== requestId) {
+            return;
+          }
+          debugLog('Routes API response:', data);
           // Convert routes to GeoJSON FeatureCollection
           // Convert routes to GeoJSON FeatureCollection
           // Note: RouteInfo doesn't have route_geometry, but RoutesResponse routes might
@@ -272,14 +287,15 @@ export function MapView({
             .filter((f): f is GeoJSON.Feature => f !== null);
           
           const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
-          console.log(`Loaded ${filteredFeatures.length} routes with geometry`);
+          debugLog(`Loaded ${filteredFeatures.length} routes with geometry`);
           
           setRoutesInView({
             type: 'FeatureCollection',
             features: filteredFeatures,
           });
         })
-        .catch(() => {
+        .catch((error) => {
+          if (isAbortError(error)) return;
           // Don't show notification for background route loading - just log silently
           // Errors are logged by handleApiError
         });
@@ -290,12 +306,18 @@ export function MapView({
     mapRef.current.on('zoomend', loadRoutesInView);
     
     // Initial load with a small delay to ensure map is fully initialized
-    setTimeout(() => {
-      console.log('Initial routes load');
+    timeoutId = setTimeout(() => {
+      debugLog('Initial routes load');
       loadRoutesInView();
     }, 500);
 
     return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (activeController) {
+        activeController.abort();
+      }
       if (mapRef.current) {
         mapRef.current.off('moveend', loadRoutesInView);
         mapRef.current.off('zoomend', loadRoutesInView);
@@ -312,16 +334,16 @@ export function MapView({
       return;
     }
 
+    // Auto-enable segment display when route is selected
+    setShowSegments(true);
+
+    const segmentsController = new AbortController();
+    const linksController = new AbortController();
+
     // Load segments
-    fetch(`/api/v1/routes/${routeNumber}/segments?include_geometry=true`)
-      .then(res => {
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        }
-        return res.json();
-      })
+      api.getRouteSegments(routeNumber, true, { signal: segmentsController.signal })
       .then((data: RouteSegmentsResponse) => {
-        console.log('Segments API response:', data);
+        debugLog('Segments API response:', data);
         const features: GeoJSON.Feature[] = (data.segments || [])
           .map((seg) => {
             // API returns geometry as 'senterlinje' not 'geometry'
@@ -345,7 +367,7 @@ export function MapView({
           })
           .filter((f): f is GeoJSON.Feature => f !== null);
         const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
-        console.log(`Loaded ${filteredFeatures.length} segments with geometry (out of ${features.length} total)`);
+        debugLog(`Loaded ${filteredFeatures.length} segments with geometry (out of ${features.length} total)`);
         if (filteredFeatures.length === 0 && features.length > 0) {
           console.warn('No segments with geometry found. First segment:', data.segments?.[0]);
         }
@@ -355,20 +377,15 @@ export function MapView({
         });
       })
       .catch(error => {
+        if (isAbortError(error)) return;
         const appError = handleApiError(error, 'Load Segments');
         notificationManager.warning(`Kunne ikke laste segmenter: ${appError.message}`);
       });
 
     // Load links
-    fetch(`/api/v1/routes/${routeNumber}/links?include_geometry=true`)
-      .then(res => {
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        }
-        return res.json();
-      })
+    api.getRouteLinks(routeNumber, true, { signal: linksController.signal })
       .then((data: RouteLinksResponse) => {
-        console.log('Links API response:', data);
+        debugLog('Links API response:', data);
         const features: GeoJSON.Feature[] = (data.links || [])
           .map((link) => {
             // API returns geometry as 'geom' not 'geometry'
@@ -390,7 +407,7 @@ export function MapView({
           })
           .filter((f): f is GeoJSON.Feature => f !== null);
         const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
-        console.log(`Loaded ${filteredFeatures.length} links with geometry (out of ${features.length} total)`);
+        debugLog(`Loaded ${filteredFeatures.length} links with geometry (out of ${features.length} total)`);
         if (filteredFeatures.length === 0 && features.length > 0) {
           console.warn('No links with geometry found. First link:', data.links?.[0]);
         }
@@ -400,9 +417,15 @@ export function MapView({
         });
       })
       .catch(error => {
+        if (isAbortError(error)) return;
         const appError = handleApiError(error, 'Load Links');
         notificationManager.warning(`Kunne ikke laste lenker: ${appError.message}`);
       });
+
+    return () => {
+      segmentsController.abort();
+      linksController.abort();
+    };
   }, [routeNumber, mapReady]);
 
   // Display selected route geometry on map (highlighted)
@@ -465,12 +488,19 @@ export function MapView({
       segmentsLayerRef.current = null;
     }
 
-    console.log('Displaying segments:', segmentsData.features.length, 'features');
+    debugLog('Displaying segments:', segmentsData.features.length, 'features');
     const segmentsLayer = L.geoJSON(segmentsData, {
       style: (feature) => {
-        const props = feature?.properties as { objid?: number | string; [key: string]: unknown } | null;
-        const featureId = feature?.id || props?.objid;
-        const isSelected = String(featureId) === String(selectedFeatureId);
+        const props = feature?.properties as { objid?: number | string; segment_objid?: number | string; [key: string]: unknown } | null;
+        // Normalize feature ID for style matching
+        const featureId = feature?.id 
+          ? String(feature.id) 
+          : props?.objid 
+            ? String(props.objid) 
+            : props?.segment_objid
+              ? String(props.segment_objid)
+              : null;
+        const isSelected = featureId && (selectedFeatureIds.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
         return {
           color: isSelected ? '#2196f3' : '#9b59b6',
           weight: isSelected ? 6 : 4,
@@ -479,7 +509,14 @@ export function MapView({
       },
       onEachFeature: (feature, layer) => {
         const props = feature.properties as { objid?: number | string; rutenummer?: string; rutenavn?: string | null; length_m?: number | null; [key: string]: unknown } | null;
-        const featureId = feature.id || props?.objid;
+        // Normalize feature ID - ensure it's a string and try multiple sources
+        const featureId = feature.id 
+          ? String(feature.id) 
+          : props?.objid 
+            ? String(props.objid) 
+            : props?.segment_objid 
+              ? String(props.segment_objid)
+              : null;
         
         if (props) {
           layer.bindPopup(`
@@ -491,17 +528,21 @@ export function MapView({
         }
 
         // Add click handler for selection
-        layer.on('click', () => {
+        layer.on('click', (e: L.LeafletMouseEvent) => {
           if (onFeatureSelect && featureId) {
             const featureProps = feature.properties as Record<string, unknown> | null;
-            onFeatureSelect(String(featureId), featureProps || undefined);
+            const isMultiSelect = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
+            debugLog('Segment clicked:', { featureId, selectedFeatureId, isMultiSelect, props: featureProps });
+            onFeatureSelect(featureId, featureProps || undefined, isMultiSelect);
+          } else {
+            console.warn('Segment click ignored - missing featureId or onFeatureSelect', { featureId, hasHandler: !!onFeatureSelect });
           }
         });
       },
     }).addTo(mapRef.current);
 
     segmentsLayerRef.current = segmentsLayer;
-  }, [showSegments, segmentsData, mapReady, selectedFeatureId, onFeatureSelect]);
+  }, [showSegments, segmentsData, mapReady, selectedFeatureId, selectedFeatureIds, onFeatureSelect]);
 
   // Display links
   useEffect(() => {
@@ -528,12 +569,17 @@ export function MapView({
       linksLayerRef.current = null;
     }
 
-    console.log('Displaying links:', linksData.features.length, 'features');
+    debugLog('Displaying links:', linksData.features.length, 'features');
     const linksLayer = L.geoJSON(linksData, {
       style: (feature) => {
         const props = feature?.properties as { link_id?: number; [key: string]: unknown } | null;
-        const featureId = feature?.id || props?.link_id;
-        const isSelected = String(featureId) === String(selectedFeatureId);
+        // Normalize feature ID for style matching
+        const featureId = feature?.id 
+          ? String(feature.id) 
+          : props?.link_id 
+            ? String(props.link_id) 
+            : null;
+        const isSelected = featureId && (selectedFeatureIds.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
         return {
           color: isSelected ? '#2196f3' : '#16a085',
           weight: isSelected ? 5 : 3,
@@ -543,7 +589,12 @@ export function MapView({
       },
       onEachFeature: (feature, layer) => {
         const props = feature.properties as { link_id?: number; a_node?: number | null; b_node?: number | null; length_m?: number | null; [key: string]: unknown } | null;
-        const featureId = feature.id || props?.link_id;
+        // Normalize feature ID - ensure it's a string
+        const featureId = feature.id 
+          ? String(feature.id) 
+          : props?.link_id 
+            ? String(props.link_id) 
+            : null;
         
         if (props) {
           layer.bindPopup(`
@@ -555,17 +606,21 @@ export function MapView({
         }
 
         // Add click handler for selection
-        layer.on('click', () => {
+        layer.on('click', (e: L.LeafletMouseEvent) => {
           if (onFeatureSelect && featureId) {
             const featureProps = feature.properties as Record<string, unknown> | null;
-            onFeatureSelect(String(featureId), featureProps || undefined);
+            const isMultiSelect = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
+            debugLog('Link clicked:', { featureId, selectedFeatureId, isMultiSelect, props: featureProps });
+            onFeatureSelect(featureId, featureProps || undefined, isMultiSelect);
+          } else {
+            console.warn('Link click ignored - missing featureId or onFeatureSelect', { featureId, hasHandler: !!onFeatureSelect });
           }
         });
       },
     }).addTo(mapRef.current);
 
     linksLayerRef.current = linksLayer;
-  }, [showLinks, linksData, mapReady, selectedFeatureId, onFeatureSelect]);
+  }, [showLinks, linksData, mapReady, selectedFeatureId, selectedFeatureIds, onFeatureSelect]);
 
   // Display endpoints (for segments and links)
   useEffect(() => {
@@ -743,8 +798,6 @@ export function MapView({
   }, [activeTool]);
 
   const handleDrawComplete = async (geometry: GeoJSON.LineString) => {
-    if (!changeset) return;
-    
     const tempId = `tmp_${crypto.randomUUID()}`;
     const event = {
       type: 'segment.add' as const,
@@ -753,10 +806,18 @@ export function MapView({
       srid: 4326,
       attrs: {},
     };
+    
     try {
-      await api.addEvent(changeset.id, event);
-      onEventAdded(event);
-      notificationManager.success('Segment lagt til');
+      if (changeset) {
+        // Add to existing changeset
+        await api.addEvent(changeset.id, event);
+        onEventAdded(event);
+        notificationManager.success('Segment lagt til');
+      } else {
+        // Add to localEvents (no changeset yet)
+        onEventAdded(event);
+        notificationManager.success('Segment lagt til (ulagret)');
+      }
     } catch (error: unknown) {
       const appError = handleApiError(error, 'Add Segment');
       notificationManager.error(`Kunne ikke legge til segment: ${appError.message}`);
@@ -764,8 +825,6 @@ export function MapView({
   };
 
   const handleEditComplete = async (layerId: string, geometry: GeoJSON.LineString) => {
-    if (!changeset) return;
-    
     // Find if this is a base segment or new segment
     const event = {
       type: 'segment.update_geom' as const,
@@ -773,10 +832,18 @@ export function MapView({
       geometry,
       srid: 4326,
     };
+    
     try {
-      await api.addEvent(changeset.id, event);
-      onEventAdded(event);
-      notificationManager.success('Geometri oppdatert');
+      if (changeset) {
+        // Add to existing changeset
+        await api.addEvent(changeset.id, event);
+        onEventAdded(event);
+        notificationManager.success('Geometri oppdatert');
+      } else {
+        // Add to localEvents (no changeset yet)
+        onEventAdded(event);
+        notificationManager.success('Geometri oppdatert (ulagret)');
+      }
     } catch (error: unknown) {
       const appError = handleApiError(error, 'Update Geometry');
       notificationManager.error(`Kunne ikke oppdatere geometri: ${appError.message}`);
@@ -784,10 +851,28 @@ export function MapView({
   };
 
   const handleSplitSegment = async (segmentId: string, splitPoint: number[], originalGeometry: GeoJSON.LineString, originalAttrs: Record<string, unknown>) => {
-    if (!changeset) return;
-
     try {
+      const coords = originalGeometry.coordinates;
+      if (!coords || coords.length < 2) {
+        notificationManager.warning('Kan ikke dele segment uten gyldig geometri');
+        return;
+      }
+
+      const isSamePoint = (a: number[], b: number[]) =>
+        Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9;
+
+      if (isSamePoint(splitPoint, coords[0]) || isSamePoint(splitPoint, coords[coords.length - 1])) {
+        notificationManager.warning('Deling må skje mellom endepunktene, ikke på endepunkt');
+        return;
+      }
+
       const [firstPart, secondPart] = splitLineStringAtPoint(originalGeometry, splitPoint);
+
+      if (firstPart.coordinates.length < 2 || secondPart.coordinates.length < 2) {
+        notificationManager.warning('Deling gir for korte segmenter');
+        return;
+      }
+
       const isNew = isNewSegment(segmentId);
 
       if (isNew) {
@@ -816,14 +901,16 @@ export function MapView({
           attrs: originalAttrs,
         };
 
-        await api.addEvent(changeset.id, deleteEvent);
+        if (changeset) {
+          await api.addEvent(changeset.id, deleteEvent);
+          await api.addEvent(changeset.id, addEvent1);
+          await api.addEvent(changeset.id, addEvent2);
+        }
         onEventAdded(deleteEvent);
-        await api.addEvent(changeset.id, addEvent1);
         onEventAdded(addEvent1);
-        await api.addEvent(changeset.id, addEvent2);
         onEventAdded(addEvent2);
 
-        notificationManager.success('Segment delt i to nye segmenter');
+        notificationManager.success(changeset ? 'Segment delt i to nye segmenter' : 'Segment delt i to nye segmenter (ulagret)');
       } else {
         // For existing segments: retire the original and add two new ones
         const retireEvent: SegmentRetireEvent = {
@@ -850,14 +937,16 @@ export function MapView({
           attrs: originalAttrs,
         };
 
-        await api.addEvent(changeset.id, retireEvent);
+        if (changeset) {
+          await api.addEvent(changeset.id, retireEvent);
+          await api.addEvent(changeset.id, addEvent1);
+          await api.addEvent(changeset.id, addEvent2);
+        }
         onEventAdded(retireEvent);
-        await api.addEvent(changeset.id, addEvent1);
         onEventAdded(addEvent1);
-        await api.addEvent(changeset.id, addEvent2);
         onEventAdded(addEvent2);
 
-        notificationManager.success('Segment delt i to nye segmenter');
+        notificationManager.success(changeset ? 'Segment delt i to nye segmenter' : 'Segment delt i to nye segmenter (ulagret)');
       }
 
       setActiveTool(null);
@@ -871,8 +960,6 @@ export function MapView({
   };
 
   const handleDeleteSegment = async (segmentId: string) => {
-    if (!changeset) return;
-
     const isNew = isNewSegment(segmentId);
 
     try {
@@ -881,17 +968,21 @@ export function MapView({
           type: 'segment.delete_new',
           target: { kind: 'segment', temp_id: segmentId },
         };
-        await api.addEvent(changeset.id, event);
+        if (changeset) {
+          await api.addEvent(changeset.id, event);
+        }
         onEventAdded(event);
-        notificationManager.success('Segment slettet');
+        notificationManager.success(changeset ? 'Segment slettet' : 'Segment slettet (ulagret)');
       } else {
         const event: SegmentRetireEvent = {
           type: 'segment.retire',
           target: { kind: 'segment', id: segmentId },
         };
-        await api.addEvent(changeset.id, event);
+        if (changeset) {
+          await api.addEvent(changeset.id, event);
+        }
         onEventAdded(event);
-        notificationManager.success('Segment pensjonert');
+        notificationManager.success(changeset ? 'Segment pensjonert' : 'Segment pensjonert (ulagret)');
       }
 
       setActiveTool(null);
@@ -905,8 +996,6 @@ export function MapView({
   };
 
   const handleRetireSegment = async (segmentId: string) => {
-    if (!changeset) return;
-
     if (isNewSegment(segmentId)) {
       notificationManager.warning('Nye segmenter kan ikke pensjoneres. Bruk slett i stedet.');
       return;
@@ -917,9 +1006,11 @@ export function MapView({
         type: 'segment.retire',
         target: { kind: 'segment', id: segmentId },
       };
-      await api.addEvent(changeset.id, event);
+      if (changeset) {
+        await api.addEvent(changeset.id, event);
+      }
       onEventAdded(event);
-      notificationManager.success('Segment pensjonert');
+      notificationManager.success(changeset ? 'Segment pensjonert' : 'Segment pensjonert (ulagret)');
 
       setActiveTool(null);
       if (onFeatureSelect) {
@@ -945,9 +1036,18 @@ export function MapView({
   };
 
   const onEachFeature = (feature: GeoJSON.Feature, layer: L.Layer) => {
-    const props = feature.properties as { id?: string | number; [key: string]: unknown } | null;
-    const featureId = feature.id || props?.id;
-    const isSelected = String(featureId) === String(selectedFeatureId);
+    const props = feature.properties as { id?: string | number; objid?: number | string; temp_id?: string; [key: string]: unknown } | null;
+    // Normalize feature ID - try multiple sources and ensure string format
+    const featureId = feature.id 
+      ? String(feature.id) 
+      : props?.id 
+        ? String(props.id)
+        : props?.objid
+          ? String(props.objid)
+          : props?.temp_id
+            ? String(props.temp_id)
+            : null;
+    const isSelected = featureId && (selectedFeatureIds.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
 
     if (isSelected) {
       (layer as L.Path).setStyle({ weight: 6, color: '#2196f3', opacity: 1.0 });
@@ -984,7 +1084,11 @@ export function MapView({
       if (onFeatureSelect && featureId) {
         // Pass feature properties (which contain segment attributes)
         const featureProps = feature.properties as Record<string, unknown> | null;
-        onFeatureSelect(String(featureId), featureProps || undefined);
+        const isMultiSelect = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
+        debugLog('Feature clicked (diff/effective layer):', { featureId, selectedFeatureId, isMultiSelect, props: featureProps });
+        onFeatureSelect(featureId, featureProps || undefined, isMultiSelect);
+      } else {
+        console.warn('Feature click ignored (diff/effective layer) - missing featureId or onFeatureSelect', { featureId, hasHandler: !!onFeatureSelect });
       }
     });
 
@@ -1004,14 +1108,25 @@ export function MapView({
         zoom={7}
         style={{ width: '100%', height: '100%' }}
       >
-        <TileLayer
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          attribution='© OpenStreetMap contributors'
-        />
+        <LayersControl position="topright">
+          <LayersControl.BaseLayer checked name="OpenStreetMap">
+            <TileLayer
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              attribution='© OpenStreetMap contributors'
+            />
+          </LayersControl.BaseLayer>
+          <LayersControl.BaseLayer name="Kartverket Topo4">
+            <TileLayer
+              url="https://cache.kartverket.no/v1/wmts/1.0.0/topo/default/webmercator/{z}/{y}/{x}.png"
+              attribution='© <a href="https://www.kartverket.no/">Kartverket</a>'
+              maxZoom={19}
+            />
+          </LayersControl.BaseLayer>
+        </LayersControl>
         
         <MapInitializer 
           onMapReady={(map) => {
-            console.log('MapInitializer callback: setting mapRef and mapReady');
+            debugLog('MapInitializer callback: setting mapRef and mapReady');
             mapRef.current = map;
             setMapReady(true);
           }}
@@ -1202,16 +1317,30 @@ export function MapView({
           {/* Edit segment/route data */}
           <button
             onClick={() => {
-              if (selectedFeatureId) {
-                // Segment selected - open edit form in InfoPanel
+              debugLog('Edit button clicked:', { 
+                selectedFeatureId, 
+                selectedFeatureIdsSize: selectedFeatureIds.size,
+                selectedFeatureIdsArray: Array.from(selectedFeatureIds),
+                routeNumber 
+              });
+              
+              if (selectedFeatureId || selectedFeatureIds.size > 0) {
+                // One or more segments selected - open edit form in InfoPanel
+                debugLog('Opening edit form for segment(s)');
                 if (onOpenEditForm) {
                   onOpenEditForm();
                 } else {
-                  notificationManager.info('Rediger metadata: Åpner redigeringsform');
+                  notificationManager.info(
+                    selectedFeatureIds.size > 1 
+                      ? `Rediger metadata for ${selectedFeatureIds.size} segmenter: Åpner redigeringsform`
+                      : 'Rediger metadata: Åpner redigeringsform'
+                  );
                 }
                 setActiveTool('edit-data');
-              } else if (routeNumber && changeset) {
+              } else if (routeNumber) {
                 // Route selected but no segment - open route edit form in InfoPanel
+                // Note: changeset is not required for route editing (can use localEvents)
+                debugLog('Opening edit form for route');
                 if (onOpenEditForm) {
                   onOpenEditForm();
                 } else {
@@ -1437,6 +1566,34 @@ export function MapView({
             </div>
             <div style={{ fontSize: '12px', color: '#666' }}>
               Klikk på et segment for å dele det
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Multi-select indicator */}
+      {selectedFeatureIds.size > 1 && (
+        <div style={{
+          position: 'absolute',
+          top: activeTool === 'split' ? 100 : 20,
+          left: 20,
+          zIndex: 1000,
+          background: '#e7f3ff',
+          border: '2px solid #2196f3',
+          borderRadius: '8px',
+          padding: '12px 16px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+        }}>
+          <span style={{ fontSize: '18px' }}>✓</span>
+          <div>
+            <div style={{ fontWeight: 'bold', fontSize: '14px' }}>
+              {selectedFeatureIds.size} segmenter valgt
+            </div>
+            <div style={{ fontSize: '12px', color: '#666' }}>
+              Hold Ctrl/Cmd og klikk for å velge flere. Klikk "Rediger segment/rutedata" for bulk-redigering.
             </div>
           </div>
         </div>

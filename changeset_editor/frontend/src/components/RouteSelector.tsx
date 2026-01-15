@@ -1,5 +1,6 @@
 /** Route selector component for choosing a route to edit */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { api } from '../api/client';
 import { handleApiError } from '../utils/errorHandler';
 import { notificationManager } from '../utils/notifications';
 
@@ -19,74 +20,70 @@ export function RouteSelector({ onSelectRoute, loading }: RouteSelectorProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [routes, setRoutes] = useState<Route[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const searchControllerRef = useRef<AbortController | null>(null);
 
   const searchPlaces = async (query: string, limit: number = 20): Promise<{ results: Route[] }> => {
-    const response = await fetch(`/api/v1/search/places?q=${encodeURIComponent(query)}&limit=${limit}`);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    return response.json();
+    return api.searchPlaces(query, limit);
   };
 
   const performRouteSearch = async (query: string) => {
     const queryTrimmed = query ? query.trim() : '';
+    if (searchControllerRef.current) {
+      searchControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    searchControllerRef.current = controller;
+    const { signal } = controller;
 
     setIsSearching(true);
     try {
       // If empty query, show all routes
       if (queryTrimmed.length === 0) {
-        const response = await fetch(`/api/v1/routes?limit=200`);
-        if (response.ok) {
-          const data = await response.json();
-          setRoutes(data.routes || []);
-        } else {
-          setRoutes([]);
-        }
+        const data = await api.listRoutes({ limit: 200 }, { signal });
+        if (signal.aborted) return;
+        setRoutes(data.routes || []);
         return;
       }
 
       // If query is short (1-2 chars), treat as prefix search
       if (queryTrimmed.length <= 2) {
-        const response = await fetch(`/api/v1/routes?prefix=${encodeURIComponent(queryTrimmed)}&limit=200`);
-        if (response.ok) {
-          const data = await response.json();
-          setRoutes(data.routes || []);
-        } else {
-          setRoutes([]);
-        }
+        const data = await api.listRoutes({ prefix: queryTrimmed, limit: 200 }, { signal });
+        if (signal.aborted) return;
+        setRoutes(data.routes || []);
         return;
       }
 
       // For longer queries, try exact match first via search places, then prefix search
       try {
         const data = await searchPlaces(queryTrimmed, 20);
+        if (signal.aborted) return;
         const exactRoutes = (data.results || []).filter((r: Route) => r.type === 'rute');
         
         if (exactRoutes.length > 0) {
           setRoutes(exactRoutes);
         } else {
           // If no exact match, try prefix search
-          const response = await fetch(`/api/v1/routes?prefix=${encodeURIComponent(queryTrimmed)}&limit=200`);
-          if (response.ok) {
-            const routeData = await response.json();
-            setRoutes(routeData.routes || []);
-          } else {
-            setRoutes([]);
-          }
+          const routeData = await api.listRoutes({ prefix: queryTrimmed, limit: 200 }, { signal });
+          if (signal.aborted) return;
+          setRoutes(routeData.routes || []);
         }
       } catch (error) {
+        if (signal.aborted) return;
         const appError = handleApiError(error, 'Route Search');
         // Don't show notification for search errors - just log silently
         // notificationManager.warning(`Søk feilet: ${appError.message}`);
         setRoutes([]);
       }
     } catch (error) {
+      if (signal.aborted) return;
       const appError = handleApiError(error, 'Route Search');
       // Don't show notification for search errors - just log silently
       // notificationManager.warning(`Søk feilet: ${appError.message}`);
       setRoutes([]);
     } finally {
-      setIsSearching(false);
+      if (!signal.aborted) {
+        setIsSearching(false);
+      }
     }
   };
 
@@ -97,6 +94,14 @@ export function RouteSelector({ onSelectRoute, loading }: RouteSelectorProps) {
 
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  useEffect(() => {
+    return () => {
+      if (searchControllerRef.current) {
+        searchControllerRef.current.abort();
+      }
+    };
+  }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>

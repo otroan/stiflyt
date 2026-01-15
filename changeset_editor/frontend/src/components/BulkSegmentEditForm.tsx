@@ -1,14 +1,14 @@
 /**
- * Form component for editing route-level metadata (applies to all segments in route)
+ * Form component for bulk editing multiple segments' metadata
  */
 import { useState, useEffect } from 'react';
-import { api, isAbortError } from '../api/client';
+import { api } from '../api/client';
 import { handleApiError } from '../utils/errorHandler';
 import { notificationManager } from '../utils/notifications';
-import type { Changeset, SegmentUpdateAttrsEvent, RouteSegmentsResponse } from '../types';
-import './RouteEditForm.css';
+import type { Changeset, SegmentUpdateAttrsEvent } from '../types';
+import './BulkSegmentEditForm.css';
 
-interface RouteAttributes {
+interface SegmentAttributes {
   rutenummer?: string;
   rutenavn?: string;
   vedlikeholdsansvarlig?: string;
@@ -17,10 +17,10 @@ interface RouteAttributes {
   [key: string]: unknown;
 }
 
-interface RouteEditFormProps {
+interface BulkSegmentEditFormProps {
   changeset: Changeset | null;
-  routeNumber: string;
-  currentAttributes?: RouteAttributes;
+  segmentIds: string[];
+  currentAttributes?: Record<string, unknown>; // Common attributes across selected segments
   onSave: () => void;
   onCancel: () => void;
   onEventAdded?: (event: SegmentUpdateAttrsEvent) => void; // For localEvents when no changeset
@@ -30,20 +30,20 @@ interface RouteEditFormProps {
  * Generate JSON Patch operations from old and new attribute values
  */
 function generatePatch(
-  oldAttrs: RouteAttributes,
-  newAttrs: RouteAttributes
+  oldAttrs: SegmentAttributes,
+  newAttrs: SegmentAttributes
 ): Array<{ op: 'replace' | 'add' | 'remove'; path: string; value?: unknown }> {
   const patch: Array<{ op: 'replace' | 'add' | 'remove'; path: string; value?: unknown }> = [];
   
-  // Fields to check (common route attributes)
+  // Fields to check (common segment attributes)
   const fieldsToCheck = ['rutenummer', 'rutenavn', 'vedlikeholdsansvarlig', 'rutetype', 'gradering'];
   
   // Also check for any other keys in newAttrs that aren't in the standard list
   const allKeys = new Set([...Object.keys(oldAttrs), ...Object.keys(newAttrs)]);
   
   for (const key of allKeys) {
-    // Skip internal fields
-    if (key === 'op' || key === 'id' || key === 'objid' || key === 'segment_objid') {
+    // Skip internal fields and normalized duplicates
+    if (key === 'route_ref' || key === 'name' || key === 'op' || key === 'id' || key === 'objid') {
       continue;
     }
     
@@ -54,7 +54,7 @@ function generatePatch(
       // Add new attribute
       patch.push({ op: 'add', path: `/${key}`, value: newValue });
     } else if (oldValue !== undefined && (newValue === undefined || newValue === '')) {
-      // Remove attribute (only for standard fields)
+      // Remove attribute (only for standard fields, not all fields)
       if (fieldsToCheck.includes(key)) {
         patch.push({ op: 'remove', path: `/${key}` });
       }
@@ -67,56 +67,36 @@ function generatePatch(
   return patch;
 }
 
-export function RouteEditForm({
+export function BulkSegmentEditForm({
   changeset,
-  routeNumber,
+  segmentIds,
   currentAttributes = {},
   onSave,
   onCancel,
   onEventAdded,
-}: RouteEditFormProps) {
-  const [attributes, setAttributes] = useState<RouteAttributes>(currentAttributes);
+}: BulkSegmentEditFormProps) {
+  const [attributes, setAttributes] = useState<SegmentAttributes>(currentAttributes);
   const [isSaving, setIsSaving] = useState(false);
-  const [isLoadingSegments, setIsLoadingSegments] = useState(false);
-  const [segmentCount, setSegmentCount] = useState<number | null>(null);
-  const [segments, setSegments] = useState<RouteSegmentsResponse['segments'] | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-
-  // Load segments count when component mounts
-  useEffect(() => {
-    const controller = new AbortController();
-    const loadSegments = async () => {
-      setIsLoadingSegments(true);
-      try {
-        const data: RouteSegmentsResponse = await api.getRouteSegments(
-          routeNumber,
-          false,
-          { signal: controller.signal }
-        );
-        setSegments(data.segments || []);
-        setSegmentCount(data.segments?.length || 0);
-      } catch (error: unknown) {
-        if (isAbortError(error)) return;
-        const appError = handleApiError(error, 'Load Route Segments');
-        notificationManager.warning(`Kunne ikke laste segmenter: ${appError.message}`);
-        setSegments(null);
-      } finally {
-        setIsLoadingSegments(false);
-      }
-    };
-
-    loadSegments();
-
-    return () => {
-      controller.abort();
-    };
-  }, [routeNumber]);
 
   // Update form when currentAttributes change
   useEffect(() => {
-    setAttributes(currentAttributes);
+    // Normalize attribute names (handle both route_ref/rutenummer and name/rutenavn)
+    const normalized: SegmentAttributes = {
+      ...currentAttributes,
+      rutenummer: currentAttributes.rutenummer || currentAttributes.route_ref as string || '',
+      rutenavn: currentAttributes.rutenavn || currentAttributes.name as string || '',
+    };
+    // Remove the alternative field names to avoid duplicates
+    if (normalized.route_ref && !normalized.rutenummer) {
+      delete normalized.route_ref;
+    }
+    if (normalized.name && !normalized.rutenavn) {
+      delete normalized.name;
+    }
+    setAttributes(normalized);
     setErrors({});
-  }, [currentAttributes, routeNumber]);
+  }, [currentAttributes]);
 
   const handleChange = (field: string, value: string) => {
     setAttributes((prev) => ({
@@ -154,8 +134,15 @@ export function RouteEditForm({
       return;
     }
 
+    // Normalize current attributes for comparison
+    const normalizedCurrent: SegmentAttributes = {
+      ...currentAttributes,
+      rutenummer: currentAttributes.rutenummer || currentAttributes.route_ref as string || '',
+      rutenavn: currentAttributes.rutenavn || currentAttributes.name as string || '',
+    };
+    
     // Generate JSON Patch
-    const patch = generatePatch(currentAttributes, attributes);
+    const patch = generatePatch(normalizedCurrent, attributes);
 
     if (patch.length === 0) {
       notificationManager.info('Ingen endringer å lagre');
@@ -164,35 +151,23 @@ export function RouteEditForm({
     }
 
     // Confirm bulk update
-    if (segmentCount === null || segmentCount === 0) {
-      notificationManager.warning('Ingen segmenter funnet for denne ruten');
-      return;
-    }
-
     if (!confirm(
-      `Er du sikker på at du vil oppdatere metadata for alle ${segmentCount} segmenter i ruten "${routeNumber}"?`
+      `Er du sikker på at du vil oppdatere metadata for alle ${segmentIds.length} valgte segmenter?`
     )) {
       return;
     }
 
     setIsSaving(true);
     try {
-      const routeSegments = segments ?? [];
-      if (routeSegments.length === 0) {
-        notificationManager.warning('Ingen segmenter funnet for denne ruten');
-        return;
-      }
-
-      // Create update events for all segments
-      const events: SegmentUpdateAttrsEvent[] = routeSegments.map((segment) => ({
+      // Create update events for all selected segments
+      const events: SegmentUpdateAttrsEvent[] = segmentIds.map((segmentId) => ({
         type: 'segment.update_attrs',
-        target: { kind: 'segment', id: String(segment.segment_objid || segment.objid) },
+        target: { kind: 'segment', id: segmentId },
         patch,
       }));
 
       // Send all events
       if (changeset) {
-        // Add events to existing changeset
         const results = await Promise.allSettled(
           events.map((event) => api.addEvent(changeset.id, event))
         );
@@ -206,24 +181,20 @@ export function RouteEditForm({
           return;
         }
 
-        notificationManager.success(
-          `Metadata oppdatert for ${events.length} segmenter i ruten "${routeNumber}"`
-        );
+        notificationManager.success(`Metadata oppdatert for ${events.length} segmenter`);
       } else if (onEventAdded) {
         // Add to localEvents (no changeset yet)
         for (const event of events) {
           onEventAdded(event);
         }
-        notificationManager.success(
-          `Metadata oppdatert for ${events.length} segmenter i ruten "${routeNumber}" (ulagret)`
-        );
+        notificationManager.success(`Metadata oppdatert for ${events.length} segmenter (ulagret)`);
       } else {
         throw new Error('Ingen changeset eller onEventAdded callback tilgjengelig');
       }
-
+      
       onSave();
     } catch (error: unknown) {
-      const appError = handleApiError(error, 'Update Route Attributes');
+      const appError = handleApiError(error, 'Bulk Update Segment Attributes');
       notificationManager.error(`Kunne ikke oppdatere metadata: ${appError.message}`);
     } finally {
       setIsSaving(false);
@@ -231,23 +202,17 @@ export function RouteEditForm({
   };
 
   return (
-    <form className="route-edit-form" onSubmit={handleSubmit}>
-      {isLoadingSegments ? (
-        <div style={{ padding: '1rem', textAlign: 'center', color: '#666' }}>
-          Laster segmenter...
-        </div>
-      ) : segmentCount !== null ? (
-        <div style={{ 
-          padding: '0.75rem', 
-          marginBottom: '1rem', 
-          background: '#e7f3ff', 
-          borderRadius: '4px',
-          fontSize: '0.85rem',
-          color: '#0066cc'
-        }}>
-          <strong>Bulk-oppdatering:</strong> Endringer vil bli applisert til alle {segmentCount} segmenter i ruten.
-        </div>
-      ) : null}
+    <form className="bulk-segment-edit-form" onSubmit={handleSubmit}>
+      <div style={{ 
+        padding: '0.75rem', 
+        marginBottom: '1rem', 
+        background: '#e7f3ff', 
+        borderRadius: '4px',
+        fontSize: '0.85rem',
+        color: '#0066cc'
+      }}>
+        <strong>Bulk-oppdatering:</strong> Endringer vil bli applisert til alle {segmentIds.length} valgte segmenter.
+      </div>
 
       <div className="form-group">
         <label htmlFor="rutenummer">
@@ -330,8 +295,8 @@ export function RouteEditForm({
         <button type="button" onClick={onCancel} className="btn btn-secondary" disabled={isSaving}>
           Avbryt
         </button>
-        <button type="submit" className="btn btn-primary" disabled={isSaving || isLoadingSegments}>
-          {isSaving ? 'Lagrer...' : `Lagre for alle segmenter`}
+        <button type="submit" className="btn btn-primary" disabled={isSaving}>
+          {isSaving ? 'Lagrer...' : `Lagre for ${segmentIds.length} segmenter`}
         </button>
       </div>
     </form>

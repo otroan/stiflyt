@@ -7,6 +7,7 @@ import { NotificationContainer } from './components/NotificationContainer';
 import { api } from './api/client';
 import { handleApiError } from './utils/errorHandler';
 import { notificationManager } from './utils/notifications';
+import { saveChangesetToFile, loadChangesetFromFile } from './utils/fileStorage';
 import type { Changeset, LocalEvent, RouteResponse } from './types';
 import './App.css';
 
@@ -14,7 +15,10 @@ function App() {
   const [changeset, setChangeset] = useState<Changeset | null>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | undefined>();
   const [selectedFeatureProperties, setSelectedFeatureProperties] = useState<Record<string, unknown> | null>(null);
+  const [selectedFeatureIds, setSelectedFeatureIds] = useState<Set<string>>(new Set()); // Multi-select support
+  const [selectedFeaturesMap, setSelectedFeaturesMap] = useState<Map<string, Record<string, unknown>>>(new Map()); // Map of feature ID to properties
   const [loading, setLoading] = useState(true);
+  const [shouldOpenEditForm, setShouldOpenEditForm] = useState(false);
 
   const [routeNumber, setRouteNumber] = useState<string | null>(null);
   const [selectedRouteNumber, setSelectedRouteNumber] = useState<string | null>(null);
@@ -25,48 +29,51 @@ function App() {
 
   // Get changeset ID or route number from URL
   useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const changesetId = urlParams.get('changeset');
-    const route = urlParams.get('route');
+    const loadInitialData = async () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const changesetId = urlParams.get('changeset');
+      const route = urlParams.get('route');
+      const tasks: Promise<unknown>[] = [];
 
-    if (route) {
-      setRouteNumber(route);
-      setSelectedRouteNumber(route);
-      // Load route geometry
-      fetch(`/api/v1/routes/${route}?include_geometry=true`)
-        .then(res => res.json())
-        .then((data: RouteResponse) => setRouteGeometry(data.route_geometry || null))
-        .catch((error) => {
-          const appError = handleApiError(error, 'Route Geometry Load');
-          notificationManager.error(`Kunne ikke laste rutegeometri: ${appError.message}`);
-        });
-    }
+      if (route && route.trim() !== '') {
+        setRouteNumber(route);
+        setSelectedRouteNumber(route);
+        tasks.push(
+          api.getRoute(route, true)
+            .then((data: RouteResponse) => setRouteGeometry(data.route_geometry || null))
+            .catch((error) => {
+              const appError = handleApiError(error, 'Route Geometry Load');
+              notificationManager.error(`Kunne ikke laste rutegeometri: ${appError.message}`);
+            })
+        );
+      }
 
-    if (changesetId) {
-      api.getChangeset(changesetId)
-        .then(setChangeset)
-        .catch((error) => {
-          const appError = handleApiError(error, 'Changeset Load');
-          notificationManager.error(`Kunne ikke laste changeset: ${appError.message}`);
-        })
-        .finally(() => setLoading(false));
-    } else {
+      if (changesetId) {
+        tasks.push(
+          api.getChangeset(changesetId)
+            .then(setChangeset)
+            .catch((error) => {
+              const appError = handleApiError(error, 'Changeset Load');
+              notificationManager.error(`Kunne ikke laste changeset: ${appError.message}`);
+            })
+        );
+      }
+
+      await Promise.allSettled(tasks);
       setLoading(false);
-    }
+    };
+
+    loadInitialData();
   }, []);
 
   const handleSelectRoute = async (rutenummer: string) => {
-    if (!rutenummer) return;
+    if (!rutenummer || rutenummer.trim() === '') return;
 
     setSelectedRouteNumber(rutenummer);
     setLoading(true);
     try {
       // Load route geometry and display on map
-      const routeResponse = await fetch(`/api/v1/routes/${rutenummer}?include_geometry=true`);
-      if (!routeResponse.ok) {
-        throw new Error(`Failed to load route: ${routeResponse.statusText}`);
-      }
-      const routeData = await routeResponse.json() as RouteResponse;
+      const routeData = await api.getRoute(rutenummer, true);
       setRouteGeometry(routeData.route_geometry || null);
       setRouteNumber(rutenummer);
       setSelectedRouteNumber(rutenummer);
@@ -85,10 +92,84 @@ function App() {
     setLocalEvents(prev => [...prev, event]);
   };
 
-  // Save/Commit: Create changeset and send all local events
-  const handleSaveChanges = async () => {
+  // Save locally: Export to file (no changeset creation)
+  const handleSaveLocally = () => {
     if (!routeNumber || localEvents.length === 0) {
       notificationManager.warning('Ingen endringer å lagre');
+      return;
+    }
+
+    try {
+      saveChangesetToFile(changeset, localEvents, routeNumber);
+      notificationManager.success(`Endringer eksportert til fil (${localEvents.length} events)`);
+    } catch (error: unknown) {
+      const appError = handleApiError(error, 'Save Locally');
+      notificationManager.error(`Kunne ikke eksportere til fil: ${appError.message}`);
+    }
+  };
+
+  // Load from file
+  const handleLoadFromFile = async (file: File) => {
+    setLoading(true);
+    try {
+      const data = await loadChangesetFromFile(file);
+
+      // Restore changeset if present
+      if (data.changeset) {
+        setChangeset(data.changeset);
+        // Update URL
+        if (data.routeNumber) {
+          window.history.replaceState({}, '', `?route=${data.routeNumber}&changeset=${data.changeset.id}`);
+        }
+      } else {
+        // Restore local events
+        setLocalEvents(data.events as LocalEvent[]);
+        if (data.routeNumber) {
+          setRouteNumber(data.routeNumber);
+          window.history.replaceState({}, '', `?route=${data.routeNumber}`);
+        }
+      }
+
+      notificationManager.success(`Changeset lastet fra fil (${data.events.length} events)`);
+    } catch (error: unknown) {
+      const appError = handleApiError(error, 'Load From File');
+      notificationManager.error(`Kunne ikke laste fil: ${appError.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Publish: Create changeset and send to backend
+  const handlePublish = async () => {
+    if (!routeNumber) {
+      notificationManager.warning('Velg en rute først');
+      return;
+    }
+
+    // If we already have a changeset, just publish it
+    if (changeset) {
+      setLoading(true);
+      try {
+        const result = await api.publish(changeset.id);
+        notificationManager.success(
+          `Changeset publisert! PR: ${result.pr_url || 'N/A'}`,
+          0 // Don't auto-dismiss
+        );
+        // Reload changeset to get updated status
+        const updatedChangeset = await api.getChangeset(changeset.id);
+        setChangeset(updatedChangeset);
+      } catch (error: unknown) {
+        const appError = handleApiError(error, 'Publish');
+        notificationManager.error(`Kunne ikke publisere: ${appError.message}`);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // If no changeset but we have local events, create changeset first
+    if (localEvents.length === 0) {
+      notificationManager.warning('Ingen endringer å publisere');
       return;
     }
 
@@ -101,27 +182,52 @@ function App() {
         base_snapshot: 'default',
       });
 
-      // Send all local events to changeset
-      for (const event of localEvents) {
-        await api.addEvent(newChangeset.id, event);
+      try {
+        // Send all local events to changeset
+        for (const event of localEvents) {
+          await api.addEvent(newChangeset.id, event);
+        }
+      } catch (error: unknown) {
+        const appError = handleApiError(error, 'Add Events');
+        notificationManager.error(
+          `Kunne ikke legge til alle endringer i changeset: ${appError.message}`
+        );
+        notificationManager.warning(
+          `Changeset ${newChangeset.id} er opprettet, men kan være ufullstendig.`
+        );
+        return;
       }
 
+      // Events added successfully; move into changeset state
       setChangeset(newChangeset);
-      setLocalEvents([]); // Clear local events
+      setLocalEvents([]); // Clear local events after successful event transfer
 
       // Update URL with changeset
       window.history.replaceState({}, '', `?route=${routeNumber}&changeset=${newChangeset.id}`);
 
-      notificationManager.success(`Endringer lagret! ${localEvents.length} endringer sendt til changeset.`);
+      // Publish the changeset
+      try {
+        const result = await api.publish(newChangeset.id);
+        notificationManager.success(
+          `Changeset opprettet og publisert! PR: ${result.pr_url || 'N/A'}`,
+          0 // Don't auto-dismiss
+        );
+      } catch (error: unknown) {
+        const appError = handleApiError(error, 'Publish');
+        notificationManager.error(`Kunne ikke publisere: ${appError.message}`);
+        notificationManager.info(
+          `Changeset ${newChangeset.id} er opprettet og klar for nytt publiseringsforsøk.`
+        );
+      }
     } catch (error: unknown) {
-      const appError = handleApiError(error, 'Save Changes');
-      notificationManager.error(`Kunne ikke lagre endringer: ${appError.message}`);
+      const appError = handleApiError(error, 'Publish');
+      notificationManager.error(`Kunne ikke publisere: ${appError.message}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleEventAdded = () => {
+  const handleEventAdded = (_event?: unknown) => {
     // Reload changeset to get updated data
     if (changeset) {
       api.getChangeset(changeset.id)
@@ -153,6 +259,11 @@ function App() {
           onSelectRoute={handleSelectRoute}
           selectedRouteNumber={selectedRouteNumber}
           loading={loading}
+          changeset={changeset}
+          localEventsCount={localEvents.length}
+          onSaveChanges={handleSaveLocally}
+          onLoadFromFile={handleLoadFromFile}
+          onPublish={handlePublish}
         />
 
         {/* Main Content Area - Below header */}
@@ -174,9 +285,45 @@ function App() {
             onRouteSelect={handleSelectRoute}
             onEventAdded={changeset ? handleEventAdded : handleLocalEventAdded}
             selectedFeatureId={selectedFeatureId}
-            onFeatureSelect={(id, properties) => {
-              setSelectedFeatureId(id);
-              setSelectedFeatureProperties(properties || null);
+            selectedFeatureIds={selectedFeatureIds}
+            onFeatureSelect={(id, properties, isMultiSelect) => {
+              if (isMultiSelect) {
+                // Multi-select mode: toggle selection
+                setSelectedFeatureIds(prev => {
+                  const newSet = new Set(prev);
+                  if (newSet.has(id)) {
+                    newSet.delete(id);
+                    setSelectedFeaturesMap(prevMap => {
+                      const newMap = new Map(prevMap);
+                      newMap.delete(id);
+                      return newMap;
+                    });
+                  } else {
+                    newSet.add(id);
+                    setSelectedFeaturesMap(prevMap => {
+                      const newMap = new Map(prevMap);
+                      if (properties) {
+                        newMap.set(id, properties);
+                      }
+                      return newMap;
+                    });
+                  }
+                  return newSet;
+                });
+                // Also set as primary selection
+                setSelectedFeatureId(id);
+                setSelectedFeatureProperties(properties || null);
+              } else {
+                // Single select mode: clear multi-select and set single
+                setSelectedFeatureIds(new Set([id]));
+                setSelectedFeaturesMap(new Map(properties ? [[id, properties]] : []));
+                setSelectedFeatureId(id);
+                setSelectedFeatureProperties(properties || null);
+              }
+            }}
+            onOpenEditForm={() => {
+              // Trigger edit form opening in InfoPanel
+              setShouldOpenEditForm(true);
             }}
             localEventsCount={localEvents.length}
           />
@@ -187,12 +334,21 @@ function App() {
             changeset={changeset}
             routeNumber={routeNumber}
             selectedFeatureId={selectedFeatureId}
+            selectedFeatureIds={selectedFeatureIds}
             selectedFeatureProperties={selectedFeatureProperties}
+            selectedFeaturesMap={selectedFeaturesMap}
             localEventsCount={localEvents.length}
             onChangesetUpdate={handleChangesetUpdate}
-            onSaveChanges={handleSaveChanges}
-            onFeatureUpdate={handleEventAdded}
+            onSaveChanges={handleSaveLocally}
+            onLoadFromFile={handleLoadFromFile}
+            onPublish={handlePublish}
+            onFeatureUpdate={changeset ? handleEventAdded : () => {
+              // This is called from InfoPanel after events are added
+              // The actual event is already added via onEventAdded in MapView
+            }}
             loading={loading}
+            shouldOpenEditForm={shouldOpenEditForm}
+            onEditFormOpened={() => setShouldOpenEditForm(false)}
           />
         </div>
       </div>

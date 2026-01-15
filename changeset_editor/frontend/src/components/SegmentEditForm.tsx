@@ -20,11 +20,12 @@ interface SegmentAttributes {
 }
 
 interface SegmentEditFormProps {
-  changeset: Changeset;
+  changeset: Changeset | null;
   segmentId: string;
   currentAttributes?: SegmentAttributes;
   onSave: () => void;
   onCancel: () => void;
+  onEventAdded?: (event: SegmentUpdateAttrsEvent) => void; // For localEvents when no changeset
 }
 
 /**
@@ -85,6 +86,7 @@ export function SegmentEditForm({
   currentAttributes = {},
   onSave,
   onCancel,
+  onEventAdded,
 }: SegmentEditFormProps) {
   const [attributes, setAttributes] = useState<SegmentAttributes>(currentAttributes);
   const [isSaving, setIsSaving] = useState(false);
@@ -169,8 +171,18 @@ export function SegmentEditForm({
         patch,
       };
 
-      await api.addEvent(changeset.id, event);
-      notificationManager.success('Segmentmetadata oppdatert');
+      if (changeset) {
+        // Add event to existing changeset
+        await api.addEvent(changeset.id, event);
+        notificationManager.success('Segmentmetadata oppdatert');
+      } else if (onEventAdded) {
+        // Add to localEvents (no changeset yet)
+        onEventAdded(event);
+        notificationManager.success('Segmentmetadata oppdatert (ulagret)');
+      } else {
+        throw new Error('Ingen changeset eller onEventAdded callback tilgjengelig');
+      }
+      
       onSave();
     } catch (error: unknown) {
       const appError = handleApiError(error, 'Update Segment Attributes');

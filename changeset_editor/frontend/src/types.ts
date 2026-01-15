@@ -79,6 +79,42 @@ export interface ValidationResponse {
   warnings: ValidationIssue[];
 }
 
+// Route validation types (from /api/v1/routes/{rutenummer}/validate)
+export interface RouteValidationIssue {
+  type: string;
+  message: string;
+  severity: 'error' | 'warning' | 'info';
+  affected_segments?: string[] | null;
+  affected_links?: number[] | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface RouteValidationSummary {
+  total_segments: number;
+  total_fotruteinfo_rows: number;
+  total_links: number;
+  error_count: number;
+  warning_count: number;
+  geometry_error_count: number;
+  geometry_warning_count: number;
+  rutenavn_values?: string[] | null;
+  vedlikeholdsansvarlig_values?: string[] | null;
+  rutetype_values?: string[] | null;
+  gradering_values?: string[] | null;
+}
+
+export interface RouteValidationResponse {
+  rutenummer: string;
+  segment_count: number;
+  link_count: number;
+  status: 'OK' | 'WARNING' | 'ERROR';
+  errors: RouteValidationIssue[];
+  warnings: RouteValidationIssue[];
+  geometry_info: RouteValidationIssue[];
+  segment_metadata: unknown[]; // SegmentMetadata[] - simplified for now
+  summary: RouteValidationSummary;
+}
+
 export interface SnapTarget {
   id: string;
   geometry: GeoJSON.LineString;
