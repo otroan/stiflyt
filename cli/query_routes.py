@@ -32,6 +32,7 @@ Examples:
   %(prog)s --get-route bre10 --format json
   %(prog)s --get-route-segments bre10  # Physical route segments
   %(prog)s --get-route-links bre10      # Routing topology links
+  %(prog)s --get-segment-lokalid 00661e35-bce5-4106-932f-48f6197dfb58
 
   # Query segments with rutenummer starting with "bre" and vedlikeholdsansvarlig "DNT Oslo"
   %(prog)s --rutenummer-prefix bre --vedlikeholdsansvarlig "DNT Oslo"
@@ -45,8 +46,8 @@ Examples:
   # Complete route with JSON output
   %(prog)s --complete-route bre10 --format json
 
-  # Complete route without geometry
-  %(prog)s --complete-route bre10 --no-geometry
+  # Complete route with geometry
+  %(prog)s --complete-route bre10 --include-geometry
 
   # Complete route with segment details
   %(prog)s --complete-route bre10 --include-segments
@@ -105,6 +106,12 @@ Examples:
         help='Get routing links for a route (from links table). Links represent routing topology between junctions and may combine multiple segments. Useful for navigation/routing.'
     )
     parser.add_argument(
+        '--get-segment-lokalid',
+        type=str,
+        metavar='LOKALID',
+        help='Get a single segment by lokalid (stable UUID) with all fields'
+    )
+    parser.add_argument(
         '--prefix',
         type=str,
         help='Filter routes by prefix (e.g., "bre", "jot", "ron") - used with --list-routes'
@@ -152,11 +159,6 @@ Examples:
         '--include-geometry',
         action='store_true',
         help='Include GeoJSON geometry in response (only for JSON format)'
-    )
-    parser.add_argument(
-        '--no-geometry',
-        action='store_true',
-        help='Exclude GeoJSON geometry from response (for complete route mode)'
     )
     parser.add_argument(
         '--include-segments',
@@ -616,6 +618,7 @@ Examples:
                 query = f"""
                     SELECT
                         f.objid as segment_objid,
+                        f.lokalid as segment_lokalid,
                         fi.rutenummer,
                         fi.rutenavn,
                         fi.vedlikeholdsansvarlig,
@@ -648,8 +651,10 @@ Examples:
                 segment_metadata_dump = []
                 for segment_objid, fotruteinfo_rows in sorted(segments_dict.items()):
                     segment_length = fotruteinfo_rows[0].get('length_meters') if fotruteinfo_rows else None
+                    segment_lokalid = fotruteinfo_rows[0].get('segment_lokalid') if fotruteinfo_rows else None
                     segment_metadata_dump.append({
                         'segment_objid': segment_objid,
+                        'segment_lokalid': segment_lokalid,
                         'length_meters': float(segment_length) if segment_length is not None else None,
                         'fotruteinfo_count': len(fotruteinfo_rows),
                         'fotruteinfo_rows': [
@@ -683,6 +688,7 @@ Examples:
 
                 # Get link count for summary (from validation result metadata if available)
                 link_count = validation_result.metadata.get('link_count', 0)
+                link_lengths = []
                 if link_count == 0:
                     # Fallback: query directly
                     link_count_query = f"""
@@ -694,6 +700,26 @@ Examples:
                         cur.execute(link_count_query, (rutenummer,))
                         link_count_row = cur.fetchone()
                         link_count = link_count_row.get('link_count', 0) if link_count_row else 0
+                    # Load link lengths for reporting
+                    link_lengths_query = f"""
+                        SELECT lwr.link_id, lwr.length_m
+                        FROM {schema_quoted}.links_with_routes lwr
+                        WHERE %s = ANY(lwr.rutenummer_list)
+                        ORDER BY lwr.link_id
+                    """
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(link_lengths_query, (rutenummer,))
+                        link_lengths = cur.fetchall()
+                else:
+                    link_lengths_query = f"""
+                        SELECT lwr.link_id, lwr.length_m
+                        FROM {schema_quoted}.links_with_routes lwr
+                        WHERE %s = ANY(lwr.rutenummer_list)
+                        ORDER BY lwr.link_id
+                    """
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(link_lengths_query, (rutenummer,))
+                        link_lengths = cur.fetchall()
 
                 # Extract summary values from validation result metadata
                 # Collect unique values for summary
@@ -718,6 +744,13 @@ Examples:
                     'rutenummer': rutenummer,
                     'segment_count': len(segments_dict),
                     'link_count': link_count,
+                    'link_lengths': [
+                        {
+                            'link_id': row.get('link_id'),
+                            'length_meters': float(row['length_m']) if row.get('length_m') is not None else None
+                        }
+                        for row in link_lengths
+                    ],
                     'status': validation_result.get_status(),
                     'errors': errors,
                     'warnings': warnings,
@@ -749,6 +782,12 @@ Examples:
                     print(f"Total segments: {len(segments_dict)}")
                     print(f"Total fotruteinfo rows: {len(all_rows)}")
                     print(f"Total links: {link_count}")
+                    if link_lengths:
+                        print("Link lengths:")
+                        for row in link_lengths:
+                            length_m = row.get('length_m')
+                            length_str = f"{length_m:.1f} m" if length_m is not None else "N/A"
+                            print(f"  Link {row.get('link_id')}: {length_str}")
                     print(f"Status: {validation_report['status']}")
                     print()
 
@@ -757,7 +796,8 @@ Examples:
                     print("-" * 80)
                     for seg_meta in segment_metadata_dump:
                         length_str = f"{seg_meta['length_meters']:.1f} m" if seg_meta.get('length_meters') is not None else "N/A"
-                        print(f"Segment {seg_meta['segment_objid']} (length: {length_str}, {seg_meta['fotruteinfo_count']} fotruteinfo row(s)):")
+                        lokalid = seg_meta.get('segment_lokalid') or '(null)'
+                        print(f"Segment {seg_meta['segment_objid']} (lokalid: {lokalid}, length: {length_str}, {seg_meta['fotruteinfo_count']} fotruteinfo row(s)):")
                         for i, row in enumerate(seg_meta['fotruteinfo_rows'], 1):
                             print(f"  Row {i} (fotruteinfo_objid: {row['fotruteinfo_objid']}):")
                             print(f"    rutenummer: {row['rutenummer']}")
@@ -1157,7 +1197,7 @@ Examples:
             sys.exit(1)
 
     # Handle routes API commands (new)
-    if args.list_routes or args.get_route or args.get_route_segments or args.get_route_links:
+    if args.list_routes or args.get_route or args.get_route_segments or args.get_route_links or args.get_segment_lokalid:
         # Create configuration
         config = CLIConfig(
             api_url=args.api_url,
@@ -1330,6 +1370,16 @@ Examples:
 
                         output_text = "\n".join(lines)
 
+            elif args.get_segment_lokalid:
+                # Get segment by lokalid
+                response = client.get_segment_by_lokalid(
+                    lokalid=args.get_segment_lokalid,
+                    include_geometry=args.include_geometry
+                )
+
+                # Format output (JSON only for complex response)
+                output_text = format_json(response)
+
             # Write output
             if args.output:
                 try:
@@ -1389,7 +1439,7 @@ Examples:
         try:
             route = client.get_complete_route(
                 rutenummer=args.complete_route,
-                include_geometry=not args.no_geometry,
+                include_geometry=args.include_geometry,
                 include_segments=args.include_segments,
                 include_endpoint_names=not args.no_endpoint_names
             )

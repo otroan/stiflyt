@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse, RouteLink, RouteLinksResponse, RouteValidationResponse
-from services.route_service import search_places, get_complete_route, get_routes_from_view, get_route_segments_from_view, get_route_links
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse, RouteLink, RouteLinksResponse, RouteValidationResponse, SegmentByLokalIdResponse
+from services.route_service import search_places, get_complete_route, get_routes_from_view, get_route_segments_from_view, get_route_links, get_segment_uuid_column, get_segment_by_lokalid
 from services.validators import get_validator_registry
 from collections import defaultdict
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
@@ -636,6 +636,7 @@ async def get_route_segments(
             where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
 
             # Build SELECT clause
+            uuid_col = get_segment_uuid_column(conn, schema=route_schema)
             select_parts = [
                 "f.objid",
                 "fi.rutenummer",
@@ -643,6 +644,9 @@ async def get_route_segments(
                 "fi.vedlikeholdsansvarlig",
                 "ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters"
             ]
+
+            if uuid_col:
+                select_parts.append(f"f.{uuid_col}::text as object_uuid")
 
             if include_geometry:
                 select_parts.append("ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326))::json as geometry")
@@ -678,11 +682,14 @@ async def get_route_segments(
             segments_dict = {}
             for row in rows:
                 objid = row["objid"]
+                if uuid_col and not row.get("object_uuid"):
+                    raise ValueError(f"Missing object_uuid for segment objid {objid}")
 
                 # Initialize segment if not seen before
                 if objid not in segments_dict:
                     segments_dict[objid] = {
                         "objid": objid,
+                        "object_uuid": row.get("object_uuid"),
                         "routes": [],
                         "length_meters": float(row["length_meters"]) if row.get("length_meters") is not None else None,
                         "geometry": None
@@ -709,6 +716,7 @@ async def get_route_segments(
             for objid, segment_data in segments_dict.items():
                 segment = RouteSegment(
                     objid=segment_data["objid"],
+                    object_uuid=segment_data.get("object_uuid"),
                     routes=segment_data["routes"],
                     length_meters=segment_data["length_meters"],
                     geometry=segment_data["geometry"]
@@ -1204,13 +1212,13 @@ async def get_segment_routes(
 ):
     """
     Get all rutenummer (route numbers) that use a specific segment.
-    
+
     This endpoint returns all routes that share the same segment, which is useful
     for understanding if a segment is used by multiple routes or only one.
-    
+
     Example:
     - /api/v1/segments/12345/routes
-    
+
     Returns:
     - List of route information (rutenummer, rutenavn, vedlikeholdsansvarlig) for all routes using this segment
     - 404 if segment not found
@@ -1218,7 +1226,7 @@ async def get_segment_routes(
     try:
         with db_connection() as conn:
             schema_quoted = quote_identifier(ROUTE_SCHEMA)
-            
+
             # First verify segment exists
             segment_check_query = f"""
                 SELECT objid
@@ -1229,13 +1237,13 @@ async def get_segment_routes(
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(segment_check_query, (segment_objid,))
                 segment_exists = cur.fetchone()
-                
+
             if not segment_exists:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Segment with objid '{segment_objid}' not found"
                 )
-            
+
             # Get all routes for this segment
             routes_query = f"""
                 SELECT DISTINCT
@@ -1249,11 +1257,11 @@ async def get_segment_routes(
                 WHERE fi.fotrute_fk = %s
                 ORDER BY fi.rutenummer
             """
-            
+
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(routes_query, (segment_objid,))
                 route_rows = cur.fetchall()
-            
+
             if not route_rows:
                 # Segment exists but has no routes (shouldn't happen, but handle gracefully)
                 return {
@@ -1261,7 +1269,7 @@ async def get_segment_routes(
                     "routes": [],
                     "total": 0
                 }
-            
+
             routes = []
             for row in route_rows:
                 routes.append({
@@ -1272,13 +1280,13 @@ async def get_segment_routes(
                     "gradering": row.get("gradering"),
                     "fotruteinfo_objid": row["fotruteinfo_objid"]
                 })
-            
+
             return {
                 "segment_objid": segment_objid,
                 "routes": routes,
                 "total": len(routes)
             }
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1287,4 +1295,38 @@ async def get_segment_routes(
         raise HTTPException(
             status_code=500,
             detail=f"Error getting routes for segment: {str(e)}"
+        )
+
+
+@router.get("/segments/by-lokalid/{lokalid}", response_model=SegmentByLokalIdResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_segment_by_lokalid_endpoint(
+    lokalid: str,
+    include_geometry: Annotated[bool, Query(description="Include GeoJSON geometry in response")] = False
+) -> SegmentByLokalIdResponse:
+    """
+    Get a single segment by lokalid with all segment fields and fotruteinfo rows.
+
+    Example:
+    - /api/v1/segments/by-lokalid/00661e35-bce5-4106-932f-48f6197dfb58
+    - /api/v1/segments/by-lokalid/00661e35-bce5-4106-932f-48f6197dfb58?include_geometry=true
+    """
+    try:
+        with db_connection() as conn:
+            result = get_segment_by_lokalid(conn, lokalid, include_geometry=include_geometry)
+            if result is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Segment with lokalid '{lokalid}' not found"
+                )
+
+            return SegmentByLokalIdResponse(**result)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting segment by lokalid: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting segment by lokalid: {str(e)}"
         )

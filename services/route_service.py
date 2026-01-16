@@ -52,6 +52,112 @@ def parse_geometry(geom_data) -> dict:
         return geom_data
 
 
+def get_segment_uuid_column(conn, schema: str = ROUTE_SCHEMA, table: str = "fotrute") -> Optional[str]:
+    """
+    Resolve the preferred UUID column for segments, if present.
+
+    Checks for common UUID-like column names and returns the first match.
+    """
+    if not validate_schema_name(schema):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {schema}")
+
+    query = """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = %s
+          AND table_name = %s
+          AND column_name IN ('object_uuid', 'uuid', 'global_id', 'lokalid')
+        ORDER BY CASE column_name
+            WHEN 'object_uuid' THEN 1
+            WHEN 'uuid' THEN 2
+            WHEN 'global_id' THEN 3
+            WHEN 'lokalid' THEN 4
+            ELSE 5
+        END
+        LIMIT 1
+    """
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(query, (schema, table))
+        row = cur.fetchone()
+        return row["column_name"] if row else None
+
+
+def get_segment_by_lokalid(conn, lokalid: str, include_geometry: bool = False) -> Optional[dict]:
+    """
+    Get a single segment by lokalid with all segment fields and fotruteinfo rows.
+
+    Args:
+        conn: Database connection
+        lokalid: Segment lokalid (stable UUID from source data)
+        include_geometry: If True, include GeoJSON geometry in senterlinje
+
+    Returns:
+        Dict with segment fields + fotruteinfo_rows, or None if not found.
+    """
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = 'fotrute'
+            ORDER BY ordinal_position
+            """,
+            (ROUTE_SCHEMA,),
+        )
+        columns = [row["column_name"] for row in cur.fetchall()]
+
+    if not columns:
+        return None
+
+    select_parts = []
+    for col in columns:
+        if col == "senterlinje":
+            if include_geometry:
+                select_parts.append(
+                    "ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326))::json as senterlinje"
+                )
+            else:
+                select_parts.append("NULL as senterlinje")
+        else:
+            select_parts.append(f"f.{col}")
+
+    query = f"""
+        SELECT
+            {', '.join(select_parts)}
+        FROM {ROUTE_SCHEMA}.fotrute f
+        WHERE f.lokalid = %s
+        LIMIT 1
+    """
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(query, (lokalid,))
+        segment_row = cur.fetchone()
+
+    if not segment_row:
+        return None
+
+    fotruteinfo_query = f"""
+        SELECT *
+        FROM {ROUTE_SCHEMA}.fotruteinfo
+        WHERE fotrute_fk = %s
+        ORDER BY objid
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(fotruteinfo_query, (segment_row.get("objid"),))
+        fotruteinfo_rows = cur.fetchall()
+
+    segment_row["object_uuid"] = segment_row.get("lokalid")
+
+    return {
+        "segment": segment_row,
+        "fotruteinfo_rows": fotruteinfo_rows,
+    }
+
+
 def get_route_segments(conn, rutenummer):
     """
     Get all segments for a route with basic metadata.
@@ -68,6 +174,9 @@ def get_route_segments(conn, rutenummer):
     if not validate_schema_name(ROUTE_SCHEMA):
         raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
 
+    uuid_col = get_segment_uuid_column(conn)
+    select_uuid = f", f.{uuid_col}::text as object_uuid" if uuid_col else ""
+
     query = f"""
         SELECT
             f.objid,
@@ -75,6 +184,7 @@ def get_route_segments(conn, rutenummer):
             fi.rutenummer,
             fi.rutenavn,
             fi.vedlikeholdsansvarlig
+            {select_uuid}
         FROM {ROUTE_SCHEMA}.fotrute f
         JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
         WHERE fi.rutenummer = %s
@@ -83,7 +193,14 @@ def get_route_segments(conn, rutenummer):
 
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query, (rutenummer,))
-        return cur.fetchall()
+        rows = cur.fetchall()
+
+    if uuid_col:
+        for row in rows:
+            if not row.get("object_uuid"):
+                raise ValueError(f"Missing object_uuid for segment objid {row.get('objid')}")
+
+    return rows
 
 
 def get_route_segments_with_geometry(conn, rutenummer, include_geojson=True):
@@ -104,6 +221,9 @@ def get_route_segments_with_geometry(conn, rutenummer, include_geojson=True):
     if not validate_schema_name(ROUTE_SCHEMA):
         raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
 
+    uuid_col = get_segment_uuid_column(conn)
+    select_uuid = f", f.{uuid_col}::text as object_uuid" if uuid_col else ""
+
     if include_geojson:
         query = f"""
             SELECT
@@ -111,6 +231,7 @@ def get_route_segments_with_geometry(conn, rutenummer, include_geojson=True):
                 f.senterlinje,
                 ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters,
                 ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326)) as geometry_geojson
+                {select_uuid}
             FROM {ROUTE_SCHEMA}.fotrute f
             JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
             WHERE fi.rutenummer = %s
@@ -122,6 +243,7 @@ def get_route_segments_with_geometry(conn, rutenummer, include_geojson=True):
                 f.objid,
                 f.senterlinje,
                 ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
+                {select_uuid}
             FROM {ROUTE_SCHEMA}.fotrute f
             JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
             WHERE fi.rutenummer = %s
@@ -130,7 +252,14 @@ def get_route_segments_with_geometry(conn, rutenummer, include_geojson=True):
 
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query, (rutenummer,))
-        return cur.fetchall()
+        rows = cur.fetchall()
+
+    if uuid_col:
+        for row in rows:
+            if not row.get("object_uuid"):
+                raise ValueError(f"Missing object_uuid for segment objid {row.get('objid')}")
+
+    return rows
 
 
 def get_route_segments_with_points(conn, rutenummer):
@@ -1029,7 +1158,7 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
             geometry = None
 
     total_length_km = total_length_meters / 1000.0 if total_length_meters else 0.0
-    
+
     # Get segment count
     segment_count_query = f"""
         SELECT COUNT(DISTINCT f.objid) as segment_count
@@ -1037,12 +1166,12 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
         JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
         WHERE fi.rutenummer = %s
     """
-    
+
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(segment_count_query, (rutenummer,))
         segment_row = cur.fetchone()
         segment_count = int(segment_row['segment_count']) if segment_row else 0
-    
+
     # Geometry from route_geometries is already connected and ordered
     is_connected = geometry is not None
     component_count = 1 if is_connected else 0
@@ -1056,7 +1185,7 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
 
         # Extract start and end points from the route geometry
         start_point, end_point = extract_route_endpoints(geometry)
-        
+
         if start_point:
             start_name_info = lookup_endpoint_name(conn, start_point[0], start_point[1], rutenummer)
             if start_name_info and start_name_info.get('name'):
@@ -1080,6 +1209,8 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
     # Build segments list if requested
     segments = None
     if include_segments:
+        uuid_col = get_segment_uuid_column(conn)
+        select_uuid = f", f.{uuid_col}::text as object_uuid" if uuid_col else ""
         segments = []
         # Get all segments for this route
         segments_query = f"""
@@ -1087,6 +1218,7 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
                 f.objid,
                 ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters,
                 CASE WHEN %s THEN ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326))::json ELSE NULL END as geometry
+                {select_uuid}
             FROM {ROUTE_SCHEMA}.fotrute f
             JOIN {ROUTE_SCHEMA}.fotruteinfo fi ON fi.fotrute_fk = f.objid
             WHERE fi.rutenummer = %s
@@ -1095,9 +1227,11 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(segments_query, (include_geometry, rutenummer))
             segment_rows = cur.fetchall()
-        
+
         for seg_row in segment_rows:
             objid = seg_row['objid']
+            if uuid_col and not seg_row.get('object_uuid'):
+                raise ValueError(f"Missing object_uuid for segment objid {objid}")
             # Get route info for this segment
             segment_routes_query = f"""
                 SELECT DISTINCT
@@ -1122,6 +1256,7 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
             segment_geom = parse_geometry(seg_row.get('geometry')) if include_geometry and seg_row.get('geometry') else None
             segments.append({
                 'objid': objid,
+                'object_uuid': seg_row.get('object_uuid'),
                 'routes': route_infos,
                 'length_meters': float(seg_row['length_meters']) if seg_row.get('length_meters') is not None else 0.0,
                 'geometry': segment_geom
@@ -1268,7 +1403,7 @@ def get_routes_from_view(
         # Query endpoint names for all routes at once
         rutenummer_list = [r['rutenummer'] for r in routes]
         placeholders = ','.join(['%s'] * len(rutenummer_list))
-        
+
         endpoint_query = f"""
             WITH route_links_expanded AS (
                 SELECT
@@ -1282,11 +1417,11 @@ def get_routes_from_view(
             first_last_links AS (
                 SELECT
                     rutenummer,
-                    (SELECT a_node FROM route_links_expanded rle2 
-                     WHERE rle2.rutenummer = rle.rutenummer 
+                    (SELECT a_node FROM route_links_expanded rle2
+                     WHERE rle2.rutenummer = rle.rutenummer
                      ORDER BY link_id ASC LIMIT 1) as first_a_node,
-                    (SELECT b_node FROM route_links_expanded rle2 
-                     WHERE rle2.rutenummer = rle.rutenummer 
+                    (SELECT b_node FROM route_links_expanded rle2
+                     WHERE rle2.rutenummer = rle.rutenummer
                      ORDER BY link_id DESC LIMIT 1) as last_b_node
                 FROM route_links_expanded rle
                 GROUP BY rutenummer
@@ -1299,12 +1434,12 @@ def get_routes_from_view(
             LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_a ON an_a.node_id = fll.first_a_node
             LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_b ON an_b.node_id = fll.last_b_node
         """
-        
+
         try:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(endpoint_query, rutenummer_list)
                 endpoint_rows = cur.fetchall()
-            
+
             # Map endpoint names to routes
             endpoint_map = {row['rutenummer']: row for row in endpoint_rows}
             for route in routes:
@@ -1334,25 +1469,31 @@ def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool =
     if not validate_schema_name(ROUTE_SCHEMA):
         raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
 
+    uuid_col = get_segment_uuid_column(conn)
     select_parts = [
-        "rutenummer",
-        "segment_objid",
-        "source_node",
-        "target_node",
-        "rutenavn",
-        "vedlikeholdsansvarlig",
-        "rutetype",
-        "gradering",
-        "ST_Length(ST_Transform(senterlinje, 4326)::geography) as length_meters"
+        "rs.rutenummer",
+        "rs.segment_objid",
+        "rs.source_node",
+        "rs.target_node",
+        "rs.rutenavn",
+        "rs.vedlikeholdsansvarlig",
+        "rs.rutetype",
+        "rs.gradering",
+        "ST_Length(ST_Transform(rs.senterlinje, 4326)::geography) as length_meters"
     ]
 
-    if include_geometry:
-        select_parts.append("ST_AsGeoJSON(ST_Transform(senterlinje, 4326))::json as senterlinje")
+    if uuid_col:
+        select_parts.append(f"f.{uuid_col}::text as object_uuid")
 
+    if include_geometry:
+        select_parts.append("ST_AsGeoJSON(ST_Transform(rs.senterlinje, 4326))::json as senterlinje")
+
+    join_clause = f"LEFT JOIN {ROUTE_SCHEMA}.fotrute f ON f.objid = rs.segment_objid" if uuid_col else ""
     query = f"""
         SELECT
             {', '.join(select_parts)}
-        FROM {ROUTE_SCHEMA}.route_segments
+        FROM {ROUTE_SCHEMA}.route_segments rs
+        {join_clause}
         WHERE rutenummer = %s
         ORDER BY segment_objid
     """
@@ -1362,10 +1503,15 @@ def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool =
         rows = cur.fetchall()
 
     segments = []
+    if uuid_col:
+        for row in rows:
+            if not row.get("object_uuid"):
+                raise ValueError(f"Missing object_uuid for segment objid {row.get('segment_objid')}")
     for row in rows:
         segment = {
             'rutenummer': row['rutenummer'],
             'segment_objid': int(row['segment_objid']),
+            'object_uuid': row.get('object_uuid'),
             'source_node': row.get('source_node'),
             'target_node': row.get('target_node'),
             'rutenavn': row.get('rutenavn'),

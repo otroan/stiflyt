@@ -78,6 +78,11 @@ query-routes --rutenummer-prefix bre --limit 50 --offset 100
 query-routes --rutenummer-prefix bre --api-url http://production.example.com/api/v1
 ```
 
+**Get segment by lokalid:**
+```bash
+query-routes --get-segment-lokalid 00661e35-bce5-4106-932f-48f6197dfb58 --format json
+```
+
 **JSON output with geometry:**
 ```bash
 query-routes --rutenummer-prefix bre --vedlikeholdsansvarlig "DNT Oslo" --format json --include-geometry

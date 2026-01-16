@@ -367,3 +367,22 @@ class RoutesClient:
         params = {"include_geometry": include_geometry}
         url = f"{self.base_url}/routes/{rutenummer}/links"
         return self._make_request("GET", url, params)
+
+    def get_segment_by_lokalid(
+        self,
+        lokalid: str,
+        include_geometry: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Get a single segment by lokalid with all segment fields.
+
+        Args:
+            lokalid: Segment lokalid (stable UUID from source data)
+            include_geometry: Include GeoJSON geometry in response (default: False)
+
+        Returns:
+            Dictionary with segment fields and fotruteinfo_rows
+        """
+        params = {"include_geometry": include_geometry}
+        url = f"{self.base_url}/segments/by-lokalid/{lokalid}"
+        return self._make_request("GET", url, params)

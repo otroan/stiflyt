@@ -308,16 +308,40 @@ export function InfoPanel({
     return 'n/a';
   };
 
-  const changesRows: Array<{ kind: string; type: string; target: string; ts?: string }> = [
+  const extractDetails = (event: LocalEvent | ChangeEvent): string => {
+    const payload = 'event' in event ? event.event : event;
+    const eventType = payload.type;
+    if (eventType === 'segment.update_attrs') {
+      const patch = (payload as { patch?: unknown }).patch;
+      return patch ? JSON.stringify(patch) : '';
+    }
+    if (eventType === 'segment.update_geom') {
+      return 'geometry updated';
+    }
+    if (eventType === 'segment.add') {
+      return 'segment added';
+    }
+    if (eventType === 'segment.retire') {
+      return 'segment retired';
+    }
+    if (eventType === 'segment.delete_new') {
+      return 'new segment deleted';
+    }
+    return '';
+  };
+
+  const changesRows: Array<{ kind: string; type: string; target: string; details: string; ts?: string }> = [
     ...localEvents.map((event) => ({
       kind: 'lokal',
       type: event.type,
       target: extractTarget(event),
+      details: extractDetails(event),
     })),
     ...events.map((event) => ({
       kind: 'changeset',
       type: event.event.type,
       target: extractTarget(event),
+      details: extractDetails(event),
       ts: event.ts,
     })),
   ];
@@ -770,18 +794,31 @@ export function InfoPanel({
                       Ingen registrerte endringer
                     </div>
                   ) : (
-                    <div className="events-list">
-                      {changesRows.map((row, index) => (
-                        <div key={`${row.kind}-${row.type}-${row.target}-${index}`} className="event-item">
-                          <div className="event-type">
-                            {row.type} <span style={{ color: '#999' }}>({row.kind})</span>
-                          </div>
-                          <div className="event-time">
-                            {row.target}
-                            {row.ts ? ` • ${new Date(row.ts).toLocaleString()}` : ''}
-                          </div>
-                        </div>
-                      ))}
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9em' }}>
+                        <thead>
+                          <tr style={{ textAlign: 'left', borderBottom: '1px solid #ddd' }}>
+                            <th style={{ padding: '6px 8px' }}>Type</th>
+                            <th style={{ padding: '6px 8px' }}>Target</th>
+                            <th style={{ padding: '6px 8px' }}>Detaljer</th>
+                            <th style={{ padding: '6px 8px' }}>Når</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {changesRows.map((row, index) => (
+                            <tr key={`${row.kind}-${row.type}-${row.target}-${index}`} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                              <td style={{ padding: '6px 8px' }}>
+                                {row.type} <span style={{ color: '#999' }}>({row.kind})</span>
+                              </td>
+                              <td style={{ padding: '6px 8px' }}>{row.target}</td>
+                              <td style={{ padding: '6px 8px', color: '#555' }}>{row.details}</td>
+                              <td style={{ padding: '6px 8px' }}>
+                                {row.ts ? new Date(row.ts).toLocaleString() : '—'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                     </div>
                   )}
                 </div>

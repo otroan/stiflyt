@@ -104,6 +104,7 @@ CREATE TABLE base.segment_base (
     id TEXT PRIMARY KEY,
     geom GEOMETRY(LINESTRING, 4326) NOT NULL,
     attrs JSONB DEFAULT '{}'::jsonb,
+    object_uuid TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -114,11 +115,12 @@ CREATE INDEX idx_segment_base_geom ON base.segment_base USING GIST(geom);
 
 ```sql
 -- Insert example segment
-INSERT INTO base.segment_base (id, geom, attrs)
+INSERT INTO base.segment_base (id, geom, attrs, object_uuid)
 VALUES (
     'seg_001',
     ST_GeomFromGeoJSON('{"type":"LineString","coordinates":[[10.0,59.0],[10.1,59.1]]}'),
-    '{"route_ref": "BRE017", "name": "Example Route"}'::jsonb
+    '{"route_ref": "BRE017", "name": "Example Route"}'::jsonb,
+    '9f9156fb-89db-4a65-8d53-6d5467a33a6f'
 );
 ```
 

@@ -156,6 +156,10 @@ Run validation to see errors and warnings.
 
     def _generate_diff_json(self, path: Path, events: List[Dict]) -> None:
         """Generate diff.json."""
+        base_segments = self.materializer._load_base_segments()
+        uuid_map = {seg["id"]: seg.get("object_uuid") for seg in base_segments}
+        lokalid_map = {seg["id"]: seg.get("lokalid") for seg in base_segments}
+
         diff_data = {
             "events": [
                 {
@@ -163,6 +167,9 @@ Run validation to see errors and warnings.
                     "ts": e["ts"].isoformat(),
                     "user_id": e["user_id"],
                     "event": e["event"],
+                    "target_id": (e["event"].get("target") or {}).get("id"),
+                    "object_uuid": uuid_map.get((e["event"].get("target") or {}).get("id")),
+                    "lokalid": lokalid_map.get((e["event"].get("target") or {}).get("id")),
                 }
                 for e in events
             ]

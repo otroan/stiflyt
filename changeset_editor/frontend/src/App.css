@@ -21,6 +21,18 @@ body {
   pointer-events: none;
 }
 
+
+.link-midpoint-label {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #16a085;
+  color: #2c3e50;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
 /* Match routes.html styling */
 .main-container {
   display: flex;

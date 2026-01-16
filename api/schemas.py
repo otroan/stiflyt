@@ -99,6 +99,7 @@ class RouteInfo(BaseModel):
 class RouteSegment(BaseModel):
     """Route segment information with grouped routes."""
     objid: int
+    object_uuid: str
     routes: List[RouteInfo]  # List of routes that use this segment
     length_meters: Optional[float] = None
     geometry: Optional[Dict[str, Any]] = None  # GeoJSON geometry (optional)
@@ -173,6 +174,7 @@ class RouteSegmentDetail(BaseModel):
     """Route segment detail from stiflyt.route_segments view."""
     rutenummer: str
     segment_objid: int
+    object_uuid: str
     senterlinje: Optional[Dict[str, Any]] = None  # GeoJSON geometry
     source_node: Optional[int] = None
     target_node: Optional[int] = None
@@ -254,3 +256,9 @@ class RouteValidationResponse(BaseModel):
     geometry_info: List[ValidationIssue]
     segment_metadata: List[SegmentMetadata]
     summary: ValidationSummary
+
+
+class SegmentByLokalIdResponse(BaseModel):
+    """Response for segment lookup by lokalid."""
+    segment: Dict[str, Any]
+    fotruteinfo_rows: List[Dict[str, Any]]

@@ -37,6 +37,7 @@ export function Header({
   const [routes, setRoutes] = useState<Route[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
+  const [routesLimit, setRoutesLimit] = useState(200);
   const searchControllerRef = useRef<AbortController | null>(null);
 
   // Update search query when selected route changes
@@ -64,7 +65,7 @@ export function Header({
       // If empty query, show all routes (with reasonable limit)
       if (queryTrimmed.length === 0) {
         try {
-          const data = await api.listRoutes({ limit: 200 }, { signal });
+          const data = await api.listRoutes({ limit: routesLimit }, { signal });
           if (signal.aborted) return;
           setRoutes(data.routes || []);
           setShowResults(true);
@@ -83,7 +84,7 @@ export function Header({
       // If query is short (1-2 chars), treat as prefix search
       if (queryTrimmed.length <= 2) {
         try {
-          const data = await api.listRoutes({ prefix: queryTrimmed, limit: 200 }, { signal });
+          const data = await api.listRoutes({ prefix: queryTrimmed, limit: routesLimit }, { signal });
           if (signal.aborted) return;
           setRoutes(data.routes || []);
           setShowResults(true);
@@ -106,7 +107,7 @@ export function Header({
           setShowResults(true);
         } else {
           // If no exact match, try prefix search
-          const routeData = await api.listRoutes({ prefix: queryTrimmed, limit: 200 }, { signal });
+          const routeData = await api.listRoutes({ prefix: queryTrimmed, limit: routesLimit }, { signal });
           if (signal.aborted) return;
           setRoutes(routeData.routes || []);
           setShowResults(true);
@@ -276,6 +277,18 @@ export function Header({
           >
             Alle ruter
           </button>
+          <select
+            value={routesLimit}
+            onChange={(e) => setRoutesLimit(Number(e.target.value))}
+            disabled={loading}
+            aria-label="Antall ruter i liste"
+            style={{ marginLeft: '8px', padding: '6px', fontSize: '0.9rem' }}
+            title="Antall ruter i liste"
+          >
+            <option value={50}>50</option>
+            <option value={200}>200</option>
+            <option value={500}>500</option>
+          </select>
           {isSearching && (
             <span className="header-search-spinner">⏳</span>
           )}

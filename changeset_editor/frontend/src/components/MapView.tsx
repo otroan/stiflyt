@@ -331,11 +331,13 @@ export function MapView({
     if (!routeNumber || !mapReady) {
       setSegmentsData(null);
       setLinksData(null);
+      setShowSegments(false);
+      setShowLinks(false);
       return;
     }
 
-    // Auto-enable segment display when route is selected
-    setShowSegments(true);
+    // Reset toggles while loading new data
+    setShowSegments(false);
 
     const segmentsController = new AbortController();
     const linksController = new AbortController();
@@ -582,8 +584,8 @@ export function MapView({
         const isSelected = featureId && (selectedFeatureIds.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
         return {
           color: isSelected ? '#2196f3' : '#16a085',
-          weight: isSelected ? 5 : 3,
-          opacity: isSelected ? 1.0 : 0.7,
+          weight: isSelected ? 5 : 4,
+          opacity: isSelected ? 1.0 : 0.85,
           dashArray: '5, 5',
         };
       },
@@ -649,6 +651,14 @@ export function MapView({
 
     const endpointsGroup = L.layerGroup().addTo(mapRef.current);
     const endpointSet = new Set<string>(); // To avoid duplicate endpoints
+    const linkEndpointSet = new Set<string>(); // Keep link endpoints visible even when shared
+    const linkEndpointCounts = new Map<string, number>();
+    const linkEndpointCoords = new Map<string, number[]>();
+
+    if (!mapRef.current.getPane('link-endpoints')) {
+      const pane = mapRef.current.createPane('link-endpoints');
+      pane.style.zIndex = '650';
+    }
 
     // Add endpoints from segments
     if (showSegments && segmentsData) {
@@ -687,42 +697,93 @@ export function MapView({
       });
     }
 
-    // Add endpoints from links
+    // Add endpoints and midpoints from links
     if (showLinks && linksData) {
       linksData.features.forEach((feature) => {
-        if (feature.geometry.type === 'LineString') {
-          const coords = feature.geometry.coordinates;
-          if (coords.length > 0) {
-            // Start point
-            const startKey = `${coords[0][0]},${coords[0][1]}`;
-            if (!endpointSet.has(startKey)) {
-              endpointSet.add(startKey);
-              L.circleMarker([coords[0][1], coords[0][0]], {
-                radius: 6,
-                fillColor: '#16a085',
-                color: '#fff',
-                weight: 2,
-                opacity: 1,
-                fillOpacity: 0.8,
-              }).addTo(endpointsGroup);
-            }
-            // End point
-            const endKey = `${coords[coords.length - 1][0]},${coords[coords.length - 1][1]}`;
-            if (!endpointSet.has(endKey)) {
-              endpointSet.add(endKey);
-              L.circleMarker([coords[coords.length - 1][1], coords[coords.length - 1][0]], {
-                radius: 6,
-                fillColor: '#16a085',
-                color: '#fff',
-                weight: 2,
-                opacity: 1,
-                fillOpacity: 0.8,
-              }).addTo(endpointsGroup);
-            }
+        const addLinkMarkers = (coords: number[][]) => {
+          if (coords.length === 0) return;
+
+          // Start point
+          const startKey = `${coords[0][0]},${coords[0][1]}`;
+          linkEndpointCounts.set(startKey, (linkEndpointCounts.get(startKey) ?? 0) + 1);
+          linkEndpointCoords.set(startKey, coords[0]);
+          if (!linkEndpointSet.has(startKey)) {
+            linkEndpointSet.add(startKey);
+            L.circleMarker([coords[0][1], coords[0][0]], {
+              radius: 8,
+              fillColor: '#f39c12',
+              color: '#2c3e50',
+              weight: 2,
+              opacity: 1,
+              fillOpacity: 0.95,
+              pane: 'link-endpoints',
+            }).addTo(endpointsGroup);
           }
+
+          // End point
+          const endKey = `${coords[coords.length - 1][0]},${coords[coords.length - 1][1]}`;
+          linkEndpointCounts.set(endKey, (linkEndpointCounts.get(endKey) ?? 0) + 1);
+          linkEndpointCoords.set(endKey, coords[coords.length - 1]);
+          if (!linkEndpointSet.has(endKey)) {
+            linkEndpointSet.add(endKey);
+            L.circleMarker([coords[coords.length - 1][1], coords[coords.length - 1][0]], {
+              radius: 8,
+              fillColor: '#f39c12',
+              color: '#2c3e50',
+              weight: 2,
+              opacity: 1,
+              fillOpacity: 0.95,
+              pane: 'link-endpoints',
+            }).addTo(endpointsGroup);
+          }
+
+          const midIndex = Math.floor(coords.length / 2);
+          const midCoord = coords[midIndex];
+          if (midCoord) {
+            const midpointMarker = L.circleMarker([midCoord[1], midCoord[0]], {
+              radius: 5,
+              fillColor: '#ffffff',
+              color: '#16a085',
+              weight: 2,
+              opacity: 1,
+              fillOpacity: 0.9,
+              pane: 'link-endpoints',
+            }).addTo(endpointsGroup);
+            const props = feature.properties as { link_id?: number | string; length_m?: number | null } | null;
+            const lengthStr = typeof props?.length_m === 'number' ? `${props.length_m.toFixed(1)} m` : 'N/A';
+            midpointMarker.bindTooltip(`Link ${props?.link_id ?? ''} • ${lengthStr}`, {
+              permanent: true,
+              direction: 'top',
+              className: 'link-midpoint-label',
+              opacity: 0.9,
+            });
+          }
+        };
+
+        if (feature.geometry.type === 'LineString') {
+          addLinkMarkers(feature.geometry.coordinates);
+        } else if (feature.geometry.type === 'MultiLineString') {
+          feature.geometry.coordinates.forEach((line) => addLinkMarkers(line));
         }
       });
     }
+
+    // Highlight junctions where multiple links meet
+    linkEndpointCounts.forEach((count, key) => {
+      if (count > 1) {
+        const coord = linkEndpointCoords.get(key);
+        if (!coord) return;
+        L.circleMarker([coord[1], coord[0]], {
+          radius: 10,
+          fillColor: '#e74c3c',
+          color: '#ffffff',
+          weight: 3,
+          opacity: 1,
+          fillOpacity: 0.95,
+          pane: 'link-endpoints',
+        }).addTo(endpointsGroup);
+      }
+    });
 
     endpointsLayerRef.current = endpointsGroup;
   }, [showSegments, showLinks, segmentsData, linksData, mapReady]);
@@ -1102,7 +1163,7 @@ export function MapView({
   };
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+    <div className="map-view" style={{ position: 'relative', width: '100%', height: '100%' }}>
       <MapContainer
         center={[61.5, 8.5]}
         zoom={7}
@@ -1232,7 +1293,7 @@ export function MapView({
       {routeNumber && (
         <div style={{
           position: 'absolute',
-          top: 20,
+          top: 80,
           left: 20,
           zIndex: 1000,
           background: 'white',
@@ -1547,7 +1608,7 @@ export function MapView({
       {activeTool === 'split' && (
         <div style={{
           position: 'absolute',
-          top: 20,
+          top: 160,
           left: 20,
           zIndex: 1000,
           background: '#fff3cd',
@@ -1575,7 +1636,7 @@ export function MapView({
       {selectedFeatureIds.size > 1 && (
         <div style={{
           position: 'absolute',
-          top: activeTool === 'split' ? 100 : 20,
+          top: activeTool === 'split' ? 240 : 160,
           left: 20,
           zIndex: 1000,
           background: '#e7f3ff',
