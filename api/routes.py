@@ -1040,6 +1040,7 @@ async def validate_route(
             query = f"""
                 SELECT
                     f.objid as segment_objid,
+                    f.lokalid as segment_lokalid,
                     fi.rutenummer,
                     fi.rutenavn,
                     fi.vedlikeholdsansvarlig,
@@ -1072,8 +1073,10 @@ async def validate_route(
             segment_metadata_dump = []
             for segment_objid, fotruteinfo_rows in sorted(segments_dict.items()):
                 segment_length = fotruteinfo_rows[0].get('length_meters') if fotruteinfo_rows else None
+                segment_lokalid = fotruteinfo_rows[0].get('segment_lokalid') if fotruteinfo_rows else None
                 segment_metadata_dump.append({
                     'segment_objid': str(segment_objid),
+                    'segment_lokalid': segment_lokalid,
                     'length_meters': float(segment_length) if segment_length is not None else None,
                     'fotruteinfo_count': len(fotruteinfo_rows),
                     'fotruteinfo_rows': [

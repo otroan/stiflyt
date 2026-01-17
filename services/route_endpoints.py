@@ -3,9 +3,31 @@ Service for looking up route endpoint names (start and end points).
 Looks up names from ruteinfopunkt in turrutebasen first, then falls back to stedsnavn database.
 """
 import json
+import re
 from typing import Optional, Dict, Any, Tuple
 from psycopg.rows import dict_row
 from .database import ROUTE_SCHEMA, validate_schema_name
+
+
+def format_utm_shortform(name: str) -> str:
+    """
+    Convert UTM25833 fallback name to Norwegian shortform label with full coords.
+
+    Example:
+        "UTM25833 341443 6902893" -> "UTM32V 341443 6902893"
+    """
+    if not name:
+        return name
+    match = re.match(r'^UTM25833\s+(\d+)\s+(\d+)$', str(name).strip())
+    if not match:
+        return name
+    try:
+        easting = int(match.group(1))
+        northing = int(match.group(2))
+    except ValueError:
+        return name
+
+    return f"UTM32V {easting} {northing}"
 
 
 def extract_route_endpoints(route_geometry_geojson: Dict[str, Any]) -> Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]:
@@ -302,7 +324,7 @@ def lookup_name_in_anchor_nodes(conn, point_lon: float, point_lat: float, search
                 source = source_map.get(navn_kilde, 'anchor_node')
 
                 return {
-                    'name': result['navn'],
+                    'name': format_utm_shortform(result['navn']),
                     'source': source,
                     'distance_meters': float(result['distance_meters']) if result.get('distance_meters') is not None else None,
                 }

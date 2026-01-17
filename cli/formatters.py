@@ -2,7 +2,7 @@
 import json
 import csv
 import yaml
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from io import StringIO
 
 
@@ -596,4 +596,331 @@ def _map_authority(vedlikeholdsansvarlig: Optional[str]) -> str:
         return "turrutebasen"
     else:
         return "legacy"
+
+
+def build_changeset_report(validation_report: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build a changeset-style report from a validation report.
+
+    The report suggests normalized values for inconsistent metadata fields,
+    prioritizing non-"Ukjent" values.
+    """
+    rutenummer = validation_report.get("rutenummer")
+    warnings = validation_report.get("warnings", [])
+    segment_metadata = validation_report.get("segment_metadata", [])
+
+    segment_length = {}
+    segment_rows = {}
+    segment_lokalid = {}
+    for seg in segment_metadata:
+        segment_objid = str(seg.get("segment_objid"))
+        segment_length[segment_objid] = seg.get("length_meters") or 0.0
+        segment_rows[segment_objid] = seg.get("fotruteinfo_rows", [])
+        segment_lokalid[segment_objid] = seg.get("segment_lokalid")
+
+    warning_type_to_field = {
+        "INCONSISTENT_RUTENAVN": "rutenavn",
+        "INCONSISTENT_VEDLIKEHOLDSANSVARLIG": "vedlikeholdsansvarlig",
+        "INCONSISTENT_RUTETYPE": "rutetype",
+        "INCONSISTENT_GRADERING": "gradering",
+    }
+
+    report_fields = []
+    duplicate_rutenummer_fixes = []
+    rutenavn_suggestions = []
+    rutenavn_ukjent = []
+
+    errors = validation_report.get("errors", [])
+    warnings = validation_report.get("warnings", [])
+    info_issues = validation_report.get("geometry_info", [])
+
+    summary = validation_report.get("summary", {}) or {}
+    rutenavn_values = summary.get("rutenavn_values") or []
+    rutenavn_all_ukjent = (
+        len(rutenavn_values) == 1 and str(rutenavn_values[0]).strip().lower() == "ukjent"
+    )
+
+    for warning in warnings:
+        if warning.get("type") != "RUTENAVN_UKJENT":
+            continue
+        if not rutenavn_all_ukjent:
+            continue
+        affected_segments = warning.get("affected_segments") or []
+        affected_lokalid = []
+        for segment_objid in affected_segments:
+            segment_objid_str = str(segment_objid)
+            segment_id = segment_lokalid.get(segment_objid_str)
+            if segment_id:
+                affected_lokalid.append(segment_id)
+            else:
+                affected_lokalid.append(segment_objid_str)
+        rutenavn_ukjent.append({
+            "affected_segments": affected_lokalid,
+        })
+    for info in info_issues:
+        if info.get("type") != "RUTENAVN_SUGGESTION":
+            continue
+        metadata = info.get("metadata", {}) or {}
+        rutenavn_suggestions.append({
+            "suggested_rutenavn": metadata.get("suggested_rutenavn"),
+            "from_name": metadata.get("from_name"),
+            "to_name": metadata.get("to_name"),
+        })
+
+    for err in errors:
+        if err.get("type") != "DUPLICATE_RUTENUMMER_IN_SEGMENT":
+            continue
+
+        metadata = err.get("metadata", {}) or {}
+        dup_rutenummer = metadata.get("rutenummer")
+        affected_segments = err.get("affected_segments") or []
+
+        for segment_objid in affected_segments:
+            segment_objid_str = str(segment_objid)
+            rows = segment_rows.get(segment_objid_str, [])
+            if not rows or not dup_rutenummer:
+                continue
+
+            before_list = []
+            after_list = []
+            seen = set()
+            removed_indices = []
+
+            for idx, row in enumerate(rows):
+                row_rutenummer = row.get("rutenummer")
+                row_rutenavn = row.get("rutenavn")
+                before_list.append({
+                    "index": idx,
+                    "rutenummer": row_rutenummer,
+                    "rutenavn": row_rutenavn,
+                })
+
+                if row_rutenummer == dup_rutenummer:
+                    if row_rutenummer in seen:
+                        removed_indices.append(idx)
+                        continue
+                    seen.add(row_rutenummer)
+
+                after_list.append({
+                    "index": idx,
+                    "rutenummer": row_rutenummer,
+                    "rutenavn": row_rutenavn,
+                })
+
+            if removed_indices:
+                duplicate_rutenummer_fixes.append({
+                    "segment_lokalid": segment_lokalid.get(segment_objid_str),
+                    "rutenummer": dup_rutenummer,
+                    "removed_indices": removed_indices,
+                    "before": before_list,
+                    "after": after_list,
+                })
+
+    for warning in warnings:
+        warning_type = warning.get("type")
+        if warning_type not in warning_type_to_field:
+            continue
+
+        field = warning_type_to_field[warning_type]
+        metadata = warning.get("metadata", {}) or {}
+        values = metadata.get("values") or []
+        value_by_segment = metadata.get("value_by_segment") or {}
+
+        # Normalize segment IDs to strings
+        normalized_value_by_segment = {}
+        for val, segment_ids in value_by_segment.items():
+            normalized_value_by_segment[val] = [str(sid) for sid in segment_ids]
+
+        # Fallback: build value->segments map from segment metadata
+        if not normalized_value_by_segment:
+            fallback_map = {}
+            for segment_objid, rows in segment_rows.items():
+                for row in rows:
+                    row_val = row.get(field)
+                    if not row_val:
+                        continue
+                    if row_val not in fallback_map:
+                        fallback_map[row_val] = []
+                    if segment_objid not in fallback_map[row_val]:
+                        fallback_map[row_val].append(segment_objid)
+            normalized_value_by_segment = fallback_map
+
+        # Build candidate list
+        candidates = []
+        for val in values or normalized_value_by_segment.keys():
+            segment_ids = normalized_value_by_segment.get(val, [])
+            count = len(segment_ids)
+            length_sum = sum(segment_length.get(sid, 0.0) for sid in segment_ids)
+            is_ukjent = str(val).strip().lower() == "ukjent"
+            score = -1.0 if is_ukjent else (length_sum + (count * 0.001))
+            candidates.append({
+                "value": val,
+                "segment_count": count,
+                "length_meters": float(length_sum),
+                "score": score,
+            })
+
+        if not candidates:
+            continue
+
+        # Sort candidates: highest score first, "Ukjent" always last
+        candidates.sort(key=lambda c: (c["score"], c["segment_count"]), reverse=True)
+
+        selected = candidates[0]
+        selected_value = selected["value"]
+
+        # Determine if confirmation is needed (close scores)
+        needs_confirmation = False
+        if len(candidates) > 1:
+            first = candidates[0]["score"]
+            second = candidates[1]["score"]
+            if first <= 0:
+                needs_confirmation = True
+            else:
+                # Within 10% is considered ambiguous
+                needs_confirmation = (second / first) >= 0.9
+
+        # Build update suggestions
+        updates = []
+        route_rutenummer = validation_report.get("rutenummer")
+        for segment_objid, rows in segment_rows.items():
+            before_list = []
+            after_list = []
+            changed = False
+            for idx, row in enumerate(rows):
+                row_rutenummer = row.get("rutenummer")
+                row_value = row.get(field)
+                before_list.append({
+                    "index": idx,
+                    "rutenummer": row_rutenummer,
+                    field: row_value,
+                })
+                updated_value = row_value
+                if row_rutenummer == route_rutenummer:
+                    updated_value = selected_value
+                if updated_value != row_value:
+                    changed = True
+                after_list.append({
+                    "index": idx,
+                    "rutenummer": row_rutenummer,
+                    field: updated_value,
+                })
+
+            if changed:
+                updates.append({
+                    "segment_lokalid": segment_lokalid.get(segment_objid),
+                    "before": before_list,
+                    "after": after_list,
+                })
+
+        report_fields.append({
+            "field": field,
+            "selected_value": selected_value,
+            "candidates": candidates,
+            "updates": updates,
+            "needs_confirmation": needs_confirmation,
+            "warning_type": warning_type,
+        })
+
+    return {
+        "rutenummer": rutenummer,
+        "rutenavn_suggestions": rutenavn_suggestions,
+        "rutenavn_ukjent": rutenavn_ukjent,
+        "duplicate_rutenummer_fixes": duplicate_rutenummer_fixes,
+        "fields": report_fields,
+    }
+
+
+def format_changeset_report(report: Dict[str, Any]) -> str:
+    """Format changeset report as a human-readable text block."""
+    rutenummer = report.get("rutenummer", "N/A")
+    fields = report.get("fields", [])
+    rutenavn_suggestions = report.get("rutenavn_suggestions", [])
+    rutenavn_ukjent = report.get("rutenavn_ukjent", [])
+    duplicate_fixes = report.get("duplicate_rutenummer_fixes", [])
+
+    lines = []
+    lines.append("=" * 80)
+    lines.append(f"CHANGESET REPORT: {rutenummer}")
+    lines.append("=" * 80)
+    if rutenavn_suggestions:
+        lines.append("RUTENAVN SUGGESTIONS:")
+        lines.append("-" * 80)
+        for suggestion in rutenavn_suggestions:
+            suggested = suggestion.get("suggested_rutenavn")
+            from_name = suggestion.get("from_name")
+            to_name = suggestion.get("to_name")
+            lines.append(f"Suggested: {suggested}")
+            if from_name or to_name:
+                lines.append(f"  from: {from_name or '(unknown)'}")
+                lines.append(f"  to:   {to_name or '(unknown)'}")
+        lines.append("")
+    if rutenavn_ukjent:
+        lines.append("RUTENAVN UKJENT:")
+        lines.append("-" * 80)
+        for entry in rutenavn_ukjent:
+            segments = entry.get("affected_segments", [])
+            lines.append(f"Affected segments: {segments}")
+        lines.append("")
+    if duplicate_fixes:
+        lines.append("DUPLICATE RUTENUMMER FIXES:")
+        lines.append("-" * 80)
+        for fix in duplicate_fixes:
+            segment_ref = fix.get("segment_lokalid") or "(missing lokalid)"
+            dup_rutenummer = fix.get("rutenummer")
+            removed_indices = fix.get("removed_indices", [])
+            before_list = fix.get("before", [])
+            after_list = fix.get("after", [])
+            before_str = ", ".join(
+                f"{item.get('index')}:{item.get('rutenummer')}={item.get('rutenavn')}" for item in before_list
+            )
+            after_str = ", ".join(
+                f"{item.get('index')}:{item.get('rutenummer')}={item.get('rutenavn')}" for item in after_list
+            )
+            removed_str = ", ".join(str(idx) for idx in removed_indices)
+            lines.append(f"Segment {segment_ref}: remove duplicate rutenummer \"{dup_rutenummer}\" at indices [{removed_str}]")
+            lines.append(f"  before: [{before_str}]")
+            lines.append(f"  after:  [{after_str}]")
+        lines.append("")
+    if not fields:
+        lines.append("No changeset suggestions (no inconsistent metadata warnings).")
+        lines.append("")
+        return "\n".join(lines)
+
+    for field_report in fields:
+        field = field_report.get("field")
+        selected_value = field_report.get("selected_value")
+        candidates = field_report.get("candidates", [])
+        updates = field_report.get("updates", [])
+        needs_confirmation = field_report.get("needs_confirmation", False)
+        warning_type = field_report.get("warning_type", "")
+
+        lines.append(f"Field: {field} ({warning_type})")
+        lines.append(f"Selected value: {selected_value}")
+        lines.append(f"Needs confirmation: {'YES' if needs_confirmation else 'NO'}")
+        lines.append("Candidates:")
+        for cand in candidates:
+            lines.append(
+                f"  - {cand['value']} (segments: {cand['segment_count']}, length_m: {cand['length_meters']:.1f}, score: {cand['score']:.3f})"
+            )
+        lines.append("Suggested updates:")
+        if updates:
+            for upd in updates:
+                segment_ref = upd.get("segment_lokalid") or "(missing lokalid)"
+                before_list = upd.get("before", [])
+                after_list = upd.get("after", [])
+                before_str = ", ".join(
+                    f"{item.get('index')}:{item.get('rutenummer')}={item.get(field)}" for item in before_list
+                )
+                after_str = ", ".join(
+                    f"{item.get('index')}:{item.get('rutenummer')}={item.get(field)}" for item in after_list
+                )
+                lines.append(
+                    f"  - segment {segment_ref}: [{before_str}] -> [{after_str}]"
+                )
+        else:
+            lines.append("  (no updates)")
+        lines.append("")
+
+    return "\n".join(lines)
 

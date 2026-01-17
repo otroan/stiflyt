@@ -225,6 +225,7 @@ class ValidationIssue(BaseModel):
 class SegmentMetadata(BaseModel):
     """Metadata for a route segment."""
     segment_objid: str
+    segment_lokalid: Optional[str] = None
     length_meters: Optional[float] = None
     fotruteinfo_count: int
     fotruteinfo_rows: List[Dict[str, Any]]

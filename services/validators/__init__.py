@@ -9,6 +9,8 @@ from .registry import ValidatorRegistry, register_validator, get_validator_regis
 from .metadata import (
     MetadataConsistencyValidator,
     DuplicateMetadataValidator,
+    DuplicateRutenummerInSegmentValidator,
+    RouteNameSuggestionValidator,
     MissingFieldsValidator,
 )
 from .geometry import (
@@ -21,14 +23,16 @@ from .geometry import (
 def _register_default_validators():
     """Register default validators in the global registry."""
     from .registry import get_validator_registry
-    
+
     registry = get_validator_registry()
-    
+
     # Register metadata validators
     registry.register(MetadataConsistencyValidator(), enabled=True)
     registry.register(DuplicateMetadataValidator(), enabled=True)
+    registry.register(DuplicateRutenummerInSegmentValidator(), enabled=True)
+    registry.register(RouteNameSuggestionValidator(), enabled=True)
     registry.register(MissingFieldsValidator(), enabled=True)
-    
+
     # Register geometry validators
     registry.register(RouteGeometryValidator(), enabled=True)
     registry.register(LinkConnectivityValidator(), enabled=True)
@@ -46,6 +50,8 @@ __all__ = [
     'get_validator_registry',
     'MetadataConsistencyValidator',
     'DuplicateMetadataValidator',
+    'DuplicateRutenummerInSegmentValidator',
+    'RouteNameSuggestionValidator',
     'MissingFieldsValidator',
     'RouteGeometryValidator',
     'LinkConnectivityValidator',

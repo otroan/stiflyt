@@ -368,6 +368,19 @@ class RoutesClient:
         url = f"{self.base_url}/routes/{rutenummer}/links"
         return self._make_request("GET", url, params)
 
+    def validate_route(self, rutenummer: str) -> Dict[str, Any]:
+        """
+        Validate a route using the backend validation endpoint.
+
+        Args:
+            rutenummer: Route number (e.g., "bre10")
+
+        Returns:
+            Dictionary with validation report
+        """
+        url = f"{self.base_url}/routes/{rutenummer}/validate"
+        return self._make_request("GET", url)
+
     def get_segment_by_lokalid(
         self,
         lokalid: str,

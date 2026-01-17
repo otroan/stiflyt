@@ -1442,11 +1442,12 @@ def get_routes_from_view(
 
             # Map endpoint names to routes
             endpoint_map = {row['rutenummer']: row for row in endpoint_rows}
+            from .route_endpoints import format_utm_shortform
             for route in routes:
                 endpoint_info = endpoint_map.get(route['rutenummer'])
                 if endpoint_info:
-                    route['from_name'] = endpoint_info.get('from_name')
-                    route['to_name'] = endpoint_info.get('to_name')
+                    route['from_name'] = format_utm_shortform(endpoint_info.get('from_name'))
+                    route['to_name'] = format_utm_shortform(endpoint_info.get('to_name'))
         except Exception as e:
             # Silently fail if query doesn't work (anchor_nodes might not exist)
             pass
@@ -1579,12 +1580,13 @@ def get_route_links(conn, rutenummer: str, include_geometry: bool = False):
 
     links = []
     for row in rows:
+        from .route_endpoints import format_utm_shortform
         link = {
             'link_id': int(row['link_id']),
             'a_node': row.get('a_node'),
             'b_node': row.get('b_node'),
-            'a_node_name': row.get('a_node_name'),
-            'b_node_name': row.get('b_node_name'),
+            'a_node_name': format_utm_shortform(row.get('a_node_name')),
+            'b_node_name': format_utm_shortform(row.get('b_node_name')),
             'length_m': float(row['length_m']) if row.get('length_m') is not None else None,
             'segment_objids': row.get('segment_objids')
         }

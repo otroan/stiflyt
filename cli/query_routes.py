@@ -12,7 +12,20 @@ from typing import Optional
 
 from .api_client import RouteSegmentsClient, RoutesClient, APIError, ConnectionError, AuthenticationError, APIResponseError
 from .config import CLIConfig
-from .formatters import format_json, format_table, format_csv, format_text_summary, format_complete_route_table, format_complete_route_csv, format_route_registry_yaml, format_routes_table, format_routes_csv, format_routes_summary
+from .formatters import (
+    format_json,
+    format_table,
+    format_csv,
+    format_text_summary,
+    format_complete_route_table,
+    format_complete_route_csv,
+    format_route_registry_yaml,
+    format_routes_table,
+    format_routes_csv,
+    format_routes_summary,
+    build_changeset_report,
+    format_changeset_report,
+)
 from .find_available_numbers import analyze_available_numbers, format_available_numbers, parse_rutenummer, get_existing_rutenummer
 
 
@@ -240,6 +253,11 @@ Examples:
         help='Validate route segment metadata for consistency and correctness'
     )
     parser.add_argument(
+        '--changeset-report',
+        action='store_true',
+        help='Output changeset-style report for inconsistent metadata (requires --validate)'
+    )
+    parser.add_argument(
         '--list-multilinestring-reasons',
         action='store_true',
         help='List all routes with their multilinestring_reason values from route_continuous_geometries'
@@ -266,6 +284,9 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    if args.changeset_report and not args.validate:
+        parser.error("--changeset-report requires --validate")
 
     # Handle test-ruteinfopunkt mode
     if args.test_ruteinfopunkt:
@@ -598,381 +619,151 @@ Examples:
 
     # Handle validation mode
     if args.validate:
-        from services.database import db_connection, ROUTE_SCHEMA, quote_identifier, validate_schema_name
-        from services.validators import get_validator_registry
-        from psycopg.rows import dict_row
-        from collections import defaultdict
-
         rutenummer = args.validate
+        config = CLIConfig(
+            api_url=args.api_url,
+            username=args.username,
+            password=args.password,
+            timeout=args.timeout
+        )
+        client = RoutesClient(config)
 
         try:
-            with db_connection() as conn:
-                if not validate_schema_name(ROUTE_SCHEMA):
-                    print(f"Error: Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}", file=sys.stderr)
-                    sys.exit(1)
+            validation_report = client.validate_route(rutenummer)
 
-                schema_quoted = quote_identifier(ROUTE_SCHEMA)
-
-                # Get all segments for the route with all metadata including length
-                # Note: A segment can have multiple fotruteinfo rows (if it's part of multiple routes)
-                query = f"""
-                    SELECT
-                        f.objid as segment_objid,
-                        f.lokalid as segment_lokalid,
-                        fi.rutenummer,
-                        fi.rutenavn,
-                        fi.vedlikeholdsansvarlig,
-                        fi.rutetype,
-                        fi.gradering,
-                        fi.objid as fotruteinfo_objid,
-                        ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters
-                    FROM {schema_quoted}.fotrute f
-                    JOIN {schema_quoted}.fotruteinfo fi ON fi.fotrute_fk = f.objid
-                    WHERE fi.rutenummer = %s
-                    ORDER BY f.objid, fi.objid
-                """
-
-                with conn.cursor(row_factory=dict_row) as cur:
-                    cur.execute(query, (rutenummer,))
-                    all_rows = cur.fetchall()
-
-                if not all_rows:
-                    print(f"Error: No segments found for route '{rutenummer}'", file=sys.stderr)
-                    sys.exit(1)
-
-                # Group by segment_objid to handle multiple fotruteinfo rows per segment
-                segments_dict = defaultdict(list)
-                for row in all_rows:
-                    segments_dict[row['segment_objid']].append(row)
-
-                segments = list(segments_dict.values())  # List of lists, each inner list is fotruteinfo rows for one segment
-
-                # Prepare segment metadata dump for output
-                segment_metadata_dump = []
-                for segment_objid, fotruteinfo_rows in sorted(segments_dict.items()):
-                    segment_length = fotruteinfo_rows[0].get('length_meters') if fotruteinfo_rows else None
-                    segment_lokalid = fotruteinfo_rows[0].get('segment_lokalid') if fotruteinfo_rows else None
-                    segment_metadata_dump.append({
-                        'segment_objid': segment_objid,
-                        'segment_lokalid': segment_lokalid,
-                        'length_meters': float(segment_length) if segment_length is not None else None,
-                        'fotruteinfo_count': len(fotruteinfo_rows),
-                        'fotruteinfo_rows': [
-                            {
-                                'fotruteinfo_objid': row['fotruteinfo_objid'],
-                                'rutenummer': row['rutenummer'],
-                                'rutenavn': row.get('rutenavn'),
-                                'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
-                                'rutetype': row.get('rutetype'),
-                                'gradering': row.get('gradering'),
-                            }
-                            for row in fotruteinfo_rows
-                        ]
-                    })
-
-                # Prepare route data for validators
-                route_data = {
-                    'rutenummer': rutenummer,
-                    'segments_dict': segments_dict,
-                    'all_rows': all_rows,
-                }
-
-                # Run validators
-                registry = get_validator_registry()
-                validation_result = registry.run_validators(route_data, conn)
-
-                # Convert ValidationResult to old format for compatibility
-                errors = [issue.to_dict() for issue in validation_result.errors]
-                warnings = [issue.to_dict() for issue in validation_result.warnings]
-                geometry_info = [issue.to_dict() for issue in validation_result.info]
-
-                # Get link count for summary (from validation result metadata if available)
-                link_count = validation_result.metadata.get('link_count', 0)
-                link_lengths = []
-                if link_count == 0:
-                    # Fallback: query directly
-                    link_count_query = f"""
-                        SELECT COUNT(DISTINCT lwr.link_id) as link_count
-                        FROM {schema_quoted}.links_with_routes lwr
-                        WHERE %s = ANY(lwr.rutenummer_list)
-                    """
-                    with conn.cursor(row_factory=dict_row) as cur:
-                        cur.execute(link_count_query, (rutenummer,))
-                        link_count_row = cur.fetchone()
-                        link_count = link_count_row.get('link_count', 0) if link_count_row else 0
-                    # Load link lengths for reporting
-                    link_lengths_query = f"""
-                        SELECT lwr.link_id, lwr.length_m
-                        FROM {schema_quoted}.links_with_routes lwr
-                        WHERE %s = ANY(lwr.rutenummer_list)
-                        ORDER BY lwr.link_id
-                    """
-                    with conn.cursor(row_factory=dict_row) as cur:
-                        cur.execute(link_lengths_query, (rutenummer,))
-                        link_lengths = cur.fetchall()
+            if args.changeset_report:
+                report = build_changeset_report(validation_report)
+                if args.format == "json":
+                    print(format_json(report))
                 else:
-                    link_lengths_query = f"""
-                        SELECT lwr.link_id, lwr.length_m
-                        FROM {schema_quoted}.links_with_routes lwr
-                        WHERE %s = ANY(lwr.rutenummer_list)
-                        ORDER BY lwr.link_id
-                    """
-                    with conn.cursor(row_factory=dict_row) as cur:
-                        cur.execute(link_lengths_query, (rutenummer,))
-                        link_lengths = cur.fetchall()
+                    print(format_changeset_report(report))
+                sys.exit(0)
 
-                # Extract summary values from validation result metadata
-                # Collect unique values for summary
-                all_rutenavn = []
-                all_vedlikeholdsansvarlig = []
-                all_rutetype = []
-                all_gradering = []
-
-                for segment_objid, fotruteinfo_rows in segments_dict.items():
-                    for row in fotruteinfo_rows:
-                        if row.get('rutenavn'):
-                            all_rutenavn.append(row.get('rutenavn'))
-                        if row.get('vedlikeholdsansvarlig'):
-                            all_vedlikeholdsansvarlig.append(row.get('vedlikeholdsansvarlig'))
-                        if row.get('rutetype'):
-                            all_rutetype.append(row.get('rutetype'))
-                        if row.get('gradering'):
-                            all_gradering.append(row.get('gradering'))
-
-                # Build validation report (using ValidationResult status)
-                validation_report = {
-                    'rutenummer': rutenummer,
-                    'segment_count': len(segments_dict),
-                    'link_count': link_count,
-                    'link_lengths': [
-                        {
-                            'link_id': row.get('link_id'),
-                            'length_meters': float(row['length_m']) if row.get('length_m') is not None else None
-                        }
-                        for row in link_lengths
-                    ],
-                    'status': validation_result.get_status(),
-                    'errors': errors,
-                    'warnings': warnings,
-                    'geometry_info': geometry_info,
-                    'segment_metadata': segment_metadata_dump,
-                    'summary': {
-                        'total_segments': len(segments_dict),
-                        'total_fotruteinfo_rows': len(all_rows),
-                        'total_links': link_count,
-                        'error_count': len(errors),
-                        'warning_count': len(warnings),
-                        'geometry_error_count': len([e for e in errors if 'geometry' in e.get('type', '').lower() or 'link' in e.get('type', '').lower()]),
-                        'geometry_warning_count': len([w for w in warnings if 'geometry' in w.get('type', '').lower() or 'link' in w.get('type', '').lower()]),
-                        'rutenavn_values': sorted(set(all_rutenavn)) if all_rutenavn else None,
-                        'vedlikeholdsansvarlig_values': sorted(set(all_vedlikeholdsansvarlig)) if all_vedlikeholdsansvarlig else None,
-                        'rutetype_values': sorted(set(all_rutetype)) if all_rutetype else None,
-                        'gradering_values': sorted(set(all_gradering)) if all_gradering else None,
-                    }
-                }
-
-                # Output results
-                if args.format == 'json':
-                    print(format_json(validation_report))
-                else:
-                    # Human-readable table format
-                    print("=" * 80)
-                    print(f"VALIDATION REPORT: {rutenummer}")
-                    print("=" * 80)
-                    print(f"Total segments: {len(segments_dict)}")
-                    print(f"Total fotruteinfo rows: {len(all_rows)}")
-                    print(f"Total links: {link_count}")
-                    if link_lengths:
-                        print("Link lengths:")
-                        for row in link_lengths:
-                            length_m = row.get('length_m')
-                            length_str = f"{length_m:.1f} m" if length_m is not None else "N/A"
-                            print(f"  Link {row.get('link_id')}: {length_str}")
-                    print(f"Status: {validation_report['status']}")
-                    print()
-
-                    # Dump all segment metadata first
-                    print("SEGMENT METADATA DUMP:")
-                    print("-" * 80)
-                    for seg_meta in segment_metadata_dump:
-                        length_str = f"{seg_meta['length_meters']:.1f} m" if seg_meta.get('length_meters') is not None else "N/A"
-                        lokalid = seg_meta.get('segment_lokalid') or '(null)'
-                        print(f"Segment {seg_meta['segment_objid']} (lokalid: {lokalid}, length: {length_str}, {seg_meta['fotruteinfo_count']} fotruteinfo row(s)):")
-                        for i, row in enumerate(seg_meta['fotruteinfo_rows'], 1):
-                            print(f"  Row {i} (fotruteinfo_objid: {row['fotruteinfo_objid']}):")
-                            print(f"    rutenummer: {row['rutenummer']}")
-                            print(f"    rutenavn: {row['rutenavn'] or '(null)'}")
-                            print(f"    vedlikeholdsansvarlig: {row['vedlikeholdsansvarlig'] or '(null)'}")
-                            print(f"    rutetype: {row['rutetype'] or '(null)'}")
-                            print(f"    gradering: {row['gradering'] or '(null)'}")
-                        print()
-                    print()
-
-                    if errors:
-                        print(f"ERRORS ({len(errors)}):")
-                        print("-" * 80)
-                        for i, err in enumerate(errors, 1):
-                            print(f"{i}. [{err['type']}] {err['message']}")
-                            if 'segment_objid' in err:
-                                print(f"   Segment: {err['segment_objid']}")
-                            if 'fotruteinfo_objids' in err:
-                                print(f"   fotruteinfo_objids: {err['fotruteinfo_objids']}")
-                            if 'values' in err:
-                                print(f"   Values: {err['values']}")
-                            if 'missing_fields' in err:
-                                print(f"   Missing fields: {err['missing_fields']}")
-                            if 'link_id' in err:
-                                print(f"   Link ID: {err['link_id']}")
-                        print()
-
-                    if warnings:
-                        print(f"WARNINGS ({len(warnings)}):")
-                        print("-" * 80)
-                        for i, warn in enumerate(warnings, 1):
-                            print(f"{i}. [{warn['type']}] {warn['message']}")
-                            if 'values' in warn:
-                                print(f"   Values: {warn['values']}")
-                            if 'value_by_segment' in warn:
-                                print(f"   Segments by value:")
-                                for val in sorted(warn['value_by_segment'].keys()):
-                                    segment_ids = sorted(warn['value_by_segment'][val])
-                                    print(f"     \"{val}\": {segment_ids}")
-                            if 'value' in warn and 'count' in warn:
-                                print(f"   Value: {warn['value']}, Count: {warn['count']}")
-                            if 'segment_objid' in warn:
-                                print(f"   Segment: {warn['segment_objid']}")
-                            if 'segment_objids' in warn:
-                                print(f"   Affected segments: {warn['segment_objids']}")
-                            if 'link_id' in warn:
-                                print(f"   Link ID: {warn['link_id']}")
-                            if 'link1_id' in warn and 'link2_id' in warn:
-                                print(f"   Links: {warn['link1_id']} -> {warn['link2_id']}")
-                            if 'link_ids' in warn:
-                                print(f"   Link IDs: {warn['link_ids']}")
-                            if 'gap_meters' in warn:
-                                print(f"   Gap: {warn['gap_meters']:.2f} m")
-                            if 'node_id' in warn and 'degree' in warn:
-                                print(f"   Node ID: {warn['node_id']}, Degree: {warn['degree']}")
-                            if 'reversible_sequence_length' in warn:
-                                print(f"   Reversible sequence length: {warn['reversible_sequence_length']}")
-                                print(f"   Reversed links count: {warn['reversed_links_count']}")
-                                if 'unvisited_links' in warn and warn['unvisited_links']:
-                                    print(f"   Unvisited links: {warn['unvisited_links']}")
-                            if 'reversed_connections' in warn:
-                                print(f"   Reversed connections:")
-                                for conn in warn['reversed_connections'][:5]:  # Show first 5
-                                    print(f"     Link {conn['link1_id']} {conn['connection_type']} Link {conn['link2_id']} (node: {conn['node_id']})")
-                                if len(warn['reversed_connections']) > 5:
-                                    print(f"     ... and {len(warn['reversed_connections']) - 5} more")
-                        print()
-
-                    # Show geometry info
-                    if geometry_info:
-                        print(f"GEOMETRY INFO ({len(geometry_info)}):")
-                        print("-" * 80)
-                        for i, info in enumerate(geometry_info, 1):
-                            print(f"{i}. [{info['type']}] {info['message']}")
-                            if 'link_ids' in info:
-                                print(f"   Link IDs: {info['link_ids']}")
-                            if 'link1_id' in info and 'link2_id' in info:
-                                print(f"   Links: {info['link1_id']} -> {info['link2_id']}")
-                            if 'gap_meters' in info:
-                                print(f"   Gap: {info['gap_meters']:.2f} m")
-                            if 'component_count' in info:
-                                print(f"   Components: {info['component_count']}")
-                                if 'main_component_link_ids' in info:
-                                    print(f"   Main component link IDs: {info['main_component_link_ids']}")
-                                if 'appendix_component_link_ids' in info:
-                                    for i, appendix in enumerate(info['appendix_component_link_ids'], 1):
-                                        print(f"   Appendix {i} link IDs: {appendix}")
-                            if 'reversible_sequence_length' in info:
-                                print(f"   Reversible sequence length: {info['reversible_sequence_length']}")
-                                print(f"   Reversed links count: {info['reversed_links_count']}")
-                                if 'unvisited_links' in info and info['unvisited_links']:
-                                    print(f"   Unvisited links: {info['unvisited_links']}")
-                            if 'reversed_connections' in info:
-                                print(f"   Reversed connections:")
-                                for conn in info['reversed_connections'][:5]:  # Show first 5
-                                    print(f"     Link {conn['link1_id']} {conn['connection_type']} Link {conn['link2_id']} (node: {conn['node_id']})")
-                                if len(info['reversed_connections']) > 5:
-                                    print(f"     ... and {len(info['reversed_connections']) - 5} more")
-                            # Show multilinestring_reason if available
-                            if 'multilinestring_reason' in info and info['multilinestring_reason']:
-                                reason_descriptions = {
-                                    'single_linestring': 'Single LineString (not MultiLineString)',
-                                    'link_is_multilinestring': 'Individual link is already MultiLineString',
-                                    'loop_or_branch': 'Route has loops or branches (traversal found duplicates or incomplete)',
-                                    'precision_gap': 'Small gaps (< 1cm) between links due to floating point precision',
-                                    'disconnected_components': 'Large gaps between links (e.g., lakes, rivers)',
-                                    'traversal_issue': 'Traversal found all links in order, but still MultiLineString (unknown cause)'
-                                }
-                                reason = info['multilinestring_reason']
-                                reason_desc = reason_descriptions.get(reason, reason)
-                                print(f"   MultiLineString reason: {reason_desc} ({reason})")
-                        print()
-
-                    # Show multilinestring_reason from metadata if available
-                    multilinestring_reason = validation_result.metadata.get('multilinestring_reason')
-                    if multilinestring_reason:
-                        reason_descriptions = {
-                            'single_linestring': 'Single LineString (perfect continuous geometry)',
-                            'link_is_multilinestring': 'Individual link is already MultiLineString',
-                            'loop_or_branch': 'Route has loops or branches (traversal found duplicates or incomplete)',
-                            'precision_gap': 'Small gaps (< 1cm) between links due to floating point precision',
-                            'disconnected_components': 'Large gaps between links (e.g., lakes, rivers)',
-                            'traversal_issue': 'Traversal found all links in order, but still MultiLineString (unknown cause)'
-                        }
-                        reason_desc = reason_descriptions.get(multilinestring_reason, multilinestring_reason)
-                        print("MULTILINESTRING REASON:")
-                        print("-" * 80)
-                        print(f"Reason: {reason_desc} ({multilinestring_reason})")
-                        if multilinestring_reason == 'single_linestring':
-                            print("Note: This indicates perfect continuous geometry (LineString, not MultiLineString)")
-                        else:
-                            print("Note: This explains why the route geometry is MultiLineString instead of LineString")
-                        print()
-
-                    if not errors and not warnings:
-                        print("✓ All validation passed")
-                        print()
-
-                    # Show summary
-                    print("SUMMARY:")
-                    print("-" * 80)
-                    summary = validation_report['summary']
-                    print(f"Metadata errors: {summary['error_count'] - summary['geometry_error_count']}")
-                    print(f"Metadata warnings: {summary['warning_count'] - summary['geometry_warning_count']}")
-                    print(f"Geometry errors: {summary['geometry_error_count']}")
-                    print(f"Geometry warnings: {summary['geometry_warning_count']}")
-                    print()
-
-                    if summary['rutenavn_values']:
-                        print(f"rutenavn: {', '.join(summary['rutenavn_values'])}")
-                    else:
-                        print("rutenavn: (not set)")
-
-                    if summary['vedlikeholdsansvarlig_values']:
-                        print(f"vedlikeholdsansvarlig: {', '.join(summary['vedlikeholdsansvarlig_values'])}")
-                    else:
-                        print("vedlikeholdsansvarlig: (not set)")
-
-                    if summary['rutetype_values']:
-                        print(f"rutetype: {', '.join(summary['rutetype_values'])}")
-
-                    if summary['gradering_values']:
-                        print(f"gradering: {', '.join(summary['gradering_values'])}")
-
-                    print("=" * 80)
-
-        except Exception as e:
-            print(f"Error during validation: {type(e).__name__}: {e}", file=sys.stderr)
-            import traceback
-            if args.verbose:
-                traceback.print_exc()
+            if args.format == 'json':
+                print(format_json(validation_report))
             else:
-                # Show traceback even without verbose for debugging
-                print("Traceback:", file=sys.stderr)
-                traceback.print_exc()
+                errors = validation_report.get("errors", [])
+                warnings = validation_report.get("warnings", [])
+                geometry_info = validation_report.get("geometry_info", [])
+                segment_metadata = validation_report.get("segment_metadata", [])
+                summary = validation_report.get("summary", {}) or {}
+
+                print("=" * 80)
+                print(f"VALIDATION REPORT: {rutenummer}")
+                print("=" * 80)
+                print(f"Total segments: {validation_report.get('segment_count', 0)}")
+                print(f"Total links: {validation_report.get('link_count', 0)}")
+                print(f"Status: {validation_report.get('status')}")
+                print()
+
+                print("SEGMENT METADATA DUMP:")
+                print("-" * 80)
+                for seg_meta in segment_metadata:
+                    length_str = f"{seg_meta.get('length_meters', 0.0):.1f} m" if seg_meta.get('length_meters') is not None else "N/A"
+                    segment_lokalid = seg_meta.get("segment_lokalid") or "(missing lokalid)"
+                    print(f"Segment {segment_lokalid} (length: {length_str}, {seg_meta['fotruteinfo_count']} fotruteinfo row(s)):")
+                    for i, row in enumerate(seg_meta.get('fotruteinfo_rows', []), 1):
+                        print(f"  Row {i} (fotruteinfo_objid: {row['fotruteinfo_objid']}):")
+                        print(f"    rutenummer: {row['rutenummer']}")
+                        print(f"    rutenavn: {row['rutenavn'] or '(null)'}")
+                        print(f"    vedlikeholdsansvarlig: {row['vedlikeholdsansvarlig'] or '(null)'}")
+                        print(f"    rutetype: {row['rutetype'] or '(null)'}")
+                        print(f"    gradering: {row['gradering'] or '(null)'}")
+                    print()
+                print()
+
+                if errors:
+                    print(f"ERRORS ({len(errors)}):")
+                    print("-" * 80)
+                    for i, err in enumerate(errors, 1):
+                        print(f"{i}. [{err['type']}] {err['message']}")
+                        if err.get('metadata', {}).get('values'):
+                            print(f"   Values: {err['metadata']['values']}")
+                    print()
+
+                if warnings:
+                    print(f"WARNINGS ({len(warnings)}):")
+                    print("-" * 80)
+                    for i, warn in enumerate(warnings, 1):
+                        print(f"{i}. [{warn['type']}] {warn['message']}")
+                        metadata = warn.get('metadata', {})
+                        if metadata.get('values'):
+                            print(f"   Values: {metadata['values']}")
+                        if metadata.get('value_by_segment'):
+                            print(f"   Segments by value:")
+                            for val in sorted(metadata['value_by_segment'].keys()):
+                                segment_ids = sorted(metadata['value_by_segment'][val])
+                                print(f"     \"{val}\": {segment_ids}")
+                    print()
+
+                if geometry_info:
+                    print(f"GEOMETRY INFO ({len(geometry_info)}):")
+                    print("-" * 80)
+                    for i, info in enumerate(geometry_info, 1):
+                        print(f"{i}. [{info['type']}] {info['message']}")
+                        if info.get('type') == 'RUTENAVN_SUGGESTION':
+                            metadata = info.get('metadata', {})
+                            suggested = metadata.get('suggested_rutenavn')
+                            from_name = metadata.get('from_name')
+                            to_name = metadata.get('to_name')
+                            if suggested:
+                                print(f"   Suggested: {suggested}")
+                            if from_name or to_name:
+                                print(f"   From: {from_name or '(unknown)'}")
+                                print(f"   To:   {to_name or '(unknown)'}")
+                    print()
+
+                if not errors and not warnings:
+                    print("✓ All validation passed")
+                    print()
+
+                print("SUMMARY:")
+                print("-" * 80)
+                print(f"Metadata errors: {summary.get('error_count', 0) - summary.get('geometry_error_count', 0)}")
+                print(f"Metadata warnings: {summary.get('warning_count', 0) - summary.get('geometry_warning_count', 0)}")
+                print(f"Geometry errors: {summary.get('geometry_error_count', 0)}")
+                print(f"Geometry warnings: {summary.get('geometry_warning_count', 0)}")
+                print()
+
+                if summary.get('rutenavn_values'):
+                    print(f"rutenavn: {', '.join(summary['rutenavn_values'])}")
+                else:
+                    print("rutenavn: (not set)")
+
+                if summary.get('vedlikeholdsansvarlig_values'):
+                    print(f"vedlikeholdsansvarlig: {', '.join(summary['vedlikeholdsansvarlig_values'])}")
+                else:
+                    print("vedlikeholdsansvarlig: (not set)")
+
+                if summary.get('rutetype_values'):
+                    print(f"rutetype: {', '.join(summary['rutetype_values'])}")
+
+                if summary.get('gradering_values'):
+                    print(f"gradering: {', '.join(summary['gradering_values'])}")
+
+                print("=" * 80)
+
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except ConnectionError as e:
+            print(f"Connection error: {e}", file=sys.stderr)
+            if args.verbose:
+                print(f"API URL: {config.api_url}", file=sys.stderr)
+            sys.exit(1)
+        except AuthenticationError as e:
+            print(f"Authentication error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except APIResponseError as e:
+            if e.status_code == 404:
+                print(f"Route not found: {e}", file=sys.stderr)
+            else:
+                print(f"API error: {e}", file=sys.stderr)
+            if args.verbose and e.response:
+                print(f"Response: {e.response}", file=sys.stderr)
+            sys.exit(1)
+        except APIError as e:
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
         sys.exit(0)
@@ -1220,12 +1011,24 @@ Examples:
                     offset=args.offset,
                     include_geometry=args.include_geometry
                 )
+                routes = response.get("routes", [])
+                if routes:
+                    # Sort by rutenummer: prefix + numeric part + optional letter
+                    from .find_available_numbers import parse_rutenummer
+                    def route_sort_key(route):
+                        rutenummer = str(route.get("rutenummer", "")).lower()
+                        parsed = parse_rutenummer(rutenummer)
+                        if parsed:
+                            prefix, number, letter = parsed
+                            return (0, prefix, number, letter or "")
+                        return (1, rutenummer, 0, "")
+                    routes = sorted(routes, key=route_sort_key)
+                    response["routes"] = routes
 
                 # Format output
                 if args.format == "json":
                     output_text = format_json(response)
                 elif args.format == "csv":
-                    routes = response.get("routes", [])
                     output_text = format_routes_csv(routes, include_geometry=args.include_geometry)
                 else:
                     # Table output (default)
