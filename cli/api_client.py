@@ -368,6 +368,31 @@ class RoutesClient:
         url = f"{self.base_url}/routes/{rutenummer}/links"
         return self._make_request("GET", url, params)
 
+    def get_route_areas(
+        self,
+        vedlikeholdsansvarlig: Optional[str] = None,
+        debug: bool = False,
+        debug_prefix: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get unique 3-letter area prefixes from route segments.
+
+        Args:
+            vedlikeholdsansvarlig: Optional loose-match filter
+
+        Returns:
+            Dictionary with areas and total
+        """
+        params = {}
+        if vedlikeholdsansvarlig:
+            params["vedlikeholdsansvarlig"] = vedlikeholdsansvarlig
+        if debug:
+            params["debug"] = True
+        if debug_prefix:
+            params["debug_prefix"] = debug_prefix
+        url = f"{self.base_url}/routes/areas"
+        return self._make_request("GET", url, params)
+
     def validate_route(self, rutenummer: str) -> Dict[str, Any]:
         """
         Validate a route using the backend validation endpoint.

@@ -89,6 +89,10 @@ Examples:
   %(prog)s --list-multilinestring-reasons --reason-filter disconnected_components
   %(prog)s --list-multilinestring-reasons --format json
 
+  # List areas (3-letter prefixes) for an organization
+  %(prog)s --list-areas --vedlikeholdsansvarlig "DNT Oslo"
+  %(prog)s --list-areas --debug-prefix fem
+
   # Test ruteinfopunkt lookup (debug)
   %(prog)s --test-ruteinfopunkt 7.710764899 61.809237843 --rutenummer bre9
         """
@@ -99,6 +103,16 @@ Examples:
         '--list-routes',
         action='store_true',
         help='List all routes (uses new routes API)'
+    )
+    parser.add_argument(
+        '--list-areas',
+        action='store_true',
+        help='List unique 3-letter area prefixes (optionally filter by --vedlikeholdsansvarlig)'
+    )
+    parser.add_argument(
+        '--debug-prefix',
+        type=str,
+        help='Debug: list vedlikeholdsansvarlig values for segments with this rutenummer prefix'
     )
     parser.add_argument(
         '--get-route',
@@ -988,7 +1002,7 @@ Examples:
             sys.exit(1)
 
     # Handle routes API commands (new)
-    if args.list_routes or args.get_route or args.get_route_segments or args.get_route_links or args.get_segment_lokalid:
+    if args.list_routes or args.list_areas or args.get_route or args.get_route_segments or args.get_route_links or args.get_segment_lokalid:
         # Create configuration
         config = CLIConfig(
             api_url=args.api_url,
@@ -1001,7 +1015,47 @@ Examples:
         client = RoutesClient(config)
 
         try:
-            if args.list_routes:
+            if args.list_areas:
+                response = client.get_route_areas(
+                    vedlikeholdsansvarlig=args.vedlikeholdsansvarlig,
+                    debug=bool(args.vedlikeholdsansvarlig or args.debug_prefix),
+                    debug_prefix=args.debug_prefix
+                )
+                area_list = response.get("areas", [])
+                if args.format == "json":
+                    output_text = format_json({
+                        "vedlikeholdsansvarlig": args.vedlikeholdsansvarlig,
+                        "areas": area_list,
+                        "total": len(area_list),
+                        "debug": response.get("debug"),
+                    })
+                else:
+                    lines = []
+                    if args.vedlikeholdsansvarlig:
+                        lines.append(f"Areas for vedlikeholdsansvarlig: {args.vedlikeholdsansvarlig}")
+                    else:
+                        lines.append("Areas for all routes")
+                    lines.append("-" * 80)
+                    for area in area_list:
+                        lines.append(area)
+                    debug_info = response.get("debug")
+                    if debug_info:
+                        lines.append("")
+                        lines.append("Debug:")
+                        tokens = debug_info.get("tokens") or []
+                        if tokens:
+                            lines.append(f"  tokens: {tokens}")
+                        for entry in debug_info.get("token_counts", []):
+                            lines.append(f"  token \"{entry.get('token')}\": {entry.get('count')}")
+                        prefix = debug_info.get("prefix")
+                        prefix_entries = debug_info.get("prefix_vedlikeholdsansvarlig") or []
+                        if prefix:
+                            lines.append(f"  prefix: {prefix}")
+                            for entry in prefix_entries:
+                                lines.append(f"  vedlikeholdsansvarlig \"{entry.get('value')}\": {entry.get('count')}")
+                    output_text = "\n".join(lines)
+
+            elif args.list_routes:
                 # List routes
                 response = client.get_routes(
                     prefix=args.prefix,
@@ -1014,7 +1068,6 @@ Examples:
                 routes = response.get("routes", [])
                 if routes:
                     # Sort by rutenummer: prefix + numeric part + optional letter
-                    from .find_available_numbers import parse_rutenummer
                     def route_sort_key(route):
                         rutenummer = str(route.get("rutenummer", "")).lower()
                         parsed = parse_rutenummer(rutenummer)

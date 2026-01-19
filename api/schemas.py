@@ -263,3 +263,13 @@ class SegmentByLokalIdResponse(BaseModel):
     """Response for segment lookup by lokalid."""
     segment: Dict[str, Any]
     fotruteinfo_rows: List[Dict[str, Any]]
+
+
+class RouteAreasResponse(BaseModel):
+    """Response for route area prefixes."""
+    areas: List[str]
+    total: int
+    vedlikeholdsansvarlig: Optional[str] = None
+    debug: Optional[Dict[str, Any]] = None
+
+

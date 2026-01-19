@@ -3,13 +3,14 @@ import os
 import secrets
 import traceback
 import json
+import re
 from typing import Optional, Annotated, Dict
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse, RouteLink, RouteLinksResponse, RouteValidationResponse, SegmentByLokalIdResponse
+from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse, RouteLink, RouteLinksResponse, RouteValidationResponse, SegmentByLokalIdResponse, RouteAreasResponse
 from services.route_service import search_places, get_complete_route, get_routes_from_view, get_route_segments_from_view, get_route_links, get_segment_uuid_column, get_segment_by_lokalid
 from services.validators import get_validator_registry
 from collections import defaultdict
@@ -862,6 +863,110 @@ async def get_routes(
             status_code=500,
             detail=f"Error querying routes: {str(e)}"
         )
+
+
+@router.get("/routes/areas", response_model=RouteAreasResponse, responses={500: {"model": ErrorResponse}})
+async def get_route_areas(
+    vedlikeholdsansvarlig: Annotated[Optional[str], Query(description="Filter by organization (loose token match)")] = None,
+    debug: Annotated[bool, Query(description="Include debug token match info")] = False,
+    debug_prefix: Annotated[Optional[str], Query(description="Debug: list vedlikeholdsansvarlig for rutenummer prefix")] = None
+) -> RouteAreasResponse:
+    """
+    Get unique 3-letter area prefixes from route segments.
+
+    If vedlikeholdsansvarlig is provided, it is matched loosely by tokens
+    (all tokens must appear in the string, case-insensitive).
+    """
+    try:
+        with db_connection() as conn:
+            route_schema = get_route_schema(conn)
+            schema_quoted = quote_identifier(route_schema)
+
+            where_conditions = ["fi.rutenummer IS NOT NULL", "fi.rutenummer <> ''"]
+            params = []
+
+            tokens = []
+            if vedlikeholdsansvarlig:
+                tokens = [t for t in re.split(r'\s+', vedlikeholdsansvarlig.strip()) if t]
+                for token in tokens:
+                    where_conditions.append("fi.vedlikeholdsansvarlig ILIKE %s")
+                    params.append(f"%{token}%")
+
+            where_clause = "WHERE " + " AND ".join(where_conditions)
+
+            query = f"""
+                SELECT DISTINCT LOWER(SUBSTRING(fi.rutenummer FROM 1 FOR 3)) as area
+                FROM {schema_quoted}.fotruteinfo fi
+                {where_clause}
+                ORDER BY area
+            """
+
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+
+            areas = [row.get("area") for row in rows if row.get("area")]
+
+            debug_payload = None
+            if vedlikeholdsansvarlig and debug:
+                # Debug: show how many rows matched each token
+                debug_counts = []
+                for token in tokens:
+                    debug_query = f"""
+                        SELECT COUNT(*) as count
+                        FROM {schema_quoted}.fotruteinfo fi
+                        WHERE fi.vedlikeholdsansvarlig ILIKE %s
+                    """
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(debug_query, (f"%{token}%",))
+                        row = cur.fetchone()
+                        debug_counts.append({"token": token, "count": row.get("count", 0) if row else 0})
+                debug_payload = {
+                    "tokens": tokens,
+                    "token_counts": debug_counts,
+                }
+
+            if debug_prefix:
+                prefix = debug_prefix.strip().lower()
+                if prefix:
+                    prefix_query = f"""
+                        SELECT
+                            fi.vedlikeholdsansvarlig as value,
+                            COUNT(*) as count
+                        FROM {schema_quoted}.fotruteinfo fi
+                        WHERE fi.rutenummer ILIKE %s
+                        GROUP BY fi.vedlikeholdsansvarlig
+                        ORDER BY count DESC
+                    """
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(prefix_query, (f"{prefix}%",))
+                        prefix_rows = cur.fetchall()
+                    prefix_entries = []
+                    for row in prefix_rows:
+                        value = row.get("value")
+                        prefix_entries.append({
+                            "value": value if value is not None else "(null)",
+                            "count": int(row.get("count", 0)),
+                        })
+                    if debug_payload is None:
+                        debug_payload = {}
+                    debug_payload["prefix"] = prefix
+                    debug_payload["prefix_vedlikeholdsansvarlig"] = prefix_entries
+
+        return RouteAreasResponse(
+            areas=areas,
+            total=len(areas),
+            vedlikeholdsansvarlig=vedlikeholdsansvarlig,
+            debug=debug_payload
+        )
+    except Exception as e:
+        print(f"Error querying route areas: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error querying route areas: {str(e)}"
+        )
+
 
 
 @router.get("/routes/{rutenummer}", response_model=Route, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
