@@ -37,278 +37,308 @@ def main():
         epilog="""
 Examples:
   # Query routes (new routes API)
-  %(prog)s --list-routes
-  %(prog)s --list-routes --prefix bre
-  %(prog)s --list-routes --prefix bre --format json
-  %(prog)s --list-routes --bbox 10.0,59.0,11.0,60.0
-  %(prog)s --get-route bre10
-  %(prog)s --get-route bre10 --format json
-  %(prog)s --get-route-segments bre10  # Physical route segments
-  %(prog)s --get-route-links bre10      # Routing topology links
-  %(prog)s --get-segment-lokalid 00661e35-bce5-4106-932f-48f6197dfb58
+  %(prog)s routes list
+  %(prog)s routes list --prefix bre
+  %(prog)s routes list --prefix bre --format json
+  %(prog)s routes list --bbox 10.0,59.0,11.0,60.0
+  %(prog)s routes get bre10
+  %(prog)s routes segments bre10  # Physical route segments
+  %(prog)s routes links bre10     # Routing topology links
+  %(prog)s segments get 00661e35-bce5-4106-932f-48f6197dfb58
 
   # Query segments with rutenummer starting with "bre" and vedlikeholdsansvarlig "DNT Oslo"
-  %(prog)s --rutenummer-prefix bre --vedlikeholdsansvarlig "DNT Oslo"
+  %(prog)s segments list --rutenummer-prefix bre --vedlikeholdsansvarlig "DNT Oslo"
 
-  # Query with just rutenummer prefix
-  %(prog)s --rutenummer-prefix bre
-
-  # Get complete route (combines all segments)
-  %(prog)s --complete-route bre10
-
-  # Complete route with JSON output
-  %(prog)s --complete-route bre10 --format json
-
-  # Complete route with geometry
-  %(prog)s --complete-route bre10 --include-geometry
-
-  # Complete route with segment details
-  %(prog)s --complete-route bre10 --include-segments
-
-  # JSON output
-  %(prog)s --rutenummer-prefix bre --vedlikeholdsansvarlig "DNT Oslo" --format json
+  # Complete route
+  %(prog)s complete-route bre10
+  %(prog)s complete-route bre10 --format json
+  %(prog)s complete-route bre10 --include-geometry
+  %(prog)s complete-route bre10 --include-segments
 
   # CSV output with geometry
-  %(prog)s --rutenummer-prefix bre --vedlikeholdsansvarlig "DNT Oslo" --format csv --include-geometry --output results.csv
-
-  # Custom API URL
-  %(prog)s --rutenummer-prefix bre --api-url http://production.example.com/api/v1
-
-  # Pagination
-  %(prog)s --rutenummer-prefix bre --limit 50 --offset 100
+  %(prog)s segments list --rutenummer-prefix bre --format csv --include-geometry --output results.csv
 
   # Find available route numbers
-  %(prog)s --rutenummer-prefix bre --find-available
+  %(prog)s find-available bre
 
   # Validate route segment metadata
-  %(prog)s --validate bre10
-  %(prog)s --validate bre10 --format json
+  %(prog)s validate bre10
+  %(prog)s validate bre10 --format json
 
   # List routes with multilinestring_reason
-  %(prog)s --list-multilinestring-reasons
-  %(prog)s --list-multilinestring-reasons --reason-filter disconnected_components
-  %(prog)s --list-multilinestring-reasons --format json
+  %(prog)s routes multilinestring-reasons
+  %(prog)s routes multilinestring-reasons --reason-filter disconnected_components
 
   # List areas (3-letter prefixes) for an organization
-  %(prog)s --list-areas --vedlikeholdsansvarlig "DNT Oslo"
-  %(prog)s --list-areas --debug-prefix fem
+  %(prog)s routes areas --vedlikeholdsansvarlig "DNT Oslo"
+  %(prog)s routes areas --debug-prefix fem
 
   # Test ruteinfopunkt lookup (debug)
-  %(prog)s --test-ruteinfopunkt 7.710764899 61.809237843 --rutenummer bre9
+  %(prog)s debug ruteinfopunkt 7.710764899 61.809237843 --rutenummer-prefix bre
         """
     )
 
-    # Routes API commands (new)
-    parser.add_argument(
-        '--list-routes',
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument(
+        '--api-url',
+        type=str,
+        help='API base URL (default: http://localhost:8000/api/v1 or STIFLYT_API_URL env var)'
+    )
+    config_parser.add_argument(
+        '--username',
+        type=str,
+        help='HTTP Basic Auth username (or STIFLYT_USERNAME env var)'
+    )
+    config_parser.add_argument(
+        '--password',
+        type=str,
+        help='HTTP Basic Auth password (or STIFLYT_PASSWORD env var)'
+    )
+    config_parser.add_argument(
+        '--timeout',
+        type=int,
+        default=30,
+        help='Request timeout in seconds (default: 30)'
+    )
+    config_parser.add_argument(
+        '--verbose',
         action='store_true',
-        help='List all routes (uses new routes API)'
-    )
-    parser.add_argument(
-        '--list-areas',
-        action='store_true',
-        help='List unique 3-letter area prefixes (optionally filter by --vedlikeholdsansvarlig)'
-    )
-    parser.add_argument(
-        '--debug-prefix',
-        type=str,
-        help='Debug: list vedlikeholdsansvarlig values for segments with this rutenummer prefix'
-    )
-    parser.add_argument(
-        '--get-route',
-        type=str,
-        metavar='RUTENUMMER',
-        help='Get a single route by rutenummer (uses new routes API)'
-    )
-    parser.add_argument(
-        '--get-route-segments',
-        type=str,
-        metavar='RUTENUMMER',
-        help='Get physical route segments for a route (from route_segments view). Shows individual segments with geometry and length.'
-    )
-    parser.add_argument(
-        '--get-route-links',
-        type=str,
-        metavar='RUTENUMMER',
-        help='Get routing links for a route (from links table). Links represent routing topology between junctions and may combine multiple segments. Useful for navigation/routing.'
-    )
-    parser.add_argument(
-        '--get-segment-lokalid',
-        type=str,
-        metavar='LOKALID',
-        help='Get a single segment by lokalid (stable UUID) with all fields'
-    )
-    parser.add_argument(
-        '--prefix',
-        type=str,
-        help='Filter routes by prefix (e.g., "bre", "jot", "ron") - used with --list-routes'
-    )
-    parser.add_argument(
-        '--bbox',
-        type=str,
-        help='Bounding box as "xmin,ymin,xmax,ymax" in WGS84 - used with --list-routes'
+        help='Show verbose error messages'
     )
 
-    # Complete route mode
-    parser.add_argument(
-        '--complete-route',
-        type=str,
-        metavar='RUTENUMMER',
-        help='Get complete route by combining all segments with the same rutenummer (e.g., "bre10")'
-    )
-
-    # Filters (at least one required for segment query mode)
-    parser.add_argument(
-        '--rutenummer-prefix',
-        type=str,
-        help='Filter by route number prefix (e.g., "bre")'
-    )
-    parser.add_argument(
-        '--vedlikeholdsansvarlig',
-        type=str,
-        help='Filter by organization (e.g., "DNT Oslo")'
-    )
-
-    # Output options
-    parser.add_argument(
+    output_parser = argparse.ArgumentParser(add_help=False)
+    output_parser.add_argument(
         '--format',
         choices=['json', 'table', 'csv', 'yaml'],
         default='table',
         help='Output format (default: table)'
     )
-    parser.add_argument(
-        '--export-registry',
-        nargs='+',
-        metavar='AREA',
-        help='Export routes for given area(s) (e.g., bre jot ron) as YAML registry format. Queries database directly.'
-    )
-    parser.add_argument(
-        '--include-geometry',
-        action='store_true',
-        help='Include GeoJSON geometry in response (only for JSON format)'
-    )
-    parser.add_argument(
-        '--include-segments',
-        action='store_true',
-        help='Include individual segment details (for complete route mode)'
-    )
-    parser.add_argument(
-        '--no-endpoint-names',
-        action='store_true',
-        help='Skip lookup of from/to place names (for complete route mode)'
-    )
-    parser.add_argument(
+    output_parser.add_argument(
         '--output',
         type=Path,
         help='Write output to file instead of stdout'
     )
-    parser.add_argument(
+    output_parser.add_argument(
+        '--include-geometry',
+        action='store_true',
+        help='Include GeoJSON geometry in response where supported'
+    )
+    output_parser.add_argument(
         '--no-summary',
         action='store_true',
         help='Do not show summary information (table format only)'
     )
 
-    # Pagination
-    parser.add_argument(
+    format_parser = argparse.ArgumentParser(add_help=False)
+    format_parser.add_argument(
+        '--format',
+        choices=['json', 'table', 'csv', 'yaml'],
+        default='table',
+        help='Output format (default: table)'
+    )
+
+    output_file_parser = argparse.ArgumentParser(add_help=False)
+    output_file_parser.add_argument(
+        '--output',
+        type=Path,
+        help='Write output to file instead of stdout'
+    )
+    output_file_parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Show verbose error messages'
+    )
+
+    pagination_parser = argparse.ArgumentParser(add_help=False)
+    pagination_parser.add_argument(
         '--limit',
         type=int,
         default=100,
         help='Maximum number of results (default: 100, max: 1000)'
     )
-    parser.add_argument(
+    pagination_parser.add_argument(
         '--offset',
         type=int,
         default=0,
         help='Offset for pagination (default: 0)'
     )
 
-    # Configuration
-    parser.add_argument(
-        '--api-url',
-        type=str,
-        help='API base URL (default: http://localhost:8000/api/v1 or STIFLYT_API_URL env var)'
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    routes_parser = subparsers.add_parser('routes', help='Routes API operations')
+    routes_subparsers = routes_parser.add_subparsers(dest='routes_command', required=True)
+
+    routes_list_parser = routes_subparsers.add_parser(
+        'list',
+        parents=[config_parser, output_parser, pagination_parser],
+        help='List routes'
     )
-    parser.add_argument(
-        '--username',
+    routes_list_parser.add_argument(
+        '--prefix',
         type=str,
-        help='HTTP Basic Auth username (or STIFLYT_USERNAME env var)'
+        help='Filter routes by prefix (e.g., "bre", "jot", "ron")'
     )
-    parser.add_argument(
-        '--password',
+    routes_list_parser.add_argument(
+        '--bbox',
         type=str,
-        help='HTTP Basic Auth password (or STIFLYT_PASSWORD env var)'
+        help='Bounding box as "xmin,ymin,xmax,ymax" in WGS84'
     )
-    parser.add_argument(
-        '--timeout',
-        type=int,
-        default=30,
-        help='Request timeout in seconds (default: 30)'
+    routes_list_parser.add_argument(
+        '--vedlikeholdsansvarlig',
+        type=str,
+        help='Filter by organization (e.g., "DNT Oslo")'
     )
 
-    # Verbosity
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Show verbose error messages'
+    routes_get_parser = routes_subparsers.add_parser(
+        'get',
+        parents=[config_parser, output_parser],
+        help='Get a single route by rutenummer'
     )
+    routes_get_parser.add_argument('rutenummer', metavar='RUTENUMMER')
 
-    # Find available numbers
-    parser.add_argument(
-        '--find-available',
-        action='store_true',
-        help='Find available route numbers for the given prefix (requires --rutenummer-prefix)'
+    routes_segments_parser = routes_subparsers.add_parser(
+        'segments',
+        parents=[config_parser, output_parser],
+        help='Get physical route segments for a route'
     )
+    routes_segments_parser.add_argument('rutenummer', metavar='RUTENUMMER')
 
-    # Validation
-    parser.add_argument(
-        '--validate',
+    routes_links_parser = routes_subparsers.add_parser(
+        'links',
+        parents=[config_parser, output_parser],
+        help='Get routing links for a route'
+    )
+    routes_links_parser.add_argument('rutenummer', metavar='RUTENUMMER')
+
+    routes_areas_parser = routes_subparsers.add_parser(
+        'areas',
+        parents=[config_parser, output_parser],
+        help='List unique 3-letter area prefixes'
+    )
+    routes_areas_parser.add_argument(
+        '--vedlikeholdsansvarlig',
         type=str,
-        metavar='RUTENUMMER',
-        help='Validate route segment metadata for consistency and correctness'
+        help='Filter by organization (e.g., "DNT Oslo")'
     )
-    parser.add_argument(
-        '--changeset-report',
-        action='store_true',
-        help='Output changeset-style report for inconsistent metadata (requires --validate)'
+    routes_areas_parser.add_argument(
+        '--debug-prefix',
+        type=str,
+        help='Debug: list vedlikeholdsansvarlig values for segments with this rutenummer prefix'
     )
-    parser.add_argument(
-        '--list-multilinestring-reasons',
-        action='store_true',
-        help='List all routes with their multilinestring_reason values from route_continuous_geometries'
+
+    routes_reasons_parser = routes_subparsers.add_parser(
+        'multilinestring-reasons',
+        parents=[format_parser],
+        help='List routes with multilinestring_reason values'
     )
-    parser.add_argument(
+    routes_reasons_parser.add_argument(
         '--reason-filter',
         type=str,
         metavar='REASON',
-        help='Filter routes by multilinestring_reason value (used with --list-multilinestring-reasons). Valid values: single_linestring, link_is_multilinestring, loop_or_branch, precision_gap, disconnected_components, traversal_issue'
+        help='Filter routes by multilinestring_reason value (valid values documented in help output)'
     )
 
-    # Debug/test options
-    parser.add_argument(
-        '--test-ruteinfopunkt',
-        nargs=2,
-        metavar=('LON', 'LAT'),
-        help='Test ruteinfopunkt lookup for given coordinates (lon lat)'
+    segments_parser = subparsers.add_parser('segments', help='Segment queries (legacy segments API)')
+    segments_subparsers = segments_parser.add_subparsers(dest='segments_command', required=True)
+
+    segments_list_parser = segments_subparsers.add_parser(
+        'list',
+        parents=[config_parser, output_parser, pagination_parser],
+        help='List segments with filters'
     )
-    parser.add_argument(
+    segments_list_parser.add_argument(
+        '--rutenummer-prefix',
+        type=str,
+        help='Filter by route number prefix (e.g., "bre")'
+    )
+    segments_list_parser.add_argument(
+        '--vedlikeholdsansvarlig',
+        type=str,
+        help='Filter by organization (e.g., "DNT Oslo")'
+    )
+
+    segments_get_parser = segments_subparsers.add_parser(
+        'get',
+        parents=[config_parser, output_parser],
+        help='Get a single segment by lokalid (stable UUID)'
+    )
+    segments_get_parser.add_argument('lokalid', metavar='LOKALID')
+
+    complete_route_parser = subparsers.add_parser(
+        'complete-route',
+        parents=[config_parser, output_parser],
+        help='Get complete route by combining all segments with the same rutenummer'
+    )
+    complete_route_parser.add_argument('rutenummer', metavar='RUTENUMMER')
+    complete_route_parser.add_argument(
+        '--include-segments',
+        action='store_true',
+        help='Include individual segment details'
+    )
+    complete_route_parser.add_argument(
+        '--no-endpoint-names',
+        action='store_true',
+        help='Skip lookup of from/to place names'
+    )
+
+    validate_parser = subparsers.add_parser(
+        'validate',
+        parents=[config_parser, format_parser],
+        help='Validate route segment metadata for consistency and correctness'
+    )
+    validate_parser.add_argument('rutenummer', metavar='RUTENUMMER')
+    validate_parser.add_argument(
+        '--changeset-report',
+        action='store_true',
+        help='Output changeset-style report for inconsistent metadata'
+    )
+
+    export_registry_parser = subparsers.add_parser(
+        'export-registry',
+        parents=[output_file_parser],
+        help='Export routes for given area(s) as YAML registry format'
+    )
+    export_registry_parser.add_argument(
+        'areas',
+        nargs='+',
+        metavar='AREA',
+        help='Area prefix(es), e.g., bre jot ron'
+    )
+
+    find_available_parser = subparsers.add_parser(
+        'find-available',
+        parents=[format_parser, output_file_parser],
+        help='Find available route numbers for the given prefix'
+    )
+    find_available_parser.add_argument('rutenummer_prefix', metavar='PREFIX')
+
+    debug_parser = subparsers.add_parser('debug', help='Debug/test tools')
+    debug_subparsers = debug_parser.add_subparsers(dest='debug_command', required=True)
+
+    debug_ruteinfopunkt_parser = debug_subparsers.add_parser(
+        'ruteinfopunkt',
+        parents=[format_parser],
+        help='Test ruteinfopunkt lookup for given coordinates'
+    )
+    debug_ruteinfopunkt_parser.add_argument('lon', type=float, metavar='LON')
+    debug_ruteinfopunkt_parser.add_argument('lat', type=float, metavar='LAT')
+    debug_ruteinfopunkt_parser.add_argument(
+        '--rutenummer-prefix',
+        type=str,
+        help='Filter by route number prefix (e.g., "bre")'
+    )
+    debug_ruteinfopunkt_parser.add_argument(
         '--test-radius',
         type=float,
         default=500.0,
-        help='Search radius in meters for test-ruteinfopunkt (default: 500.0)'
+        help='Search radius in meters (default: 500.0)'
     )
 
     args = parser.parse_args()
 
-    if args.changeset_report and not args.validate:
-        parser.error("--changeset-report requires --validate")
-
-    # Handle test-ruteinfopunkt mode
-    if args.test_ruteinfopunkt:
-        try:
-            lon = float(args.test_ruteinfopunkt[0])
-            lat = float(args.test_ruteinfopunkt[1])
-        except ValueError:
-            parser.error("--test-ruteinfopunkt requires valid numeric coordinates (lon lat)")
+    if args.command == 'debug' and args.debug_command == 'ruteinfopunkt':
+        lon = args.lon
+        lat = args.lat
 
         from services.database import db_connection
         from services.route_endpoints import lookup_name_in_ruteinfopunkt, lookup_name_in_stedsnavn, lookup_name_in_anchor_nodes
@@ -430,8 +460,7 @@ Examples:
 
         sys.exit(0)
 
-    # Handle list multilinestring reasons mode
-    if args.list_multilinestring_reasons:
+    if args.command == 'routes' and args.routes_command == 'multilinestring-reasons':
         from services.database import db_connection, ROUTE_SCHEMA, quote_identifier, validate_schema_name
         from psycopg.rows import dict_row
 
@@ -631,9 +660,8 @@ Examples:
 
         sys.exit(0)
 
-    # Handle validation mode
-    if args.validate:
-        rutenummer = args.validate
+    if args.command == 'validate':
+        rutenummer = args.rutenummer
         config = CLIConfig(
             api_url=args.api_url,
             username=args.username,
@@ -782,15 +810,14 @@ Examples:
 
         sys.exit(0)
 
-    # Handle export-registry mode
-    if args.export_registry:
+    if args.command == 'export-registry':
         from services.database import db_connection, get_route_schema, quote_identifier
         from services.route_endpoints import extract_route_endpoints, lookup_endpoint_name
         from collections import defaultdict
         from psycopg.rows import dict_row
 
         # Validate area prefixes
-        areas = [area.lower() for area in args.export_registry]
+        areas = [area.lower() for area in args.areas]
         for area in areas:
             if len(area) != 3 or not area.isalpha():
                 parser.error(f"Invalid area prefix: {area}. Must be exactly 3 letters (e.g., 'bre')")
@@ -970,14 +997,9 @@ Examples:
                 traceback.print_exc()
             sys.exit(1)
 
-    # Handle find-available mode
-    if args.find_available:
-        if not args.rutenummer_prefix:
-            parser.error("--find-available requires --rutenummer-prefix")
-
-        # Validate prefix format (3 letters)
+    if args.command == 'find-available':
         if len(args.rutenummer_prefix) != 3 or not args.rutenummer_prefix.isalpha():
-            parser.error("--rutenummer-prefix must be exactly 3 letters (e.g., 'bre')")
+            parser.error("PREFIX must be exactly 3 letters (e.g., 'bre')")
 
         try:
             result = analyze_available_numbers(args.rutenummer_prefix.lower())
@@ -1001,8 +1023,7 @@ Examples:
                 traceback.print_exc()
             sys.exit(1)
 
-    # Handle routes API commands (new)
-    if args.list_routes or args.list_areas or args.get_route or args.get_route_segments or args.get_route_links or args.get_segment_lokalid:
+    if args.command == 'routes' and args.routes_command in {'list', 'get', 'segments', 'links', 'areas'}:
         # Create configuration
         config = CLIConfig(
             api_url=args.api_url,
@@ -1015,7 +1036,7 @@ Examples:
         client = RoutesClient(config)
 
         try:
-            if args.list_areas:
+            if args.routes_command == 'areas':
                 response = client.get_route_areas(
                     vedlikeholdsansvarlig=args.vedlikeholdsansvarlig,
                     debug=bool(args.vedlikeholdsansvarlig or args.debug_prefix),
@@ -1055,7 +1076,7 @@ Examples:
                                 lines.append(f"  vedlikeholdsansvarlig \"{entry.get('value')}\": {entry.get('count')}")
                     output_text = "\n".join(lines)
 
-            elif args.list_routes:
+            elif args.routes_command == 'list':
                 # List routes
                 response = client.get_routes(
                     prefix=args.prefix,
@@ -1092,10 +1113,10 @@ Examples:
                     output_lines.append(format_routes_table(routes, show_geometry=args.include_geometry))
                     output_text = "\n".join(output_lines)
 
-            elif args.get_route:
+            elif args.routes_command == 'get':
                 # Get single route
                 route = client.get_route(
-                    rutenummer=args.get_route,
+                    rutenummer=args.rutenummer,
                     include_geometry=args.include_geometry
                 )
 
@@ -1108,10 +1129,10 @@ Examples:
                     # Table output (default)
                     output_text = format_routes_table([route], show_geometry=args.include_geometry)
 
-            elif args.get_route_segments:
+            elif args.routes_command == 'segments':
                 # Get route segments
                 response = client.get_route_segments(
-                    rutenummer=args.get_route_segments,
+                    rutenummer=args.rutenummer,
                     include_geometry=args.include_geometry
                 )
 
@@ -1140,10 +1161,10 @@ Examples:
                     else:
                         output_text = format_table(formatted_segments, show_geometry=args.include_geometry)
 
-            elif args.get_route_links:
+            elif args.routes_command == 'links':
                 # Get route links
                 response = client.get_route_links(
-                    rutenummer=args.get_route_links,
+                    rutenummer=args.rutenummer,
                     include_geometry=args.include_geometry
                 )
 
@@ -1174,7 +1195,7 @@ Examples:
                     else:
                         # Table format for links
                         lines = []
-                        lines.append(f"Routing Links for Route: {response.get('rutenummer', args.get_route_links)}")
+                        lines.append(f"Routing Links for Route: {response.get('rutenummer', args.rutenummer)}")
                         lines.append(f"Total: {response.get('total', len(links))} links")
                         lines.append("")
 
@@ -1226,16 +1247,6 @@ Examples:
 
                         output_text = "\n".join(lines)
 
-            elif args.get_segment_lokalid:
-                # Get segment by lokalid
-                response = client.get_segment_by_lokalid(
-                    lokalid=args.get_segment_lokalid,
-                    include_geometry=args.include_geometry
-                )
-
-                # Format output (JSON only for complex response)
-                output_text = format_json(response)
-
             # Write output
             if args.output:
                 try:
@@ -1274,12 +1285,63 @@ Examples:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
 
-    # Handle complete route mode
-    if args.complete_route:
-        # Complete route mode - validate arguments
-        if args.rutenummer_prefix or args.vedlikeholdsansvarlig:
-            parser.error("--complete-route cannot be used with --rutenummer-prefix or --vedlikeholdsansvarlig")
+    if args.command == 'segments' and args.segments_command == 'get':
+        # Create configuration
+        config = CLIConfig(
+            api_url=args.api_url,
+            username=args.username,
+            password=args.password,
+            timeout=args.timeout
+        )
 
+        # Create routes API client
+        client = RoutesClient(config)
+
+        try:
+            response = client.get_segment_by_lokalid(
+                lokalid=args.lokalid,
+                include_geometry=args.include_geometry
+            )
+            output_text = format_json(response)
+
+            if args.output:
+                try:
+                    with open(args.output, 'w', encoding='utf-8') as f:
+                        f.write(output_text)
+                    if args.format != "json" and not args.no_summary:
+                        print(f"Results written to {args.output}", file=sys.stderr)
+                except Exception as e:
+                    print(f"Error writing to file {args.output}: {e}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print(output_text)
+
+            sys.exit(0)
+
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except ConnectionError as e:
+            print(f"Connection error: {e}", file=sys.stderr)
+            if args.verbose:
+                print(f"API URL: {config.api_url}", file=sys.stderr)
+            sys.exit(1)
+        except AuthenticationError as e:
+            print(f"Authentication error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except APIResponseError as e:
+            if e.status_code == 404:
+                print(f"Route not found: {e}", file=sys.stderr)
+            else:
+                print(f"API error: {e}", file=sys.stderr)
+            if args.verbose and e.response:
+                print(f"Response: {e.response}", file=sys.stderr)
+            sys.exit(1)
+        except APIError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if args.command == 'complete-route':
         # Create configuration
         config = CLIConfig(
             api_url=args.api_url,
@@ -1294,7 +1356,7 @@ Examples:
         # Query API for complete route
         try:
             route = client.get_complete_route(
-                rutenummer=args.complete_route,
+                rutenummer=args.rutenummer,
                 include_geometry=args.include_geometry,
                 include_segments=args.include_segments,
                 include_endpoint_names=not args.no_endpoint_names
@@ -1347,91 +1409,91 @@ Examples:
         # Exit successfully
         sys.exit(0)
 
-    # Segment query mode - validate that at least one filter is provided
-    if not args.rutenummer_prefix and not args.vedlikeholdsansvarlig:
-        parser.error("At least one filter must be provided: --rutenummer-prefix or --vedlikeholdsansvarlig")
+    if args.command == 'segments' and args.segments_command == 'list':
+        if not args.rutenummer_prefix and not args.vedlikeholdsansvarlig:
+            parser.error("At least one filter must be provided: --rutenummer-prefix or --vedlikeholdsansvarlig")
 
-    # Validate limit
-    if args.limit < 1 or args.limit > 1000:
-        parser.error("--limit must be between 1 and 1000")
+        # Validate limit
+        if args.limit < 1 or args.limit > 1000:
+            parser.error("--limit must be between 1 and 1000")
 
-    # Validate offset
-    if args.offset < 0:
-        parser.error("--offset must be >= 0")
+        # Validate offset
+        if args.offset < 0:
+            parser.error("--offset must be >= 0")
 
-    # Create configuration
-    config = CLIConfig(
-        api_url=args.api_url,
-        username=args.username,
-        password=args.password,
-        timeout=args.timeout
-    )
-
-    # Create API client
-    client = RouteSegmentsClient(config)
-
-    # Query API
-    try:
-        response = client.get_segments(
-            rutenummer_prefix=args.rutenummer_prefix,
-            vedlikeholdsansvarlig=args.vedlikeholdsansvarlig,
-            limit=args.limit,
-            offset=args.offset,
-            include_geometry=args.include_geometry
+        # Create configuration
+        config = CLIConfig(
+            api_url=args.api_url,
+            username=args.username,
+            password=args.password,
+            timeout=args.timeout
         )
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except ConnectionError as e:
-        print(f"Connection error: {e}", file=sys.stderr)
-        if args.verbose:
-            print(f"API URL: {config.api_url}", file=sys.stderr)
-        sys.exit(1)
-    except AuthenticationError as e:
-        print(f"Authentication error: {e}", file=sys.stderr)
-        sys.exit(1)
-    except APIResponseError as e:
-        print(f"API error: {e}", file=sys.stderr)
-        if args.verbose and e.response:
-            print(f"Response: {e.response}", file=sys.stderr)
-        sys.exit(1)
-    except APIError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
 
-    # Format output
-    segments = response.get("segments", [])
-    output_lines = []
+        # Create API client
+        client = RouteSegmentsClient(config)
 
-    if args.format == "json":
-        # JSON output
-        output_lines.append(format_json(response))
-    elif args.format == "csv":
-        # CSV output
-        output_lines.append(format_csv(segments, include_geometry=args.include_geometry))
-    else:
-        # Table output (default)
-        if not args.no_summary:
-            output_lines.append(format_text_summary(response))
-        output_lines.append(format_table(segments, show_geometry=args.include_geometry))
-
-    output_text = "\n".join(output_lines)
-
-    # Write output
-    if args.output:
+        # Query API
         try:
-            with open(args.output, 'w', encoding='utf-8') as f:
-                f.write(output_text)
-            if not args.format == "json" and not args.no_summary:
-                print(f"Results written to {args.output}", file=sys.stderr)
-        except Exception as e:
-            print(f"Error writing to file {args.output}: {e}", file=sys.stderr)
+            response = client.get_segments(
+                rutenummer_prefix=args.rutenummer_prefix,
+                vedlikeholdsansvarlig=args.vedlikeholdsansvarlig,
+                limit=args.limit,
+                offset=args.offset,
+                include_geometry=args.include_geometry
+            )
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
-    else:
-        print(output_text)
+        except ConnectionError as e:
+            print(f"Connection error: {e}", file=sys.stderr)
+            if args.verbose:
+                print(f"API URL: {config.api_url}", file=sys.stderr)
+            sys.exit(1)
+        except AuthenticationError as e:
+            print(f"Authentication error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except APIResponseError as e:
+            print(f"API error: {e}", file=sys.stderr)
+            if args.verbose and e.response:
+                print(f"Response: {e.response}", file=sys.stderr)
+            sys.exit(1)
+        except APIError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
 
-    # Exit successfully
-    sys.exit(0)
+        # Format output
+        segments = response.get("segments", [])
+        output_lines = []
+
+        if args.format == "json":
+            # JSON output
+            output_lines.append(format_json(response))
+        elif args.format == "csv":
+            # CSV output
+            output_lines.append(format_csv(segments, include_geometry=args.include_geometry))
+        else:
+            # Table output (default)
+            if not args.no_summary:
+                output_lines.append(format_text_summary(response))
+            output_lines.append(format_table(segments, show_geometry=args.include_geometry))
+
+        output_text = "\n".join(output_lines)
+
+        # Write output
+        if args.output:
+            try:
+                with open(args.output, 'w', encoding='utf-8') as f:
+                    f.write(output_text)
+                if not args.format == "json" and not args.no_summary:
+                    print(f"Results written to {args.output}", file=sys.stderr)
+            except Exception as e:
+                print(f"Error writing to file {args.output}: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print(output_text)
+
+        # Exit successfully
+        sys.exit(0)
 
 
 if __name__ == '__main__':
