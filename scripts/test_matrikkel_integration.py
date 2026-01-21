@@ -8,6 +8,9 @@ This script tests:
 4. Performance and efficiency of batch operations
 """
 
+# Prevent pytest from collecting this script as a test module.
+__test__ = False
+
 import sys
 import os
 import time

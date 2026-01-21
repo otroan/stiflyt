@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
-import type { AnchorNodeInfo, PlacenameCandidate } from '../types';
+import type { AnchorNodeInfo, PlacenameCandidate, FacilityCandidate } from '../types';
 import './AnchorNameDialog.css';
 
 interface AnchorNameDialogProps {
   isOpen: boolean;
   anchor: AnchorNodeInfo | null;
   candidates: PlacenameCandidate[];
+  facilities: FacilityCandidate[];
   selectedIndex: number | null;
   manualName: string;
   onSelectCandidate: (index: number | null) => void;
@@ -18,6 +19,7 @@ export function AnchorNameDialog({
   isOpen,
   anchor,
   candidates,
+  facilities,
   selectedIndex,
   manualName,
   onSelectCandidate,
@@ -73,6 +75,23 @@ export function AnchorNameDialog({
                     {candidate.name} · {candidate.source_type} · {distance}
                   </span>
                 </label>
+              );
+            })}
+          </div>
+          <div className="anchor-name-dialog__section">
+            <div className="anchor-name-dialog__section-title">Nærliggende fasiliteter</div>
+            {facilities.length === 0 && (
+              <div className="anchor-name-dialog__empty">Ingen ruteinfopunkt i radiusen.</div>
+            )}
+            {facilities.map((facility: FacilityCandidate, idx: number) => {
+              const distance =
+                typeof facility.distance_meters === 'number'
+                  ? `${facility.distance_meters.toFixed(1)} m`
+                  : 'ukjent';
+              return (
+                <div key={`${facility.source_id ?? 'facility'}-${idx}`} className="anchor-name-dialog__option-label">
+                  {facility.name} · {facility.tilrettelegging || 'ukjent type'} · {distance}
+                </div>
               );
             })}
           </div>

@@ -32,12 +32,27 @@ def ensure_operational_schema(conn) -> None:
                 source_type TEXT NOT NULL,
                 source_id TEXT NULL,
                 distance_meters DOUBLE PRECISION NULL,
+                anchor_lon DOUBLE PRECISION NULL,
+                anchor_lat DOUBLE PRECISION NULL,
                 validated_by TEXT NULL,
                 validated_at TIMESTAMPTZ NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 UNIQUE (anchor_node_id, rutenummer_key)
             );
+            """
+        )
+
+        cur.execute(
+            f"""
+            ALTER TABLE {schema_quoted}.endpoint_names
+            ADD COLUMN IF NOT EXISTS anchor_lon DOUBLE PRECISION;
+            """
+        )
+        cur.execute(
+            f"""
+            ALTER TABLE {schema_quoted}.endpoint_names
+            ADD COLUMN IF NOT EXISTS anchor_lat DOUBLE PRECISION;
             """
         )
 
@@ -74,6 +89,8 @@ def upsert_endpoint_name(
     source_id: Optional[str] = None,
     distance_meters: Optional[float] = None,
     validated_by: Optional[str] = None,
+    anchor_lon: Optional[float] = None,
+    anchor_lat: Optional[float] = None,
 ) -> Dict:
     """Upsert validated endpoint name."""
     ensure_operational_schema(conn)
@@ -94,16 +111,20 @@ def upsert_endpoint_name(
                 source_type,
                 source_id,
                 distance_meters,
+                anchor_lon,
+                anchor_lat,
                 validated_by,
                 validated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (anchor_node_id, rutenummer_key)
             DO UPDATE SET
                 name = EXCLUDED.name,
                 source_type = EXCLUDED.source_type,
                 source_id = EXCLUDED.source_id,
                 distance_meters = EXCLUDED.distance_meters,
+                anchor_lon = EXCLUDED.anchor_lon,
+                anchor_lat = EXCLUDED.anchor_lat,
                 validated_by = EXCLUDED.validated_by,
                 validated_at = EXCLUDED.validated_at,
                 updated_at = NOW()
@@ -114,6 +135,8 @@ def upsert_endpoint_name(
                 source_type,
                 source_id,
                 distance_meters,
+                anchor_lon,
+                anchor_lat,
                 validated_by,
                 validated_at,
                 created_at,
@@ -126,6 +149,8 @@ def upsert_endpoint_name(
                 source_type,
                 source_id,
                 distance_meters,
+                anchor_lon,
+                anchor_lat,
                 validated_by,
                 now,
             ),

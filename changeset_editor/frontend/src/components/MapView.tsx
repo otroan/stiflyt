@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest } from '../types';
+import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest, FacilityCandidate } from '../types';
 import type { GeoJSON } from 'geojson';
 import { SnapManager } from '../utils/snap';
 import { api, isAbortError } from '../api/client';
@@ -216,6 +216,7 @@ export function MapView({
   const endpointsLayerRef = useRef<L.LayerGroup | null>(null);
   const [anchorNodes, setAnchorNodes] = useState<AnchorNodeInfo[]>([]);
   const [anchorCandidates, setAnchorCandidates] = useState<PlacenameCandidate[]>([]);
+  const [anchorFacilities, setAnchorFacilities] = useState<FacilityCandidate[]>([]);
   const [selectedAnchor, setSelectedAnchor] = useState<AnchorNodeInfo | null>(null);
   const [anchorDialogOpen, setAnchorDialogOpen] = useState(false);
   const [anchorSelectedIndex, setAnchorSelectedIndex] = useState<number | null>(null);
@@ -918,12 +919,14 @@ export function MapView({
     setSelectedAnchor(anchor);
     setAnchorDialogOpen(true);
     setAnchorCandidates([]);
+    setAnchorFacilities([]);
     setAnchorSelectedIndex(null);
     setAnchorManualName('');
 
     api.getAnchorPlacenames(anchor.anchor_node_id, anchorSearchRadius, 10)
       .then((data) => {
         setAnchorCandidates(data.candidates || []);
+        setAnchorFacilities(data.facilities || []);
       })
       .catch((error) => {
         const appError = handleApiError(error, 'Load Placenames');
@@ -935,6 +938,7 @@ export function MapView({
     setAnchorDialogOpen(false);
     setSelectedAnchor(null);
     setAnchorCandidates([]);
+    setAnchorFacilities([]);
     setAnchorSelectedIndex(null);
     setAnchorManualName('');
   };
@@ -1746,6 +1750,7 @@ export function MapView({
         isOpen={anchorDialogOpen}
         anchor={selectedAnchor}
         candidates={anchorCandidates}
+        facilities={anchorFacilities}
         selectedIndex={anchorSelectedIndex}
         manualName={anchorManualName}
         onSelectCandidate={setAnchorSelectedIndex}

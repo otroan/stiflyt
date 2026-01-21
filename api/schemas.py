@@ -131,11 +131,27 @@ class PlacenameCandidate(BaseModel):
     tilrettelegging: Optional[str] = None
 
 
+class FacilityCandidate(BaseModel):
+    """Facility candidate from ruteinfopunkt."""
+    name: str
+    source_id: Optional[str] = None
+    distance_meters: Optional[float] = None
+    tilrettelegging: Optional[str] = None
+
+
+class AnchorFacilitiesResponse(BaseModel):
+    """Facilities near an anchor node."""
+    anchor_node_id: int
+    radius_meters: float
+    facilities: List[FacilityCandidate]
+
+
 class PlacenameCandidatesResponse(BaseModel):
     """Response for placename candidates."""
     anchor_node_id: int
     radius_meters: float
     candidates: List[PlacenameCandidate]
+    facilities: List[FacilityCandidate]
 
 
 class AnchorNodeName(BaseModel):

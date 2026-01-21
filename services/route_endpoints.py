@@ -1,6 +1,6 @@
 """
 Service for looking up route endpoint names (start and end points).
-Looks up names from ruteinfopunkt in turrutebasen first, then falls back to stedsnavn database.
+Uses stedsnavn for names; ruteinfopunkt is used for facility signals.
 """
 import json
 import re
@@ -175,14 +175,14 @@ def lookup_name_in_ruteinfopunkt(conn, point_lon: float, point_lat: float, ruten
     return None
 
 
-def list_ruteinfopunkt_candidates(
+def list_ruteinfopunkt_facilities(
     conn,
     point_lon: float,
     point_lat: float,
     search_radius_meters: float = 500.0,
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
-    """List candidate names from ruteinfopunkt near a point."""
+    """List facility candidates from ruteinfopunkt near a point."""
     from .database import ROUTE_SCHEMA, quote_identifier, validate_schema_name
 
     if not validate_schema_name(ROUTE_SCHEMA):
@@ -328,14 +328,8 @@ def list_placename_candidates(
     search_radius_meters: float = 500.0,
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
-    """List nearby placename candidates from multiple sources."""
-    candidates: List[Dict[str, Any]] = []
-    candidates.extend(
-        list_ruteinfopunkt_candidates(conn, point_lon, point_lat, search_radius_meters, limit)
-    )
-    candidates.extend(
-        list_stedsnavn_candidates(conn, point_lon, point_lat, search_radius_meters, limit)
-    )
+    """List nearby placename candidates from stedsnavn."""
+    candidates = list_stedsnavn_candidates(conn, point_lon, point_lat, search_radius_meters, limit)
     candidates.sort(key=lambda item: item.get("distance_meters") or 0)
     return candidates[:limit]
 
@@ -510,10 +504,8 @@ def lookup_name_in_anchor_nodes(conn, point_lon: float, point_lat: float, search
 def lookup_endpoint_name(conn, point_lon: float, point_lat: float, rutenummer: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Look up a name for a route endpoint using hierarchical lookup:
-    1. First try anchor_nodes (already has names found via stedsnavn/ruteinfopunkt)
-    2. Then check ruteinfopunkt directly
-    3. Finally check stedsnavn directly
-    4. Prefer ruteinfopunkt over stedsnavn if both are found
+    1. First try anchor_nodes (already has names found via stedsnavn)
+    2. Then check stedsnavn directly
 
     Args:
         conn: Database connection
@@ -532,17 +524,7 @@ def lookup_endpoint_name(conn, point_lon: float, point_lat: float, rutenummer: O
     if anchor_node_result:
         return anchor_node_result
 
-    # Check both ruteinfopunkt and stedsnavn directly
-    ruteinfopunkt_result = lookup_name_in_ruteinfopunkt(conn, point_lon, point_lat, rutenummer, search_radius_meters=search_radius)
     stedsnavn_result = lookup_name_in_stedsnavn(conn, point_lon, point_lat, search_radius_meters=search_radius)
-
-    # Prefer ruteinfopunkt if both are found (more specific to the route)
-    if ruteinfopunkt_result and stedsnavn_result:
-        return ruteinfopunkt_result
-
-    # Return whichever is found
-    if ruteinfopunkt_result:
-        return ruteinfopunkt_result
 
     if stedsnavn_result:
         return stedsnavn_result

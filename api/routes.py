@@ -37,6 +37,7 @@ from .schemas import (
     PlacenameCandidate,
     AnchorNameUpsertRequest,
     AnchorNameUpsertResponse,
+    FacilityCandidate,
 )
 from services.route_service import (
     search_places,
@@ -49,7 +50,7 @@ from services.route_service import (
     get_route_anchor_nodes,
     get_anchor_node_coords,
 )
-from services.route_endpoints import list_placename_candidates
+from services.route_endpoints import list_placename_candidates, list_ruteinfopunkt_facilities
 from services.operational_database import op_db_connection
 from services.operational_store import upsert_endpoint_name, get_endpoint_names_for_anchors
 from services.validators import get_validator_registry
@@ -693,6 +694,13 @@ async def get_anchor_placenames(
             search_radius_meters=radius,
             limit=limit,
         )
+        facilities = list_ruteinfopunkt_facilities(
+            conn,
+            coords["lon"],
+            coords["lat"],
+            search_radius_meters=radius,
+            limit=limit,
+        )
 
     candidate_models = [
         PlacenameCandidate(
@@ -704,11 +712,21 @@ async def get_anchor_placenames(
         )
         for c in candidates
     ]
+    facility_models = [
+        FacilityCandidate(
+            name=f["name"],
+            source_id=f.get("source_id"),
+            distance_meters=f.get("distance_meters"),
+            tilrettelegging=f.get("tilrettelegging"),
+        )
+        for f in facilities
+    ]
 
     return PlacenameCandidatesResponse(
         anchor_node_id=anchor_id,
         radius_meters=radius,
         candidates=candidate_models,
+        facilities=facility_models,
     )
 
 
@@ -720,6 +738,9 @@ async def upsert_anchor_name(
 ):
     """Upsert a validated name for an anchor node."""
     validated_by = x_user or "anonymous"
+    anchor_coords = None
+    with db_connection() as conn:
+        anchor_coords = get_anchor_node_coords(conn, anchor_id)
     with op_db_connection() as conn:
         row = upsert_endpoint_name(
             conn,
@@ -730,6 +751,8 @@ async def upsert_anchor_name(
             source_id=request.source_id,
             distance_meters=request.distance_meters,
             validated_by=validated_by,
+            anchor_lon=anchor_coords.get("lon") if anchor_coords else None,
+            anchor_lat=anchor_coords.get("lat") if anchor_coords else None,
         )
 
     validated_at = row.get("validated_at")

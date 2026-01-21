@@ -225,6 +225,14 @@ export interface PlacenameCandidatesResponse {
   anchor_node_id: number;
   radius_meters: number;
   candidates: PlacenameCandidate[];
+  facilities: FacilityCandidate[];
+}
+
+export interface FacilityCandidate {
+  name: string;
+  source_id?: string | null;
+  distance_meters?: number | null;
+  tilrettelegging?: string | null;
 }
 
 export interface AnchorNameUpsertRequest {

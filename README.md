@@ -194,3 +194,10 @@ python -m cli.query_routes routes anchors-name bre10 --anchor-id 42 --candidate-
 python -m cli.query_routes routes anchors-name bre10 --anchor-id 42 --manual-name "Haukeliseter"
 ```
 
+**Anchor ID stability and remap:**
+Anchor node IDs can change after a fresh import. To keep validated names attached, the operational store records anchor coordinates on save. After importing new data, run:
+```bash
+python scripts/remap_anchor_names.py --radius 50
+```
+This remaps endpoint names to the nearest anchor node within the radius (in meters).
+

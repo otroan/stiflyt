@@ -83,6 +83,12 @@ Examples:
   %(prog)s routes anchors-name bre10 --anchor-id 42 --list-candidates
   %(prog)s routes anchors-name bre10 --anchor-id 42 --candidate-index 1
   %(prog)s routes anchors-name bre10 --anchor-id 42 --manual-name "Haukeliseter"
+  %(prog)s routes anchors-name bre10 --missing-validations
+
+  # List routes missing validated endpoint names
+  %(prog)s routes anchors-missing --prefix bre
+  %(prog)s routes anchors-missing --vedlikeholdsansvarlig "DNT Oslo"
+  %(prog)s routes anchors-missing --prefix bre --format json
         """
     )
 
@@ -260,6 +266,45 @@ Examples:
         '--dry-run',
         action='store_true',
         help='Show the proposed change without saving'
+    )
+    routes_anchors_parser.add_argument(
+        '--missing-validations',
+        action='store_true',
+        help='List routes with missing validated endpoint names'
+    )
+
+    routes_anchors_missing_parser = routes_subparsers.add_parser(
+        'anchors-missing',
+        parents=[config_parser, format_parser],
+        help='List routes missing validated endpoint names'
+    )
+    routes_anchors_missing_parser.add_argument(
+        '--prefix',
+        type=str,
+        help='Filter routes by prefix (e.g., "bre", "jot", "ron")'
+    )
+    routes_anchors_missing_parser.add_argument(
+        '--vedlikeholdsansvarlig',
+        type=str,
+        help='Filter routes by organization (e.g., "DNT Oslo")'
+    )
+    routes_anchors_missing_parser.add_argument(
+        '--routes-limit',
+        type=int,
+        default=200,
+        help='Routes page size to scan (default: 200)'
+    )
+    routes_anchors_missing_parser.add_argument(
+        '--routes-offset',
+        type=int,
+        default=0,
+        help='Routes offset to start scanning (default: 0)'
+    )
+    routes_anchors_missing_parser.add_argument(
+        '--max-routes',
+        type=int,
+        default=0,
+        help='Maximum number of routes to scan (default: 0 = no limit)'
     )
 
     routes_areas_parser = routes_subparsers.add_parser(
@@ -1119,7 +1164,7 @@ Examples:
                 traceback.print_exc()
             sys.exit(1)
 
-    if args.command == 'routes' and args.routes_command in {'list', 'get', 'segments', 'links', 'areas', 'anchors-name'}:
+    if args.command == 'routes' and args.routes_command in {'list', 'get', 'segments', 'links', 'areas', 'anchors-name', 'anchors-missing'}:
         # Create configuration
         config = CLIConfig(
             api_url=args.api_url,
@@ -1170,6 +1215,85 @@ Examples:
                             lines.append(f"  prefix: {prefix}")
                             for entry in prefix_entries:
                                 lines.append(f"  vedlikeholdsansvarlig \"{entry.get('value')}\": {entry.get('count')}")
+                    output_text = "\n".join(lines)
+
+            elif args.routes_command == 'anchors-missing':
+                routes_limit = max(1, min(args.routes_limit, 1000))
+                routes_offset = max(args.routes_offset, 0)
+                max_routes = args.max_routes if args.max_routes and args.max_routes > 0 else None
+                total_scanned = 0
+                missing_routes = []
+
+                while True:
+                    response = client.get_routes(
+                        prefix=args.prefix,
+                        vedlikeholdsansvarlig=args.vedlikeholdsansvarlig,
+                        limit=routes_limit,
+                        offset=routes_offset,
+                        include_geometry=False
+                    )
+                    routes = response.get("routes", [])
+                    if not routes:
+                        break
+
+                    for route in routes:
+                        if max_routes is not None and total_scanned >= max_routes:
+                            break
+                        rutenummer = route.get("rutenummer")
+                        if not rutenummer:
+                            continue
+                        anchors_resp = client.get_route_anchors(rutenummer)
+                        anchors = anchors_resp.get("anchors", [])
+                        missing = [
+                            anchor for anchor in anchors
+                            if not (anchor.get("name") or {}).get("name")
+                        ]
+                        if missing:
+                            missing_routes.append({
+                                "rutenummer": rutenummer,
+                                "missing_count": len(missing),
+                                "anchors": missing,
+                            })
+                        total_scanned += 1
+
+                    if max_routes is not None and total_scanned >= max_routes:
+                        break
+
+                    routes_offset += len(routes)
+                    total = response.get("total")
+                    if total is not None and routes_offset >= total:
+                        break
+                    if len(routes) < routes_limit:
+                        break
+
+                if args.format == "json":
+                    output_text = format_json({
+                        "prefix": args.prefix,
+                        "vedlikeholdsansvarlig": args.vedlikeholdsansvarlig,
+                        "total_scanned": total_scanned,
+                        "missing_routes": missing_routes,
+                    })
+                else:
+                    lines = []
+                    lines.append("Routes missing validated endpoint names")
+                    lines.append("-" * 80)
+                    if args.prefix:
+                        lines.append(f"Prefix: {args.prefix}")
+                    if args.vedlikeholdsansvarlig:
+                        lines.append(f"Vedlikeholdsansvarlig: {args.vedlikeholdsansvarlig}")
+                    lines.append(f"Routes scanned: {total_scanned}")
+                    lines.append("")
+                    if not missing_routes:
+                        lines.append("All scanned routes have validated names.")
+                    else:
+                        for route in missing_routes:
+                            lines.append(f"{route['rutenummer']}: missing {route['missing_count']} anchor(s)")
+                            for anchor in route["anchors"]:
+                                coords = anchor.get("coordinates") or []
+                                lat = coords[1] if len(coords) > 1 else None
+                                lon = coords[0] if len(coords) > 0 else None
+                                coord_str = f"{lat:.6f}, {lon:.6f}" if lat is not None and lon is not None else "N/A"
+                                lines.append(f"  Anchor {anchor.get('anchor_node_id')} | {coord_str} | links={anchor.get('link_count')}")
                     output_text = "\n".join(lines)
 
             elif args.routes_command == 'list':
@@ -1347,7 +1471,63 @@ Examples:
                 response = client.get_route_anchors(args.rutenummer)
                 anchors = response.get("anchors", [])
 
-                if args.anchor_id and args.list_candidates:
+                if args.missing_validations:
+                    missing = [
+                        anchor for anchor in anchors
+                        if not (anchor.get("name") or {}).get("name")
+                    ]
+                    if args.format == "json":
+                        output_text = format_json({
+                            "rutenummer": args.rutenummer,
+                            "missing_count": len(missing),
+                            "anchors": missing,
+                        })
+                    else:
+                        lines = []
+                        lines.append(f"Anchors missing validated names for route: {args.rutenummer}")
+                        lines.append("-" * 80)
+                        if not missing:
+                            lines.append("All anchors have validated names.")
+                        else:
+                            for anchor in missing:
+                                coords = anchor.get("coordinates") or []
+                                lat = coords[1] if len(coords) > 1 else None
+                                lon = coords[0] if len(coords) > 0 else None
+                                coord_str = f"{lat:.6f}, {lon:.6f}" if lat is not None and lon is not None else "N/A"
+                                lines.append(
+                                    f"Anchor {anchor.get('anchor_node_id')} | {coord_str} | links={anchor.get('link_count')}"
+                                )
+                        output_text = "\n".join(lines)
+
+                elif args.list_candidates and not args.anchor_id:
+                    lines = []
+                    lines.append(f"Placename candidates for route: {args.rutenummer} (radius {args.radius}m)")
+                    lines.append("-" * 80)
+                    if not anchors:
+                        lines.append("No anchors found.")
+                    else:
+                        for anchor in anchors:
+                            anchor_id = anchor.get("anchor_node_id")
+                            lines.append(f"\nAnchor {anchor_id}:")
+                            candidates_response = client.get_anchor_placenames(
+                                anchor_id,
+                                radius=args.radius,
+                                limit=args.limit,
+                            )
+                            candidates = candidates_response.get("candidates", [])
+                            if not candidates:
+                                lines.append("  No candidates found.")
+                            else:
+                                for idx, candidate in enumerate(candidates, 1):
+                                    distance = candidate.get("distance_meters")
+                                    distance_str = f"{distance:.1f} m" if distance is not None else "N/A"
+                                    source_type = candidate.get("source_type")
+                                    lines.append(
+                                        f"  {idx:2d}. {candidate.get('name')} | {source_type} | {distance_str}"
+                                    )
+                    output_text = "\n".join(lines)
+
+                elif args.anchor_id and args.list_candidates:
                     candidates_response = client.get_anchor_placenames(
                         args.anchor_id,
                         radius=args.radius,
