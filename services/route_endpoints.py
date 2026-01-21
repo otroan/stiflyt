@@ -4,7 +4,7 @@ Looks up names from ruteinfopunkt in turrutebasen first, then falls back to sted
 """
 import json
 import re
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from psycopg.rows import dict_row
 from .database import ROUTE_SCHEMA, validate_schema_name
 
@@ -173,6 +173,171 @@ def lookup_name_in_ruteinfopunkt(conn, point_lon: float, point_lat: float, ruten
         return None
 
     return None
+
+
+def list_ruteinfopunkt_candidates(
+    conn,
+    point_lon: float,
+    point_lat: float,
+    search_radius_meters: float = 500.0,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """List candidate names from ruteinfopunkt near a point."""
+    from .database import ROUTE_SCHEMA, quote_identifier, validate_schema_name
+
+    if not validate_schema_name(ROUTE_SCHEMA):
+        return []
+
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT FROM information_schema.views
+                    WHERE table_schema = %s AND table_name = 'ruteinfopunkt'
+                ) as exists
+                """,
+                (ROUTE_SCHEMA,),
+            )
+            result = cur.fetchone()
+            view_exists = result.get("exists") if result else False
+            if not view_exists:
+                return []
+
+            schema_quoted = quote_identifier(ROUTE_SCHEMA)
+            table_quoted = quote_identifier("ruteinfopunkt")
+
+            query = f"""
+                SELECT
+                    objid,
+                    informasjon as navn,
+                    tilrettelegging,
+                    ST_Distance(
+                        ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                        ST_Transform(posisjon::geometry, 25833)
+                    ) as distance_meters
+                FROM {schema_quoted}.{table_quoted}
+                WHERE ST_DWithin(
+                    ST_Transform(posisjon::geometry, 25833),
+                    ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                    %s
+                )
+                AND informasjon IS NOT NULL
+                AND tilrettelegging = ANY(%s)
+                ORDER BY distance_meters ASC
+                LIMIT %s
+            """
+            filter_values = ["12", "42", "43", "44", "22"]
+            cur.execute(
+                query,
+                (point_lon, point_lat, point_lon, point_lat, search_radius_meters, filter_values, limit),
+            )
+            results = cur.fetchall()
+            return [
+                {
+                    "name": str(row["navn"]),
+                    "source": "ruteinfopunkt",
+                    "source_id": str(row.get("objid")) if row.get("objid") is not None else None,
+                    "distance_meters": float(row["distance_meters"]) if row.get("distance_meters") is not None else None,
+                    "tilrettelegging": row.get("tilrettelegging"),
+                }
+                for row in results
+                if row.get("navn")
+            ]
+    except Exception:
+        try:
+            conn.rollback()
+        except:
+            pass
+        return []
+
+
+def list_stedsnavn_candidates(
+    conn,
+    point_lon: float,
+    point_lat: float,
+    search_radius_meters: float = 500.0,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """List candidate names from stedsnavn near a point."""
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            query = """
+                SELECT
+                    sn.objid,
+                    sm.komplettskrivemate AS navn,
+                    ST_Distance(
+                        ST_Transform(
+                            COALESCE(
+                                sp.geom,
+                                smp.geom,
+                                so.geom,
+                                ssl.geom
+                            ),
+                            25833
+                        ),
+                        ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833)
+                    ) as distance_meters
+                FROM public.stedsnavn sn
+                JOIN public.skrivemate sm ON sn.objid = sm.stedsnavn_fk
+                LEFT JOIN public.sted_posisjon sp ON sn.sted_fk = sp.stedsnummer
+                LEFT JOIN public.sted_multipunkt smp ON sn.sted_fk = smp.stedsnummer
+                LEFT JOIN public.sted_omrade so ON sn.sted_fk = so.stedsnummer
+                LEFT JOIN public.sted_senterlinje ssl ON sn.sted_fk = ssl.stedsnummer
+                WHERE ST_DWithin(
+                    ST_Transform(
+                        COALESCE(
+                            sp.geom,
+                            smp.geom,
+                            so.geom,
+                            ssl.geom
+                        ),
+                        25833
+                    ),
+                    ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                    %s
+                )
+                AND sm.komplettskrivemate IS NOT NULL
+                ORDER BY distance_meters ASC
+                LIMIT %s
+            """
+            cur.execute(query, (point_lon, point_lat, point_lon, point_lat, search_radius_meters, limit))
+            results = cur.fetchall()
+            return [
+                {
+                    "name": row.get("navn"),
+                    "source": "stedsnavn",
+                    "source_id": str(row.get("objid")) if row.get("objid") is not None else None,
+                    "distance_meters": float(row["distance_meters"]) if row.get("distance_meters") is not None else None,
+                }
+                for row in results
+                if row.get("navn")
+            ]
+    except Exception:
+        try:
+            conn.rollback()
+        except:
+            pass
+        return []
+
+
+def list_placename_candidates(
+    conn,
+    point_lon: float,
+    point_lat: float,
+    search_radius_meters: float = 500.0,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """List nearby placename candidates from multiple sources."""
+    candidates: List[Dict[str, Any]] = []
+    candidates.extend(
+        list_ruteinfopunkt_candidates(conn, point_lon, point_lat, search_radius_meters, limit)
+    )
+    candidates.extend(
+        list_stedsnavn_candidates(conn, point_lon, point_lat, search_radius_meters, limit)
+    )
+    candidates.sort(key=lambda item: item.get("distance_meters") or 0)
+    return candidates[:limit]
 
 
 def lookup_name_in_stedsnavn(conn, point_lon: float, point_lat: float, search_radius_meters: float = 500.0) -> Optional[Dict[str, Any]]:

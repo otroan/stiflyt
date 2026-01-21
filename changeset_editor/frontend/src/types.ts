@@ -191,6 +191,61 @@ export interface RouteLinksResponse {
   total?: number;
 }
 
+export interface AnchorName {
+  name: string;
+  source_type: string;
+  source_id?: string | null;
+  distance_meters?: number | null;
+  validated_by?: string | null;
+  validated_at?: string | null;
+}
+
+export interface AnchorNodeInfo {
+  anchor_node_id: number;
+  coordinates: [number, number];
+  link_count: number;
+  name?: AnchorName | null;
+}
+
+export interface RouteAnchorsResponse {
+  rutenummer: string;
+  anchors: AnchorNodeInfo[];
+  total: number;
+}
+
+export interface PlacenameCandidate {
+  name: string;
+  source_type: string;
+  source_id?: string | null;
+  distance_meters?: number | null;
+  tilrettelegging?: string | null;
+}
+
+export interface PlacenameCandidatesResponse {
+  anchor_node_id: number;
+  radius_meters: number;
+  candidates: PlacenameCandidate[];
+}
+
+export interface AnchorNameUpsertRequest {
+  name: string;
+  source_type: string;
+  source_id?: string | null;
+  distance_meters?: number | null;
+  rutenummer?: string | null;
+}
+
+export interface AnchorNameUpsertResponse {
+  anchor_node_id: number;
+  rutenummer?: string | null;
+  name: string;
+  source_type: string;
+  source_id?: string | null;
+  distance_meters?: number | null;
+  validated_by?: string | null;
+  validated_at?: string | null;
+}
+
 // Local Event Type (before changeset is created)
 export type LocalEvent = EventPayload;
 

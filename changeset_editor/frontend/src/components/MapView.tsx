@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent } from '../types';
+import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest } from '../types';
 import type { GeoJSON } from 'geojson';
 import { SnapManager } from '../utils/snap';
 import { api, isAbortError } from '../api/client';
@@ -11,6 +11,7 @@ import { handleApiError } from '../utils/errorHandler';
 import { notificationManager } from '../utils/notifications';
 import { findClosestPointOnLine, splitLineStringAtPoint, isNewSegment } from '../utils/geometry';
 import { ConfirmDialog } from './ConfirmDialog';
+import { AnchorNameDialog } from './AnchorNameDialog';
 import 'leaflet/dist/leaflet.css';
 
 // Load Geoman dynamically to avoid Vite resolution issues
@@ -48,19 +49,19 @@ interface MapViewProps {
 }
 
 // Component to initialize map reference when map is ready
-function MapInitializer({ 
-  onMapReady 
-}: { 
-  onMapReady: (map: L.Map) => void 
+function MapInitializer({
+  onMapReady
+}: {
+  onMapReady: (map: L.Map) => void
 }) {
   const map = useMap();
-  
+
   useEffect(() => {
     debugLog('MapInitializer: map is ready', map);
     onMapReady(map);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map]); // Only depend on map, not onMapReady to avoid re-runs
-  
+
   return null;
 }
 
@@ -213,6 +214,13 @@ export function MapView({
   const segmentsLayerRef = useRef<L.GeoJSON | null>(null);
   const linksLayerRef = useRef<L.GeoJSON | null>(null);
   const endpointsLayerRef = useRef<L.LayerGroup | null>(null);
+  const [anchorNodes, setAnchorNodes] = useState<AnchorNodeInfo[]>([]);
+  const [anchorCandidates, setAnchorCandidates] = useState<PlacenameCandidate[]>([]);
+  const [selectedAnchor, setSelectedAnchor] = useState<AnchorNodeInfo | null>(null);
+  const [anchorDialogOpen, setAnchorDialogOpen] = useState(false);
+  const [anchorSelectedIndex, setAnchorSelectedIndex] = useState<number | null>(null);
+  const [anchorManualName, setAnchorManualName] = useState('');
+  const [anchorSearchRadius] = useState(1500);
 
   // Confirmation dialog state
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -228,7 +236,7 @@ export function MapView({
   // Load routes within bounding box
   useEffect(() => {
     debugLog('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current });
-    
+
     if (!mapRef.current || !mapReady) {
       debugLog('Skipping routes load - map not ready');
       return;
@@ -243,10 +251,10 @@ export function MapView({
         debugLog('mapRef.current is null in loadRoutesInView');
         return;
       }
-      
+
       const bounds = mapRef.current.getBounds();
       const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
-      
+
       debugLog('Loading routes in bbox:', bbox);
 
       requestId += 1;
@@ -285,10 +293,10 @@ export function MapView({
               } as GeoJSON.Feature;
             })
             .filter((f): f is GeoJSON.Feature => f !== null);
-          
+
           const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
           debugLog(`Loaded ${filteredFeatures.length} routes with geometry`);
-          
+
           setRoutesInView({
             type: 'FeatureCollection',
             features: filteredFeatures,
@@ -304,7 +312,7 @@ export function MapView({
     // Load routes on map move/zoom
     mapRef.current.on('moveend', loadRoutesInView);
     mapRef.current.on('zoomend', loadRoutesInView);
-    
+
     // Initial load with a small delay to ensure map is fully initialized
     timeoutId = setTimeout(() => {
       debugLog('Initial routes load');
@@ -333,6 +341,7 @@ export function MapView({
       setLinksData(null);
       setShowSegments(false);
       setShowLinks(false);
+      setAnchorNodes([]);
       return;
     }
 
@@ -430,6 +439,29 @@ export function MapView({
     };
   }, [routeNumber, mapReady]);
 
+  // Load anchor nodes for selected route
+  useEffect(() => {
+    if (!routeNumber || !mapReady) {
+      setAnchorNodes([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    api.getRouteAnchors(routeNumber, { signal: controller.signal })
+      .then((data) => {
+        setAnchorNodes(data.anchors || []);
+      })
+      .catch((error) => {
+        if (isAbortError(error)) return;
+        const appError = handleApiError(error, 'Load Anchor Nodes');
+        notificationManager.warning(`Kunne ikke laste ankernoder: ${appError.message}`);
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [routeNumber, mapReady]);
+
   // Display selected route geometry on map (highlighted)
   useEffect(() => {
     if (!mapRef.current || !mapReady) return;
@@ -495,10 +527,10 @@ export function MapView({
       style: (feature) => {
         const props = feature?.properties as { objid?: number | string; segment_objid?: number | string; [key: string]: unknown } | null;
         // Normalize feature ID for style matching
-        const featureId = feature?.id 
-          ? String(feature.id) 
-          : props?.objid 
-            ? String(props.objid) 
+        const featureId = feature?.id
+          ? String(feature.id)
+          : props?.objid
+            ? String(props.objid)
             : props?.segment_objid
               ? String(props.segment_objid)
               : null;
@@ -512,14 +544,14 @@ export function MapView({
       onEachFeature: (feature, layer) => {
         const props = feature.properties as { objid?: number | string; rutenummer?: string; rutenavn?: string | null; length_m?: number | null; [key: string]: unknown } | null;
         // Normalize feature ID - ensure it's a string and try multiple sources
-        const featureId = feature.id 
-          ? String(feature.id) 
-          : props?.objid 
-            ? String(props.objid) 
-            : props?.segment_objid 
+        const featureId = feature.id
+          ? String(feature.id)
+          : props?.objid
+            ? String(props.objid)
+            : props?.segment_objid
               ? String(props.segment_objid)
               : null;
-        
+
         if (props) {
           layer.bindPopup(`
           <strong>Segment ${props.objid ?? 'N/A'}</strong><br>
@@ -576,10 +608,10 @@ export function MapView({
       style: (feature) => {
         const props = feature?.properties as { link_id?: number; [key: string]: unknown } | null;
         // Normalize feature ID for style matching
-        const featureId = feature?.id 
-          ? String(feature.id) 
-          : props?.link_id 
-            ? String(props.link_id) 
+        const featureId = feature?.id
+          ? String(feature.id)
+          : props?.link_id
+            ? String(props.link_id)
             : null;
         const isSelected = featureId && (selectedFeatureIds.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
         return {
@@ -592,12 +624,12 @@ export function MapView({
       onEachFeature: (feature, layer) => {
         const props = feature.properties as { link_id?: number; a_node?: number | null; b_node?: number | null; length_m?: number | null; [key: string]: unknown } | null;
         // Normalize feature ID - ensure it's a string
-        const featureId = feature.id 
-          ? String(feature.id) 
-          : props?.link_id 
-            ? String(props.link_id) 
+        const featureId = feature.id
+          ? String(feature.id)
+          : props?.link_id
+            ? String(props.link_id)
             : null;
-        
+
         if (props) {
           layer.bindPopup(`
           <strong>Link ${props.link_id ?? 'N/A'}</strong><br>
@@ -768,6 +800,30 @@ export function MapView({
       });
     }
 
+    // Add anchor node markers (clickable for naming)
+    if (showLinks && anchorNodes.length > 0) {
+      anchorNodes.forEach((anchor) => {
+        const [lon, lat] = anchor.coordinates;
+        const nameLabel = anchor.name?.name || `Anchor ${anchor.anchor_node_id}`;
+        const marker = L.circleMarker([lat, lon], {
+          radius: 9,
+          fillColor: '#2563eb',
+          color: '#ffffff',
+          weight: 2,
+          opacity: 1,
+          fillOpacity: 0.9,
+          pane: 'link-endpoints',
+        }).addTo(endpointsGroup);
+        marker.bindTooltip(nameLabel, {
+          permanent: false,
+          direction: 'top',
+          className: 'link-midpoint-label',
+          opacity: 0.9,
+        });
+        marker.on('click', () => openAnchorDialog(anchor));
+      });
+    }
+
     // Highlight junctions where multiple links meet
     linkEndpointCounts.forEach((count, key) => {
       if (count > 1) {
@@ -786,7 +842,7 @@ export function MapView({
     });
 
     endpointsLayerRef.current = endpointsGroup;
-  }, [showSegments, showLinks, segmentsData, linksData, mapReady]);
+  }, [showSegments, showLinks, segmentsData, linksData, mapReady, anchorNodes]);
 
   // Load layers
   useEffect(() => {
@@ -805,7 +861,7 @@ export function MapView({
         const appError = handleApiError(error, 'Load Diff Layer');
         notificationManager.error(`Kunne ikke laste diff layer: ${appError.message}`);
       });
-    
+
     // Load effective layer
     api.getEffectiveGeoJSON(changeset.id)
       .then(setEffectiveLayer)
@@ -858,6 +914,88 @@ export function MapView({
     };
   }, [activeTool]);
 
+  const openAnchorDialog = (anchor: AnchorNodeInfo) => {
+    setSelectedAnchor(anchor);
+    setAnchorDialogOpen(true);
+    setAnchorCandidates([]);
+    setAnchorSelectedIndex(null);
+    setAnchorManualName('');
+
+    api.getAnchorPlacenames(anchor.anchor_node_id, anchorSearchRadius, 10)
+      .then((data) => {
+        setAnchorCandidates(data.candidates || []);
+      })
+      .catch((error) => {
+        const appError = handleApiError(error, 'Load Placenames');
+        notificationManager.warning(`Kunne ikke hente stedsnavn: ${appError.message}`);
+      });
+  };
+
+  const closeAnchorDialog = () => {
+    setAnchorDialogOpen(false);
+    setSelectedAnchor(null);
+    setAnchorCandidates([]);
+    setAnchorSelectedIndex(null);
+    setAnchorManualName('');
+  };
+
+  const handleSaveAnchorName = async () => {
+    if (!selectedAnchor || !routeNumber) return;
+
+    const trimmedManual = anchorManualName.trim();
+    let payload: AnchorNameUpsertRequest | null = null;
+
+    if (trimmedManual.length > 0) {
+      payload = {
+        name: trimmedManual,
+        source_type: 'manual',
+        rutenummer: routeNumber,
+      };
+    } else if (anchorSelectedIndex !== null) {
+      const candidate = anchorCandidates[anchorSelectedIndex];
+      if (candidate) {
+        payload = {
+          name: candidate.name,
+          source_type: candidate.source_type,
+          source_id: candidate.source_id,
+          distance_meters: candidate.distance_meters ?? undefined,
+          rutenummer: routeNumber,
+        };
+      }
+    }
+
+    if (!payload) {
+      notificationManager.warning('Velg et forslag eller skriv inn et navn');
+      return;
+    }
+
+    try {
+      const response = await api.upsertAnchorName(selectedAnchor.anchor_node_id, payload);
+      setAnchorNodes((prev) =>
+        prev.map((anchor) =>
+          anchor.anchor_node_id === selectedAnchor.anchor_node_id
+            ? {
+                ...anchor,
+                name: {
+                  name: response.name,
+                  source_type: response.source_type,
+                  source_id: response.source_id,
+                  distance_meters: response.distance_meters,
+                  validated_by: response.validated_by,
+                  validated_at: response.validated_at,
+                },
+              }
+            : anchor
+        )
+      );
+      notificationManager.success('Ankernavn oppdatert');
+      closeAnchorDialog();
+    } catch (error: unknown) {
+      const appError = handleApiError(error, 'Update Anchor Name');
+      notificationManager.error(`Kunne ikke oppdatere ankernavn: ${appError.message}`);
+    }
+  };
+
   const handleDrawComplete = async (geometry: GeoJSON.LineString) => {
     const tempId = `tmp_${crypto.randomUUID()}`;
     const event = {
@@ -867,7 +1005,7 @@ export function MapView({
       srid: 4326,
       attrs: {},
     };
-    
+
     try {
       if (changeset) {
         // Add to existing changeset
@@ -893,7 +1031,7 @@ export function MapView({
       geometry,
       srid: 4326,
     };
-    
+
     try {
       if (changeset) {
         // Add to existing changeset
@@ -1099,9 +1237,9 @@ export function MapView({
   const onEachFeature = (feature: GeoJSON.Feature, layer: L.Layer) => {
     const props = feature.properties as { id?: string | number; objid?: number | string; temp_id?: string; [key: string]: unknown } | null;
     // Normalize feature ID - try multiple sources and ensure string format
-    const featureId = feature.id 
-      ? String(feature.id) 
-      : props?.id 
+    const featureId = feature.id
+      ? String(feature.id)
+      : props?.id
         ? String(props.id)
         : props?.objid
           ? String(props.objid)
@@ -1121,9 +1259,9 @@ export function MapView({
         const clickedPoint: number[] = [latlng.lng, latlng.lat]; // GeoJSON format [lng, lat]
         const originalGeometry = feature.geometry;
         const originalAttrs = (feature.properties as Record<string, unknown>) || {};
-        
+
         const closestPoint = findClosestPointOnLine(clickedPoint, originalGeometry.coordinates);
-        
+
         setConfirmDialog({
           isOpen: true,
           title: 'Del segment',
@@ -1184,15 +1322,15 @@ export function MapView({
             />
           </LayersControl.BaseLayer>
         </LayersControl>
-        
-        <MapInitializer 
+
+        <MapInitializer
           onMapReady={(map) => {
             debugLog('MapInitializer callback: setting mapRef and mapReady');
             mapRef.current = map;
             setMapReady(true);
           }}
         />
-        
+
         <GeomanControl
           onDrawComplete={handleDrawComplete}
           onEditComplete={handleEditComplete}
@@ -1235,7 +1373,7 @@ export function MapView({
             onEachFeature={(feature, layer) => {
               const props = feature.properties as { rutenummer?: string; rutenavn?: string; [key: string]: unknown } | null;
               const rutenummer = props?.rutenummer;
-              
+
               // Add popup
               layer.bindPopup(`
                 <strong>${rutenummer}</strong><br>
@@ -1256,7 +1394,7 @@ export function MapView({
               });
               layer.on('mouseout', () => {
                 const isSelected = rutenummer === selectedRouteNumber;
-                layer.setStyle({ 
+                layer.setStyle({
                   weight: isSelected ? 6 : 3,
                   color: isSelected ? '#e74c3c' : '#3498db',
                 });
@@ -1378,13 +1516,13 @@ export function MapView({
           {/* Edit segment/route data */}
           <button
             onClick={() => {
-              debugLog('Edit button clicked:', { 
-                selectedFeatureId, 
+              debugLog('Edit button clicked:', {
+                selectedFeatureId,
                 selectedFeatureIdsSize: selectedFeatureIds.size,
                 selectedFeatureIdsArray: Array.from(selectedFeatureIds),
-                routeNumber 
+                routeNumber
               });
-              
+
               if (selectedFeatureId || selectedFeatureIds.size > 0) {
                 // One or more segments selected - open edit form in InfoPanel
                 debugLog('Opening edit form for segment(s)');
@@ -1392,7 +1530,7 @@ export function MapView({
                   onOpenEditForm();
                 } else {
                   notificationManager.info(
-                    selectedFeatureIds.size > 1 
+                    selectedFeatureIds.size > 1
                       ? `Rediger metadata for ${selectedFeatureIds.size} segmenter: Åpner redigeringsform`
                       : 'Rediger metadata: Åpner redigeringsform'
                   );
@@ -1603,6 +1741,18 @@ export function MapView({
           onCancel={() => setConfirmDialog(null)}
         />
       )}
+
+      <AnchorNameDialog
+        isOpen={anchorDialogOpen}
+        anchor={selectedAnchor}
+        candidates={anchorCandidates}
+        selectedIndex={anchorSelectedIndex}
+        manualName={anchorManualName}
+        onSelectCandidate={setAnchorSelectedIndex}
+        onManualNameChange={setAnchorManualName}
+        onSave={handleSaveAnchorName}
+        onCancel={closeAnchorDialog}
+      />
 
       {/* Split mode indicator */}
       {activeTool === 'split' && (

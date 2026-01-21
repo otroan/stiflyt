@@ -162,3 +162,35 @@ This will show:
 
 Currently in waterfall development phase. See `TASKS.md` for implementation progress.
 
+## Operational Database (Mutable Data)
+
+The main database is refreshed from turrutebasen/Kartverket data and should be treated as read-only. Mutable operational data (endpoint names, number spaces, changesets) lives in a separate operational database or schema.
+
+**Operational DB configuration (env vars):**
+- `OP_DATABASE_URL` (optional)
+- `OP_DB_NAME`, `OP_DB_USER`, `OP_DB_PASSWORD`
+- `OP_USE_UNIX_SOCKET` (defaults to `USE_UNIX_SOCKET`)
+- `OP_DB_SOCKET_DIR` (defaults to `DB_SOCKET_DIR`)
+- `OP_SCHEMA` (defaults to `ops`)
+
+**Migrations:**
+```bash
+# Create operational schema/tables (endpoint names, number spaces)
+python scripts/run_operational_migration.py
+
+# Create changeset schema in operational DB
+python scripts/run_changeset_migration.py
+```
+
+**Anchor naming APIs:**
+- `GET /api/v1/routes/{rutenummer}/anchors` - list anchors with current validated names
+- `GET /api/v1/anchors/{anchor_id}/placenames?radius=1500&limit=10` - nearby placename candidates
+- `POST /api/v1/anchors/{anchor_id}/name` - upsert validated anchor name
+
+**CLI (mapless) example:**
+```bash
+python -m cli.query_routes routes anchors-name bre10 --anchor-id 42 --list-candidates
+python -m cli.query_routes routes anchors-name bre10 --anchor-id 42 --candidate-index 1
+python -m cli.query_routes routes anchors-name bre10 --anchor-id 42 --manual-name "Haukeliseter"
+```
+

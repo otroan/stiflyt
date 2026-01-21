@@ -270,6 +270,57 @@ class RoutesClient:
         except requests.exceptions.RequestException as e:
             raise ConnectionError(f"Request failed: {e}")
 
+    def _make_json_request(
+        self,
+        method: str,
+        url: str,
+        payload: Dict[str, Any],
+        params: Optional[Dict] = None,
+    ) -> Dict[str, Any]:
+        """Helper for JSON request bodies."""
+        auth = self.config.get_auth()
+        headers = {"Accept": "application/json"}
+
+        try:
+            response = requests.request(
+                method,
+                url,
+                params=params,
+                json=payload,
+                auth=auth,
+                headers=headers,
+                timeout=self.config.timeout
+            )
+
+            if response.status_code == 401:
+                raise AuthenticationError("Authentication failed. Check your credentials.")
+            elif response.status_code == 400:
+                error_detail = response.json().get("detail", "Bad request")
+                raise APIResponseError(f"Bad request: {error_detail}", status_code=400)
+            elif response.status_code == 404:
+                error_detail = response.json().get("detail", "Not found")
+                raise APIResponseError(error_detail, status_code=404)
+            elif response.status_code >= 500:
+                error_detail = response.json().get("detail", "Server error")
+                raise APIResponseError(f"Server error: {error_detail}", status_code=response.status_code)
+            elif not response.ok:
+                raise APIResponseError(
+                    f"API returned status {response.status_code}",
+                    status_code=response.status_code
+                )
+
+            try:
+                return response.json()
+            except ValueError as e:
+                raise APIResponseError(f"Invalid JSON response: {e}")
+
+        except requests.exceptions.ConnectionError as e:
+            raise ConnectionError(f"Could not connect to API at {self.base_url}: {e}")
+        except requests.exceptions.Timeout as e:
+            raise ConnectionError(f"Request to API timed out: {e}")
+        except requests.exceptions.RequestException as e:
+            raise ConnectionError(f"Request failed: {e}")
+
     def get_routes(
         self,
         prefix: Optional[str] = None,
@@ -367,6 +418,31 @@ class RoutesClient:
         params = {"include_geometry": include_geometry}
         url = f"{self.base_url}/routes/{rutenummer}/links"
         return self._make_request("GET", url, params)
+
+    def get_route_anchors(self, rutenummer: str) -> Dict[str, Any]:
+        """Get anchor nodes for a route."""
+        url = f"{self.base_url}/routes/{rutenummer}/anchors"
+        return self._make_request("GET", url)
+
+    def get_anchor_placenames(
+        self,
+        anchor_id: int,
+        radius: float = 500.0,
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        """Get placename candidates near an anchor node."""
+        params = {"radius": radius, "limit": limit}
+        url = f"{self.base_url}/anchors/{anchor_id}/placenames"
+        return self._make_request("GET", url, params)
+
+    def upsert_anchor_name(
+        self,
+        anchor_id: int,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Upsert a validated anchor name."""
+        url = f"{self.base_url}/anchors/{anchor_id}/name"
+        return self._make_json_request("POST", url, payload)
 
     def get_route_areas(
         self,

@@ -11,6 +11,10 @@ import type {
   RouteLinksResponse,
   RouteValidationResponse,
   RouteInfo,
+  RouteAnchorsResponse,
+  PlacenameCandidatesResponse,
+  AnchorNameUpsertRequest,
+  AnchorNameUpsertResponse,
 } from '../types';
 import { isRetryableError } from '../utils/errorHandler';
 
@@ -51,27 +55,27 @@ async function request<T>(
           statusCode: response.status,
           status: response.status,
         };
-        
+
         // If retryable and not last attempt, retry
         if (isRetryableError(errorObj) && attempt < retries) {
           lastError = errorObj;
           await new Promise(resolve => setTimeout(resolve, retryDelay * (attempt + 1)));
           continue;
         }
-        
+
         throw errorObj;
       }
 
       return response.json();
     } catch (error) {
       lastError = error;
-      
+
       // If retryable and not last attempt, retry
       if (isRetryableError(error) && attempt < retries) {
         await new Promise(resolve => setTimeout(resolve, retryDelay * (attempt + 1)));
         continue;
       }
-      
+
       // Last attempt or non-retryable error
       throw error;
     }
@@ -261,4 +265,32 @@ export const api = {
       `/v1/search/places?q=${encodeURIComponent(query)}&limit=${limit}`,
       options
     ),
+
+  getRouteAnchors: (
+    rutenummer: string,
+    options: RequestOptions = {}
+  ): Promise<RouteAnchorsResponse> =>
+    requestWithAbort<RouteAnchorsResponse>(`/v1/routes/${rutenummer}/anchors`, options),
+
+  getAnchorPlacenames: (
+    anchorId: number,
+    radius = 500,
+    limit = 10,
+    options: RequestOptions = {}
+  ): Promise<PlacenameCandidatesResponse> =>
+    requestWithAbort<PlacenameCandidatesResponse>(
+      `/v1/anchors/${anchorId}/placenames?radius=${radius}&limit=${limit}`,
+      options
+    ),
+
+  upsertAnchorName: (
+    anchorId: number,
+    payload: AnchorNameUpsertRequest,
+    options: RequestOptions = {}
+  ): Promise<AnchorNameUpsertResponse> =>
+    requestWithAbort<AnchorNameUpsertResponse>(`/v1/anchors/${anchorId}/name`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      ...options,
+    }),
 };

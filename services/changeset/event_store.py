@@ -3,7 +3,7 @@ import json
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
-from services.database import db_connection
+from services.operational_database import op_db_connection
 from psycopg.rows import dict_row
 from .models import ChangeEvent, EventType
 
@@ -18,12 +18,12 @@ class EventStore:
         event: Dict,
     ) -> str:
         """Add an event to a changeset. Returns event_id."""
-        with db_connection() as conn:
+        with op_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 event_id = str(uuid.uuid4())
                 cur.execute(
                     """
-                    INSERT INTO changeset.change_event 
+                    INSERT INTO changeset.change_event
                     (event_id, changeset_id, ts, user_id, event)
                     VALUES (%s, %s, %s, %s, %s::jsonb)
                     RETURNING event_id
@@ -35,7 +35,7 @@ class EventStore:
     @staticmethod
     def get_events(changeset_id: str) -> List[Dict]:
         """Get all events for a changeset, ordered by timestamp."""
-        with db_connection() as conn:
+        with op_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """
@@ -60,7 +60,7 @@ class EventStore:
     @staticmethod
     def get_event(event_id: str) -> Optional[Dict]:
         """Get a specific event by ID."""
-        with db_connection() as conn:
+        with op_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """

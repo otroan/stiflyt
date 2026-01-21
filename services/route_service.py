@@ -1,7 +1,7 @@
 """Route service for processing routes and matrikkelenhet."""
 import psycopg
 import json
-from typing import Optional
+from typing import Optional, Dict, List
 from psycopg.rows import dict_row
 from .database import (
     db_connection,
@@ -10,6 +10,8 @@ from .database import (
     validate_schema_name,
     get_route_schema,
 )
+from .operational_database import op_db_connection
+from .operational_store import get_endpoint_names_for_anchors, get_endpoint_names_for_anchor_routes
 
 
 def format_matrikkelenhet(kommunenummer, gardsnummer, bruksnummer, festenummer=None):
@@ -295,6 +297,101 @@ def get_route_segments_with_points(conn, rutenummer):
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query, (rutenummer,))
         return cur.fetchall()
+
+
+def get_anchor_node_coords(conn, anchor_node_id: int) -> Optional[Dict[str, float]]:
+    """Get anchor node coordinates (lon/lat) for a node ID."""
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = 'anchor_nodes'
+            ) as table_exists
+            """,
+            (ROUTE_SCHEMA,),
+        )
+        exists_row = cur.fetchone()
+        if not exists_row or not exists_row.get("table_exists"):
+            return None
+
+        query = f"""
+            SELECT
+                ST_X(ST_Transform(geom, 4326)) as lon,
+                ST_Y(ST_Transform(geom, 4326)) as lat
+            FROM {ROUTE_SCHEMA}.anchor_nodes
+            WHERE node_id = %s
+            LIMIT 1
+        """
+        cur.execute(query, (anchor_node_id,))
+        row = cur.fetchone()
+        if not row or row.get("lon") is None or row.get("lat") is None:
+            return None
+        return {"lon": float(row["lon"]), "lat": float(row["lat"])}
+
+
+def get_route_anchor_nodes(conn, rutenummer: str) -> List[Dict[str, Optional[float]]]:
+    """List anchor nodes for a route with coordinates and link counts."""
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = 'anchor_nodes'
+            ) as table_exists
+            """,
+            (ROUTE_SCHEMA,),
+        )
+        exists_row = cur.fetchone()
+        if not exists_row or not exists_row.get("table_exists"):
+            return []
+
+        query = f"""
+            WITH route_links AS (
+                SELECT link_id, a_node, b_node
+                FROM {ROUTE_SCHEMA}.links_with_routes
+                WHERE %s = ANY(rutenummer_list)
+            ),
+            node_counts AS (
+                SELECT node_id, COUNT(*) as link_count
+                FROM (
+                    SELECT a_node as node_id FROM route_links
+                    UNION ALL
+                    SELECT b_node as node_id FROM route_links
+                ) nodes
+                GROUP BY node_id
+            )
+            SELECT
+                n.node_id,
+                ST_X(ST_Transform(a.geom, 4326)) as lon,
+                ST_Y(ST_Transform(a.geom, 4326)) as lat,
+                n.link_count
+            FROM node_counts n
+            JOIN {ROUTE_SCHEMA}.anchor_nodes a ON a.node_id = n.node_id
+            ORDER BY n.link_count DESC, n.node_id
+        """
+        cur.execute(query, (rutenummer,))
+        rows = cur.fetchall()
+
+    results = []
+    for row in rows:
+        if row.get("lon") is None or row.get("lat") is None:
+            continue
+        results.append(
+            {
+                "anchor_node_id": int(row["node_id"]),
+                "lon": float(row["lon"]),
+                "lat": float(row["lat"]),
+                "link_count": int(row.get("link_count") or 0),
+            }
+        )
+    return results
 
 
 def get_segments_by_objids(conn, segment_objids, include_geojson=True):
@@ -1177,34 +1274,84 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
     component_count = 1 if is_connected else 0
 
     # Get endpoint names if requested
-    # Extract start/end points from the route geometry
     from_name = None
     to_name = None
-    if include_endpoint_names and geometry:
+    if include_endpoint_names:
         from .route_endpoints import extract_route_endpoints, lookup_endpoint_name
 
-        # Extract start and end points from the route geometry
-        start_point, end_point = extract_route_endpoints(geometry)
+        # Try operational overrides using anchor nodes from links_with_routes
+        anchor_ids = {}
+        anchor_query = f"""
+            WITH route_links AS (
+                SELECT link_id, a_node, b_node
+                FROM {ROUTE_SCHEMA}.links_with_routes
+                WHERE %s = ANY(rutenummer_list)
+            )
+            SELECT
+                (SELECT a_node FROM route_links ORDER BY link_id ASC LIMIT 1) as first_a_node,
+                (SELECT b_node FROM route_links ORDER BY link_id DESC LIMIT 1) as last_b_node
+        """
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(anchor_query, (rutenummer,))
+            anchor_row = cur.fetchone()
+        if anchor_row:
+            if anchor_row.get("first_a_node") is not None:
+                anchor_ids["from"] = int(anchor_row["first_a_node"])
+            if anchor_row.get("last_b_node") is not None:
+                anchor_ids["to"] = int(anchor_row["last_b_node"])
 
-        if start_point:
-            start_name_info = lookup_endpoint_name(conn, start_point[0], start_point[1], rutenummer)
-            if start_name_info and start_name_info.get('name'):
-                from_name = {
-                    'name': start_name_info.get('name'),
-                    'source': start_name_info.get('source', 'unknown'),
-                    'distance_meters': start_name_info.get('distance_meters'),
-                    'coordinates': [start_point[0], start_point[1]]
-                }
+        overrides = {}
+        if anchor_ids:
+            with op_db_connection() as op_conn:
+                overrides = get_endpoint_names_for_anchors(
+                    op_conn,
+                    list(anchor_ids.values()),
+                    rutenummer=rutenummer,
+                )
 
-        if end_point:
-            end_name_info = lookup_endpoint_name(conn, end_point[0], end_point[1], rutenummer)
-            if end_name_info and end_name_info.get('name'):
-                to_name = {
-                    'name': end_name_info.get('name'),
-                    'source': end_name_info.get('source', 'unknown'),
-                    'distance_meters': end_name_info.get('distance_meters'),
-                    'coordinates': [end_point[0], end_point[1]]
-                }
+        if anchor_ids.get("from") and overrides.get(anchor_ids.get("from")):
+            override = overrides.get(anchor_ids["from"])
+            coords = get_anchor_node_coords(conn, anchor_ids["from"])
+            from_name = {
+                "name": override.get("name"),
+                "source": override.get("source_type", "manual"),
+                "distance_meters": override.get("distance_meters"),
+                "coordinates": [coords["lon"], coords["lat"]] if coords else None,
+            }
+
+        if anchor_ids.get("to") and overrides.get(anchor_ids.get("to")):
+            override = overrides.get(anchor_ids["to"])
+            coords = get_anchor_node_coords(conn, anchor_ids["to"])
+            to_name = {
+                "name": override.get("name"),
+                "source": override.get("source_type", "manual"),
+                "distance_meters": override.get("distance_meters"),
+                "coordinates": [coords["lon"], coords["lat"]] if coords else None,
+            }
+
+        # Fallback to lookup by geometry if overrides not present
+        if geometry:
+            start_point, end_point = extract_route_endpoints(geometry)
+
+            if start_point and not from_name:
+                start_name_info = lookup_endpoint_name(conn, start_point[0], start_point[1], rutenummer)
+                if start_name_info and start_name_info.get('name'):
+                    from_name = {
+                        'name': start_name_info.get('name'),
+                        'source': start_name_info.get('source', 'unknown'),
+                        'distance_meters': start_name_info.get('distance_meters'),
+                        'coordinates': [start_point[0], start_point[1]]
+                    }
+
+            if end_point and not to_name:
+                end_name_info = lookup_endpoint_name(conn, end_point[0], end_point[1], rutenummer)
+                if end_name_info and end_name_info.get('name'):
+                    to_name = {
+                        'name': end_name_info.get('name'),
+                        'source': end_name_info.get('source', 'unknown'),
+                        'distance_meters': end_name_info.get('distance_meters'),
+                        'coordinates': [end_point[0], end_point[1]]
+                    }
 
     # Build segments list if requested
     segments = None
@@ -1428,6 +1575,8 @@ def get_routes_from_view(
             )
             SELECT
                 fll.rutenummer,
+                fll.first_a_node,
+                fll.last_b_node,
                 an_a.navn as from_name,
                 an_b.navn as to_name
             FROM first_last_links fll
@@ -1442,12 +1591,37 @@ def get_routes_from_view(
 
             # Map endpoint names to routes
             endpoint_map = {row['rutenummer']: row for row in endpoint_rows}
+            anchor_ids = []
+            for row in endpoint_rows:
+                if row.get("first_a_node") is not None:
+                    anchor_ids.append(int(row["first_a_node"]))
+                if row.get("last_b_node") is not None:
+                    anchor_ids.append(int(row["last_b_node"]))
+
+            endpoint_overrides = {}
+            if anchor_ids:
+                with op_db_connection() as op_conn:
+                    endpoint_overrides = get_endpoint_names_for_anchor_routes(
+                        op_conn,
+                        anchor_ids,
+                        rutenummer_list,
+                    )
+
             from .route_endpoints import format_utm_shortform
             for route in routes:
                 endpoint_info = endpoint_map.get(route['rutenummer'])
+                override_map = endpoint_overrides.get(route["rutenummer"], {}) if endpoint_overrides else {}
                 if endpoint_info:
-                    route['from_name'] = format_utm_shortform(endpoint_info.get('from_name'))
-                    route['to_name'] = format_utm_shortform(endpoint_info.get('to_name'))
+                    from_override = override_map.get(endpoint_info.get("first_a_node"))
+                    to_override = override_map.get(endpoint_info.get("last_b_node"))
+                    if from_override and from_override.get("name"):
+                        route["from_name"] = from_override.get("name")
+                    else:
+                        route['from_name'] = format_utm_shortform(endpoint_info.get('from_name'))
+                    if to_override and to_override.get("name"):
+                        route["to_name"] = to_override.get("name")
+                    else:
+                        route['to_name'] = format_utm_shortform(endpoint_info.get('to_name'))
         except Exception as e:
             # Silently fail if query doesn't work (anchor_nodes might not exist)
             pass
@@ -1578,15 +1752,33 @@ def get_route_links(conn, rutenummer: str, include_geometry: bool = False):
         cur.execute(query, (rutenummer,))
         rows = cur.fetchall()
 
+    anchor_ids = []
+    for row in rows:
+        if row.get("a_node") is not None:
+            anchor_ids.append(int(row["a_node"]))
+        if row.get("b_node") is not None:
+            anchor_ids.append(int(row["b_node"]))
+
+    endpoint_overrides = {}
+    if anchor_ids:
+        with op_db_connection() as op_conn:
+            endpoint_overrides = get_endpoint_names_for_anchors(
+                op_conn,
+                anchor_ids,
+                rutenummer=rutenummer,
+            )
+
     links = []
     for row in rows:
         from .route_endpoints import format_utm_shortform
+        a_override = endpoint_overrides.get(row.get("a_node")) if endpoint_overrides else None
+        b_override = endpoint_overrides.get(row.get("b_node")) if endpoint_overrides else None
         link = {
             'link_id': int(row['link_id']),
             'a_node': row.get('a_node'),
             'b_node': row.get('b_node'),
-            'a_node_name': format_utm_shortform(row.get('a_node_name')),
-            'b_node_name': format_utm_shortform(row.get('b_node_name')),
+            'a_node_name': a_override.get("name") if a_override else format_utm_shortform(row.get('a_node_name')),
+            'b_node_name': b_override.get("name") if b_override else format_utm_shortform(row.get('b_node_name')),
             'length_m': float(row['length_m']) if row.get('length_m') is not None else None,
             'segment_objids': row.get('segment_objids')
         }

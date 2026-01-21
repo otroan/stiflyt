@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
-from services.database import db_connection
+from services.operational_database import op_db_connection
 from psycopg.rows import dict_row
 from .models import ChangesetResponse
 
@@ -21,7 +21,7 @@ class ChangesetService:
     ) -> str:
         """Create a new changeset. Returns changeset_id."""
         changeset_id = str(uuid.uuid4())
-        with db_connection() as conn:
+        with op_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """
@@ -46,11 +46,11 @@ class ChangesetService:
     @staticmethod
     def get(changeset_id: str) -> Optional[ChangesetResponse]:
         """Get a changeset by ID."""
-        with db_connection() as conn:
+        with op_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """
-                    SELECT id, title, description, area, status, created_by, 
+                    SELECT id, title, description, area, status, created_by,
                            created_at, updated_at, base_snapshot, linked_issue_url, pr_url
                     FROM changeset.changeset
                     WHERE id = %s
@@ -65,7 +65,7 @@ class ChangesetService:
     @staticmethod
     def update_status(changeset_id: str, status: str) -> bool:
         """Update changeset status."""
-        with db_connection() as conn:
+        with op_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """
@@ -80,7 +80,7 @@ class ChangesetService:
     @staticmethod
     def update_pr_url(changeset_id: str, pr_url: str) -> bool:
         """Update changeset PR URL."""
-        with db_connection() as conn:
+        with op_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """
@@ -95,7 +95,7 @@ class ChangesetService:
     @staticmethod
     def list_all(limit: int = 100, offset: int = 0) -> List[ChangesetResponse]:
         """List all changesets."""
-        with db_connection() as conn:
+        with op_db_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     """

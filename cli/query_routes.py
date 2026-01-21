@@ -27,6 +27,8 @@ from .formatters import (
     format_changeset_report,
 )
 from .find_available_numbers import analyze_available_numbers, format_available_numbers, parse_rutenummer, get_existing_rutenummer
+from services.operational_database import op_db_connection
+from services.operational_store import get_endpoint_names_for_anchors
 
 
 def main():
@@ -75,6 +77,12 @@ Examples:
 
   # Test ruteinfopunkt lookup (debug)
   %(prog)s debug ruteinfopunkt 7.710764899 61.809237843 --rutenummer-prefix bre
+
+  # Name anchor nodes for a route
+  %(prog)s routes anchors-name bre10
+  %(prog)s routes anchors-name bre10 --anchor-id 42 --list-candidates
+  %(prog)s routes anchors-name bre10 --anchor-id 42 --candidate-index 1
+  %(prog)s routes anchors-name bre10 --anchor-id 42 --manual-name "Haukeliseter"
         """
     )
 
@@ -209,6 +217,50 @@ Examples:
         help='Get routing links for a route'
     )
     routes_links_parser.add_argument('rutenummer', metavar='RUTENUMMER')
+
+    routes_anchors_parser = routes_subparsers.add_parser(
+        'anchors-name',
+        parents=[config_parser, output_parser],
+        help='List or set validated names for anchor nodes on a route'
+    )
+    routes_anchors_parser.add_argument('rutenummer', metavar='RUTENUMMER')
+    routes_anchors_parser.add_argument(
+        '--anchor-id',
+        type=int,
+        help='Anchor node ID to update or inspect'
+    )
+    routes_anchors_parser.add_argument(
+        '--radius',
+        type=float,
+        default=1500.0,
+        help='Search radius in meters for candidate placenames (default: 1500)'
+    )
+    routes_anchors_parser.add_argument(
+        '--limit',
+        type=int,
+        default=10,
+        help='Maximum number of placename candidates (default: 10)'
+    )
+    routes_anchors_parser.add_argument(
+        '--candidate-index',
+        type=int,
+        help='Select candidate by index (1-based) from --list-candidates'
+    )
+    routes_anchors_parser.add_argument(
+        '--manual-name',
+        type=str,
+        help='Manually set anchor name (source_type=manual)'
+    )
+    routes_anchors_parser.add_argument(
+        '--list-candidates',
+        action='store_true',
+        help='List candidate placenames for the selected anchor'
+    )
+    routes_anchors_parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Show the proposed change without saving'
+    )
 
     routes_areas_parser = routes_subparsers.add_parser(
         'areas',
@@ -938,7 +990,45 @@ Examples:
                                 start_coords = endpoints.get('start')
                                 end_coords = endpoints.get('end')
 
-                                if start_coords and len(start_coords) >= 2:
+                                # Check operational overrides via anchor nodes
+                                anchor_query = f"""
+                                    SELECT
+                                        (SELECT a_node FROM {schema_quoted}.links_with_routes
+                                         WHERE %s = ANY(rutenummer_list)
+                                         ORDER BY link_id ASC LIMIT 1) as first_a_node,
+                                        (SELECT b_node FROM {schema_quoted}.links_with_routes
+                                         WHERE %s = ANY(rutenummer_list)
+                                         ORDER BY link_id DESC LIMIT 1) as last_b_node
+                                """
+                                with conn.cursor(row_factory=dict_row) as cur:
+                                    cur.execute(anchor_query, (rutenummer, rutenummer))
+                                    anchor_row = cur.fetchone()
+                                anchor_ids = []
+                                if anchor_row:
+                                    if anchor_row.get("first_a_node") is not None:
+                                        anchor_ids.append(int(anchor_row["first_a_node"]))
+                                    if anchor_row.get("last_b_node") is not None:
+                                        anchor_ids.append(int(anchor_row["last_b_node"]))
+
+                                overrides = {}
+                                if anchor_ids:
+                                    with op_db_connection() as op_conn:
+                                        overrides = get_endpoint_names_for_anchors(
+                                            op_conn,
+                                            anchor_ids,
+                                            rutenummer=rutenummer,
+                                        )
+
+                                from_override = overrides.get(anchor_row.get("first_a_node")) if anchor_row else None
+                                to_override = overrides.get(anchor_row.get("last_b_node")) if anchor_row else None
+
+                                if from_override:
+                                    route_data['from_name'] = {
+                                        'name': from_override.get('name'),
+                                        'source': from_override.get('source_type', 'manual'),
+                                        'distance_meters': from_override.get('distance_meters')
+                                    }
+                                elif start_coords and len(start_coords) >= 2:
                                     start_name_info = lookup_endpoint_name(conn, start_coords[0], start_coords[1], rutenummer)
                                     if start_name_info and start_name_info.get('name'):
                                         route_data['from_name'] = {
@@ -947,7 +1037,13 @@ Examples:
                                             'distance_meters': start_name_info.get('distance_meters')
                                         }
 
-                                if end_coords and len(end_coords) >= 2:
+                                if to_override:
+                                    route_data['to_name'] = {
+                                        'name': to_override.get('name'),
+                                        'source': to_override.get('source_type', 'manual'),
+                                        'distance_meters': to_override.get('distance_meters')
+                                    }
+                                elif end_coords and len(end_coords) >= 2:
                                     end_name_info = lookup_endpoint_name(conn, end_coords[0], end_coords[1], rutenummer)
                                     if end_name_info and end_name_info.get('name'):
                                         route_data['to_name'] = {
@@ -1023,7 +1119,7 @@ Examples:
                 traceback.print_exc()
             sys.exit(1)
 
-    if args.command == 'routes' and args.routes_command in {'list', 'get', 'segments', 'links', 'areas'}:
+    if args.command == 'routes' and args.routes_command in {'list', 'get', 'segments', 'links', 'areas', 'anchors-name'}:
         # Create configuration
         config = CLIConfig(
             api_url=args.api_url,
@@ -1245,6 +1341,97 @@ Examples:
                             )
                             lines.append(row)
 
+                        output_text = "\n".join(lines)
+
+            elif args.routes_command == 'anchors-name':
+                response = client.get_route_anchors(args.rutenummer)
+                anchors = response.get("anchors", [])
+
+                if args.anchor_id and args.list_candidates:
+                    candidates_response = client.get_anchor_placenames(
+                        args.anchor_id,
+                        radius=args.radius,
+                        limit=args.limit,
+                    )
+                    candidates = candidates_response.get("candidates", [])
+                    if args.format == "json":
+                        output_text = format_json(candidates_response)
+                    else:
+                        lines = []
+                        lines.append(f"Placename candidates for anchor {args.anchor_id} (radius {args.radius}m)")
+                        lines.append("-" * 80)
+                        if not candidates:
+                            lines.append("No candidates found.")
+                        else:
+                            for idx, candidate in enumerate(candidates, 1):
+                                distance = candidate.get("distance_meters")
+                                distance_str = f"{distance:.1f} m" if distance is not None else "N/A"
+                                source_type = candidate.get("source_type")
+                                lines.append(
+                                    f"{idx:2d}. {candidate.get('name')} | {source_type} | {distance_str}"
+                                )
+                        output_text = "\n".join(lines)
+
+                elif args.anchor_id and (args.manual_name or args.candidate_index):
+                    payload = None
+                    if args.manual_name:
+                        payload = {
+                            "name": args.manual_name,
+                            "source_type": "manual",
+                            "rutenummer": args.rutenummer,
+                        }
+                    else:
+                        candidates_response = client.get_anchor_placenames(
+                            args.anchor_id,
+                            radius=args.radius,
+                            limit=args.limit,
+                        )
+                        candidates = candidates_response.get("candidates", [])
+                        idx = (args.candidate_index or 0) - 1
+                        if idx < 0 or idx >= len(candidates):
+                            raise ValueError("Invalid --candidate-index. Run with --list-candidates first.")
+                        candidate = candidates[idx]
+                        payload = {
+                            "name": candidate.get("name"),
+                            "source_type": candidate.get("source_type"),
+                            "source_id": candidate.get("source_id"),
+                            "distance_meters": candidate.get("distance_meters"),
+                            "rutenummer": args.rutenummer,
+                        }
+
+                    if args.dry_run:
+                        output_text = format_json({
+                            "anchor_id": args.anchor_id,
+                            "payload": payload,
+                            "dry_run": True,
+                        })
+                    else:
+                        result = client.upsert_anchor_name(args.anchor_id, payload)
+                        output_text = format_json(result) if args.format == "json" else (
+                            f"Updated anchor {args.anchor_id}: {result.get('name')} ({result.get('source_type')})"
+                        )
+
+                else:
+                    if args.format == "json":
+                        output_text = format_json(response)
+                    else:
+                        lines = []
+                        lines.append(f"Anchor nodes for route: {args.rutenummer}")
+                        lines.append("-" * 80)
+                        if not anchors:
+                            lines.append("No anchors found.")
+                        else:
+                            for anchor in anchors:
+                                name_info = anchor.get("name") or {}
+                                name = name_info.get("name") or "—"
+                                source = name_info.get("source_type") or "unknown"
+                                coords = anchor.get("coordinates") or []
+                                lat = coords[1] if len(coords) > 1 else None
+                                lon = coords[0] if len(coords) > 0 else None
+                                coord_str = f"{lat:.6f}, {lon:.6f}" if lat is not None and lon is not None else "N/A"
+                                lines.append(
+                                    f"Anchor {anchor.get('anchor_node_id')}: {name} [{source}] | {coord_str} | links={anchor.get('link_count')}"
+                                )
                         output_text = "\n".join(lines)
 
             # Write output

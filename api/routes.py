@@ -6,12 +6,52 @@ import json
 import re
 from typing import Optional, Annotated, Dict
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Query, Depends, Response, status
+from fastapi import APIRouter, HTTPException, Query, Depends, Response, status, Header
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
-from .schemas import ErrorResponse, GeometryOwnerRequest, GeometryOwnerResponse, ExcelReportRequest, PlaceSearchResponse, PointMatrikkelRequest, PointMatrikkelResponse, RouteSegmentsResponse, RouteSegment, RouteInfo, CompleteRouteResponse, Route, RoutesResponse, RouteSegmentDetail, RouteSegmentsDetailResponse, RouteLink, RouteLinksResponse, RouteValidationResponse, SegmentByLokalIdResponse, RouteAreasResponse
-from services.route_service import search_places, get_complete_route, get_routes_from_view, get_route_segments_from_view, get_route_links, get_segment_uuid_column, get_segment_by_lokalid
+from .schemas import (
+    ErrorResponse,
+    GeometryOwnerRequest,
+    GeometryOwnerResponse,
+    ExcelReportRequest,
+    PlaceSearchResponse,
+    PointMatrikkelRequest,
+    PointMatrikkelResponse,
+    RouteSegmentsResponse,
+    RouteSegment,
+    RouteInfo,
+    CompleteRouteResponse,
+    Route,
+    RoutesResponse,
+    RouteSegmentDetail,
+    RouteSegmentsDetailResponse,
+    RouteLink,
+    RouteLinksResponse,
+    RouteValidationResponse,
+    SegmentByLokalIdResponse,
+    RouteAreasResponse,
+    RouteAnchorsResponse,
+    AnchorNodeInfo,
+    PlacenameCandidatesResponse,
+    PlacenameCandidate,
+    AnchorNameUpsertRequest,
+    AnchorNameUpsertResponse,
+)
+from services.route_service import (
+    search_places,
+    get_complete_route,
+    get_routes_from_view,
+    get_route_segments_from_view,
+    get_route_links,
+    get_segment_uuid_column,
+    get_segment_by_lokalid,
+    get_route_anchor_nodes,
+    get_anchor_node_coords,
+)
+from services.route_endpoints import list_placename_candidates
+from services.operational_database import op_db_connection
+from services.operational_store import upsert_endpoint_name, get_endpoint_names_for_anchors
 from services.validators import get_validator_registry
 from collections import defaultdict
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
@@ -589,6 +629,123 @@ async def get_anchor_nodes(
         # If table doesn't exist or any other error, return empty FeatureCollection
         print(f"Error loading anchor nodes: {str(e)}")
         return create_feature_collection_response([])
+
+
+@router.get("/routes/{rutenummer}/anchors", response_model=RouteAnchorsResponse)
+async def get_route_anchors(
+    rutenummer: str,
+):
+    """List anchor nodes for a route, with validated names if present."""
+    try:
+        with db_connection() as conn:
+            anchors = get_route_anchor_nodes(conn, rutenummer)
+
+        if not anchors:
+            return RouteAnchorsResponse(rutenummer=rutenummer, anchors=[], total=0)
+
+        anchor_ids = [a["anchor_node_id"] for a in anchors]
+        overrides = {}
+        with op_db_connection() as op_conn:
+            overrides = get_endpoint_names_for_anchors(op_conn, anchor_ids, rutenummer=rutenummer)
+
+        anchor_models = []
+        for anchor in anchors:
+            override = overrides.get(anchor["anchor_node_id"])
+            if override and override.get("validated_at"):
+                override = {
+                    **override,
+                    "validated_at": override["validated_at"].isoformat(),
+                }
+            anchor_models.append(
+                AnchorNodeInfo(
+                    anchor_node_id=anchor["anchor_node_id"],
+                    coordinates=[anchor["lon"], anchor["lat"]],
+                    link_count=anchor["link_count"],
+                    name=override,
+                )
+            )
+
+        return RouteAnchorsResponse(
+            rutenummer=rutenummer,
+            anchors=anchor_models,
+            total=len(anchor_models),
+        )
+    except Exception as e:
+        print(f"Error loading route anchors: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error loading route anchors: {str(e)}")
+
+
+@router.get("/anchors/{anchor_id}/placenames", response_model=PlacenameCandidatesResponse)
+async def get_anchor_placenames(
+    anchor_id: int,
+    radius: Annotated[float, Query(ge=10.0, le=5000.0, description="Search radius in meters")] = 500.0,
+    limit: Annotated[int, Query(ge=1, le=50, description="Maximum number of candidates")] = 10,
+):
+    """List nearby placename candidates for an anchor node."""
+    with db_connection() as conn:
+        coords = get_anchor_node_coords(conn, anchor_id)
+        if not coords:
+            raise HTTPException(status_code=404, detail=f"Anchor node {anchor_id} not found")
+        candidates = list_placename_candidates(
+            conn,
+            coords["lon"],
+            coords["lat"],
+            search_radius_meters=radius,
+            limit=limit,
+        )
+
+    candidate_models = [
+        PlacenameCandidate(
+            name=c["name"],
+            source_type=c["source"],
+            source_id=c.get("source_id"),
+            distance_meters=c.get("distance_meters"),
+            tilrettelegging=c.get("tilrettelegging"),
+        )
+        for c in candidates
+    ]
+
+    return PlacenameCandidatesResponse(
+        anchor_node_id=anchor_id,
+        radius_meters=radius,
+        candidates=candidate_models,
+    )
+
+
+@router.post("/anchors/{anchor_id}/name", response_model=AnchorNameUpsertResponse)
+async def upsert_anchor_name(
+    anchor_id: int,
+    request: AnchorNameUpsertRequest,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Upsert a validated name for an anchor node."""
+    validated_by = x_user or "anonymous"
+    with op_db_connection() as conn:
+        row = upsert_endpoint_name(
+            conn,
+            anchor_node_id=anchor_id,
+            rutenummer=request.rutenummer,
+            name=request.name,
+            source_type=request.source_type,
+            source_id=request.source_id,
+            distance_meters=request.distance_meters,
+            validated_by=validated_by,
+        )
+
+    validated_at = row.get("validated_at")
+    if validated_at:
+        validated_at = validated_at.isoformat()
+
+    return AnchorNameUpsertResponse(
+        anchor_node_id=row.get("anchor_node_id", anchor_id),
+        rutenummer=row.get("rutenummer"),
+        name=row.get("name", request.name),
+        source_type=row.get("source_type", request.source_type),
+        source_id=row.get("source_id"),
+        distance_meters=row.get("distance_meters"),
+        validated_by=row.get("validated_by", validated_by),
+        validated_at=validated_at,
+    )
 
 
 @router.get("/routes/segments", response_model=RouteSegmentsResponse)

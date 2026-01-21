@@ -122,6 +122,68 @@ class EndpointName(BaseModel):
     tilrettelegging: Optional[str] = None  # Only present for ruteinfopunkt source
 
 
+class PlacenameCandidate(BaseModel):
+    """Candidate placename near an anchor."""
+    name: str
+    source_type: str  # 'ruteinfopunkt' | 'stedsnavn' | 'anchor_node'
+    source_id: Optional[str] = None
+    distance_meters: Optional[float] = None
+    tilrettelegging: Optional[str] = None
+
+
+class PlacenameCandidatesResponse(BaseModel):
+    """Response for placename candidates."""
+    anchor_node_id: int
+    radius_meters: float
+    candidates: List[PlacenameCandidate]
+
+
+class AnchorNodeName(BaseModel):
+    """Validated anchor node name with provenance."""
+    name: str
+    source_type: str
+    source_id: Optional[str] = None
+    distance_meters: Optional[float] = None
+    validated_by: Optional[str] = None
+    validated_at: Optional[str] = None
+
+
+class AnchorNodeInfo(BaseModel):
+    """Anchor node info for a route."""
+    anchor_node_id: int
+    coordinates: List[float]  # [lon, lat]
+    link_count: int
+    name: Optional[AnchorNodeName] = None
+
+
+class RouteAnchorsResponse(BaseModel):
+    """Response for route anchor nodes."""
+    rutenummer: str
+    anchors: List[AnchorNodeInfo]
+    total: int
+
+
+class AnchorNameUpsertRequest(BaseModel):
+    """Request to upsert a validated anchor name."""
+    name: str
+    source_type: str
+    source_id: Optional[str] = None
+    distance_meters: Optional[float] = None
+    rutenummer: Optional[str] = None
+
+
+class AnchorNameUpsertResponse(BaseModel):
+    """Response for anchor name upsert."""
+    anchor_node_id: int
+    rutenummer: Optional[str] = None
+    name: str
+    source_type: str
+    source_id: Optional[str] = None
+    distance_meters: Optional[float] = None
+    validated_by: Optional[str] = None
+    validated_at: Optional[str] = None
+
+
 class RouteComponent(BaseModel):
     """Route component information (for disconnected routes)."""
     index: int
