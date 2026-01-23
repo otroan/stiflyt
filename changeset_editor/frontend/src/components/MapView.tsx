@@ -1,5 +1,6 @@
 /** Map view component with Leaflet and Geoman */
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
@@ -450,6 +451,128 @@ function SegmentsLinksLayerControl({
   }, [map, onSegmentsToggle, onLinksToggle]);
 
   return null;
+}
+
+// Custom Leaflet Control for Mode Selection
+function ModeControl({ 
+  activeMode, 
+  onModeChange,
+  onEditModeChange
+}: { 
+  activeMode: AppMode;
+  onModeChange: (mode: AppMode) => void;
+  onEditModeChange: (enabled: boolean) => void;
+}) {
+  const map = useMap();
+  const controlRef = useRef<L.Control | null>(null);
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // Create custom Leaflet control
+    const ModeControlClass = L.Control.extend({
+      onAdd: () => {
+        const containerDiv = L.DomUtil.create('div', 'leaflet-bar leaflet-control leaflet-control-mode');
+        containerDiv.style.background = 'white';
+        containerDiv.style.borderRadius = '4px';
+        containerDiv.style.boxShadow = '0 1px 5px rgba(0,0,0,0.4)';
+        containerDiv.style.padding = '4px';
+        containerDiv.style.marginTop = '10px'; // Space below zoom controls
+        
+        // Prevent map panning when clicking on control
+        L.DomEvent.disableClickPropagation(containerDiv);
+        L.DomEvent.disableScrollPropagation(containerDiv);
+        
+        setContainer(containerDiv);
+        return containerDiv;
+      },
+      onRemove: () => {
+        setContainer(null);
+      }
+    });
+
+    // Create and add control to map
+    controlRef.current = new ModeControlClass({ position: 'topright' });
+    controlRef.current.addTo(map);
+
+    return () => {
+      if (controlRef.current) {
+        map.removeControl(controlRef.current);
+        controlRef.current = null;
+      }
+      setContainer(null);
+    };
+  }, [map]);
+
+  // Render mode buttons using portal
+  const modeLabels: Record<AppMode, string> = {
+    'inspection': '👁️ Inspiser',
+    'edit': '✏️ Rediger',
+    'anchor-naming': '🏷️ Navngi Ankere',
+    'signs': '🚩 Skilt',
+    'property-ownership': '🏠 Grunneier',
+  };
+
+  const modes: AppMode[] = ['inspection', 'edit', 'anchor-naming', 'signs', 'property-ownership'];
+
+  if (!container) {
+    return null;
+  }
+
+  return createPortal(
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '4px',
+    }}>
+      <div style={{ 
+        fontSize: '11px', 
+        fontWeight: 'bold', 
+        marginBottom: '2px', 
+        color: '#666',
+        padding: '0 4px',
+        textAlign: 'center',
+      }}>
+        Modus:
+      </div>
+      {modes.map((mode) => {
+        const isActive = activeMode === mode;
+        return (
+          <button
+            key={mode}
+            onClick={() => {
+              onModeChange(mode);
+              // Auto-enable edit mode when entering edit mode
+              if (mode === 'edit') {
+                onEditModeChange(true);
+              } else {
+                onEditModeChange(false);
+              }
+            }}
+            style={{
+              padding: '6px 10px',
+              border: 'none',
+              borderRadius: '4px',
+              background: isActive ? '#007bff' : '#f8f9fa',
+              color: isActive ? 'white' : '#333',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: isActive ? 'bold' : 'normal',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.2s',
+              whiteSpace: 'nowrap',
+              width: '100%',
+            }}
+            title={modeLabels[mode]}
+          >
+            {modeLabels[mode]}
+          </button>
+        );
+      })}
+    </div>,
+    container
+  );
 }
 
 // Component to handle layer control changes
@@ -2056,6 +2179,12 @@ export function MapView({
         />
         <SignsLayerControl onToggle={setShowSigns} />
 
+        <ModeControl
+          activeMode={activeMode}
+          onModeChange={onModeChange}
+          onEditModeChange={setEditMode}
+        />
+
         <MapInitializer
           onMapReady={(map) => {
             debugLog('MapInitializer callback: setting mapRef and mapReady');
@@ -2162,66 +2291,6 @@ export function MapView({
         </div>
       )}
 
-      {/* Mode Selector - Always visible */}
-      <div style={{
-        position: 'absolute',
-        top: 10,
-        left: 20,
-        zIndex: 1000,
-        background: 'white',
-        borderRadius: '8px',
-        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-        padding: '8px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '4px',
-      }}>
-        <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', color: '#666' }}>
-          Modus:
-        </div>
-        {(['inspection', 'edit', 'anchor-naming', 'signs', 'property-ownership'] as AppMode[]).map((mode) => {
-          const modeLabels: Record<AppMode, string> = {
-            'inspection': '👁️ Inspiser',
-            'edit': '✏️ Rediger',
-            'anchor-naming': '🏷️ Navngi Ankere',
-            'signs': '🚩 Skilt',
-            'property-ownership': '🏠 Grunneier',
-          };
-          const isActive = activeMode === mode;
-          return (
-            <button
-              key={mode}
-              onClick={() => {
-                onModeChange(mode);
-                // Auto-enable edit mode when entering edit mode
-                if (mode === 'edit') {
-                  setEditMode(true);
-                } else {
-                  setEditMode(false);
-                }
-              }}
-              style={{
-                padding: '8px 12px',
-                border: 'none',
-                borderRadius: '6px',
-                background: isActive ? '#007bff' : '#f8f9fa',
-                color: isActive ? 'white' : '#333',
-                cursor: 'pointer',
-                fontSize: '14px',
-                fontWeight: isActive ? 'bold' : 'normal',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                transition: 'all 0.2s',
-                whiteSpace: 'nowrap',
-              }}
-              title={modeLabels[mode]}
-            >
-              {modeLabels[mode]}
-            </button>
-          );
-        })}
-      </div>
 
       {/* Toolbar - show when route is selected or in edit mode */}
       {(routeNumber || activeMode === 'edit') && (
