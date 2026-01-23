@@ -59,6 +59,213 @@ interface MapViewProps {
   onOwnershipDataChange?: (data: any) => void;
 }
 
+// Component to render the segments layer for LayersControl
+function SegmentsLayer({ 
+  segmentsData,
+  segmentsLayerRef,
+  selectedFeatureId,
+  selectedFeatureIds,
+  onFeatureSelect
+}: { 
+  segmentsData: GeoJSON.FeatureCollection | null;
+  segmentsLayerRef: React.MutableRefObject<L.GeoJSON | null>;
+  selectedFeatureId?: string;
+  selectedFeatureIds?: Set<string>;
+  onFeatureSelect?: (id: string, properties?: Record<string, unknown>, isMultiSelect?: boolean) => void;
+}) {
+  const layerGroupRef = useRef<L.LayerGroup | null>(null);
+  const map = useMap();
+
+  // Initialize layer group and sync with segmentsLayerRef
+  useEffect(() => {
+    if (!layerGroupRef.current) {
+      layerGroupRef.current = L.layerGroup();
+    }
+  }, []);
+
+  // Update segments when data or selection changes
+  useEffect(() => {
+    if (!layerGroupRef.current || !segmentsData) {
+      if (layerGroupRef.current) {
+        layerGroupRef.current.clearLayers();
+      }
+      segmentsLayerRef.current = null;
+      return;
+    }
+
+    // Clear previous layers
+    layerGroupRef.current.clearLayers();
+
+    const segmentsLayer = L.geoJSON(segmentsData, {
+      style: (feature) => {
+        const props = feature?.properties as { objid?: number | string; segment_objid?: number | string; [key: string]: unknown } | null;
+        const featureId = feature?.id
+          ? String(feature.id)
+          : props?.objid
+            ? String(props.objid)
+            : props?.segment_objid
+              ? String(props.segment_objid)
+              : null;
+        const isSelected = featureId && (selectedFeatureIds?.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
+        return {
+          color: isSelected ? '#2196f3' : '#9b59b6',
+          weight: isSelected ? 6 : 4,
+          opacity: isSelected ? 1.0 : 0.8,
+        };
+      },
+      onEachFeature: (feature, layer) => {
+        const props = feature.properties as { objid?: number | string; rutenummer?: string; rutenavn?: string | null; length_m?: number | null; [key: string]: unknown } | null;
+        const featureId = feature.id
+          ? String(feature.id)
+          : props?.objid
+            ? String(props.objid)
+            : props?.segment_objid
+              ? String(props.segment_objid)
+              : null;
+
+        if (props) {
+          layer.bindPopup(`
+            <strong>Segment ${props.objid ?? 'N/A'}</strong><br>
+            Rute: ${props.rutenummer || 'N/A'}<br>
+            Navn: ${props.rutenavn || 'Uten navn'}<br>
+            Lengde: ${typeof props.length_m === 'number' ? props.length_m.toFixed(2) : 'N/A'} m
+          `);
+        }
+
+        layer.on('click', (e: L.LeafletMouseEvent) => {
+          if (onFeatureSelect && featureId) {
+            const featureProps = feature.properties as Record<string, unknown> | null;
+            const isMultiSelect = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
+            onFeatureSelect(featureId, featureProps || undefined, isMultiSelect);
+          }
+        });
+      },
+    });
+
+    // Add to layer group (not directly to map - LayersControl handles that)
+    layerGroupRef.current.addLayer(segmentsLayer);
+    segmentsLayerRef.current = segmentsLayer;
+  }, [segmentsData, selectedFeatureId, selectedFeatureIds, onFeatureSelect, segmentsLayerRef]);
+
+  return <LayerGroup ref={layerGroupRef} />;
+}
+
+// Component to render the links layer for LayersControl
+function LinksLayer({ 
+  linksData,
+  linksLayerRef,
+  selectedFeatureId,
+  selectedFeatureIds,
+  onFeatureSelect,
+  activeMode,
+  onGeometrySelectForOwnership,
+  onOwnershipDataChange
+}: { 
+  linksData: GeoJSON.FeatureCollection | null;
+  linksLayerRef: React.MutableRefObject<L.GeoJSON | null>;
+  selectedFeatureId?: string;
+  selectedFeatureIds?: Set<string>;
+  onFeatureSelect?: (id: string, properties?: Record<string, unknown>, isMultiSelect?: boolean) => void;
+  activeMode?: AppMode;
+  onGeometrySelectForOwnership?: (geometry: GeoJSON.Geometry | null) => void;
+  onOwnershipDataChange?: (data: any) => void;
+}) {
+  const layerGroupRef = useRef<L.LayerGroup | null>(null);
+  const map = useMap();
+
+  // Initialize layer group
+  useEffect(() => {
+    if (!layerGroupRef.current) {
+      layerGroupRef.current = L.layerGroup();
+    }
+  }, []);
+
+  // Update links when data or selection changes
+  useEffect(() => {
+    if (!layerGroupRef.current || !linksData) {
+      if (layerGroupRef.current) {
+        layerGroupRef.current.clearLayers();
+      }
+      linksLayerRef.current = null;
+      return;
+    }
+
+    // Clear previous layers
+    layerGroupRef.current.clearLayers();
+
+    const linksLayer = L.geoJSON(linksData, {
+      style: (feature) => {
+        const props = feature?.properties as { link_id?: number; [key: string]: unknown } | null;
+        const featureId = feature?.id
+          ? String(feature.id)
+          : props?.link_id
+            ? String(props.link_id)
+            : null;
+        const isSelected = featureId && (selectedFeatureIds?.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
+        return {
+          color: isSelected ? '#2196f3' : '#16a085',
+          weight: isSelected ? 5 : 4,
+          opacity: isSelected ? 1.0 : 0.85,
+          dashArray: '5, 5',
+        };
+      },
+      onEachFeature: (feature, layer) => {
+        const props = feature.properties as { link_id?: number; a_node?: number | null; b_node?: number | null; length_m?: number | null; [key: string]: unknown } | null;
+        const featureId = feature.id
+          ? String(feature.id)
+          : props?.link_id
+            ? String(props.link_id)
+            : null;
+
+        if (props) {
+          layer.bindPopup(`
+            <strong>Link ${props.link_id ?? 'N/A'}</strong><br>
+            A-node: ${props.a_node ?? 'N/A'}<br>
+            B-node: ${props.b_node ?? 'N/A'}<br>
+            Lengde: ${typeof props.length_m === 'number' ? props.length_m.toFixed(2) : 'N/A'} m
+          `);
+        }
+
+        layer.on('click', (e: L.LeafletMouseEvent) => {
+          // Property ownership mode: fetch ownership for link geometry
+          if (activeMode === 'property-ownership' && onGeometrySelectForOwnership && feature.geometry) {
+            if (feature.geometry.type === 'LineString') {
+              onGeometrySelectForOwnership(feature.geometry);
+              // Fetch ownership data
+              if (onOwnershipDataChange) {
+                onOwnershipDataChange(null);
+                api.getGeometryOwners(feature.geometry)
+                  .then((data) => {
+                    if (onOwnershipDataChange) {
+                      onOwnershipDataChange(data);
+                    }
+                  })
+                  .catch((error) => {
+                    const appError = handleApiError(error, 'Property Ownership');
+                    notificationManager.error(`Kunne ikke laste grunneierinformasjon: ${appError.message}`);
+                  });
+              }
+            }
+            return;
+          }
+
+          if (onFeatureSelect && featureId) {
+            const featureProps = feature.properties as Record<string, unknown> | null;
+            const isMultiSelect = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
+            onFeatureSelect(featureId, featureProps || undefined, isMultiSelect);
+          }
+        });
+      },
+    });
+
+    // Add to layer group (not directly to map - LayersControl handles that)
+    layerGroupRef.current.addLayer(linksLayer);
+    linksLayerRef.current = linksLayer;
+  }, [linksData, selectedFeatureId, selectedFeatureIds, onFeatureSelect, linksLayerRef, activeMode, onGeometrySelectForOwnership, onOwnershipDataChange]);
+
+  return <LayerGroup ref={layerGroupRef} />;
+}
+
 // Component to render the signs layer for LayersControl
 function SignsLayer({ 
   signsData,
@@ -200,6 +407,49 @@ function SignsLayer({
   }, [signsData, selectedSignDestinations, onSignDestinationSelect]);
 
   return <LayerGroup ref={layerGroupRef} />;
+}
+
+// Component to handle layer control changes for segments and links (mutually exclusive)
+function SegmentsLinksLayerControl({ 
+  onSegmentsToggle,
+  onLinksToggle
+}: { 
+  onSegmentsToggle: (enabled: boolean) => void;
+  onLinksToggle: (enabled: boolean) => void;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    const handleOverlayAdd = (e: L.LayersControlEvent) => {
+      if (e.name === 'Segmenter') {
+        onSegmentsToggle(true);
+        // Deactivate links when segments are activated
+        onLinksToggle(false);
+      } else if (e.name === 'Ankere') {
+        onLinksToggle(true);
+        // Deactivate segments when links are activated
+        onSegmentsToggle(false);
+      }
+    };
+
+    const handleOverlayRemove = (e: L.LayersControlEvent) => {
+      if (e.name === 'Segmenter') {
+        onSegmentsToggle(false);
+      } else if (e.name === 'Ankere') {
+        onLinksToggle(false);
+      }
+    };
+
+    map.on('overlayadd', handleOverlayAdd);
+    map.on('overlayremove', handleOverlayRemove);
+
+    return () => {
+      map.off('overlayadd', handleOverlayAdd);
+      map.off('overlayremove', handleOverlayRemove);
+    };
+  }, [map, onSegmentsToggle, onLinksToggle]);
+
+  return null;
 }
 
 // Component to handle layer control changes
@@ -403,8 +653,8 @@ export function MapView({
   const [mapReady, setMapReady] = useState(false);
   const [routesInView, setRoutesInView] = useState<GeoJSON.FeatureCollection | null>(null);
   const [activeTool, setActiveTool] = useState<string | null>(null);
-  const [showSegments, setShowSegments] = useState(true); // Default: inspection mode
-  const [showLinks, setShowLinks] = useState(true); // Default: inspection mode
+  const [showSegments, setShowSegments] = useState(true); // Default: segments selected
+  const [showLinks, setShowLinks] = useState(false); // Default: links not selected (mutually exclusive with segments)
   const [showSigns, setShowSigns] = useState(false);
   const [editMode, setEditMode] = useState(false); // Separate edit mode toggle
   const [segmentsData, setSegmentsData] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -1058,186 +1308,11 @@ export function MapView({
     }
   }, [routeGeometry, routeNumber, selectedRouteNumber, mapReady]);
 
-  // Display segments
-  useEffect(() => {
-    if (!mapRef.current || !mapReady) {
-      if (segmentsLayerRef.current && mapRef.current) {
-        mapRef.current.removeLayer(segmentsLayerRef.current);
-        segmentsLayerRef.current = null;
-      }
-      return;
-    }
+  // Segments and links are now handled by SegmentsLayer and LinksLayer components in LayersControl
+  // Style updates are handled within those components when selection changes
 
-    // Remove layer if not showing or no data
-    if (!showSegments || !segmentsData) {
-      if (segmentsLayerRef.current) {
-        mapRef.current.removeLayer(segmentsLayerRef.current);
-        segmentsLayerRef.current = null;
-      }
-      return;
-    }
-
-    // Clear previous segments layer
-    if (segmentsLayerRef.current) {
-      mapRef.current.removeLayer(segmentsLayerRef.current);
-      segmentsLayerRef.current = null;
-    }
-
-    debugLog('Displaying segments:', segmentsData.features.length, 'features');
-    const segmentsLayer = L.geoJSON(segmentsData, {
-      style: (feature) => {
-        const props = feature?.properties as { objid?: number | string; segment_objid?: number | string; [key: string]: unknown } | null;
-        // Normalize feature ID for style matching
-        const featureId = feature?.id
-          ? String(feature.id)
-          : props?.objid
-            ? String(props.objid)
-            : props?.segment_objid
-              ? String(props.segment_objid)
-              : null;
-        const isSelected = featureId && (selectedFeatureIds.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
-        return {
-          color: isSelected ? '#2196f3' : '#9b59b6',
-          weight: isSelected ? 6 : 4,
-          opacity: isSelected ? 1.0 : 0.8,
-        };
-      },
-      onEachFeature: (feature, layer) => {
-        const props = feature.properties as { objid?: number | string; rutenummer?: string; rutenavn?: string | null; length_m?: number | null; [key: string]: unknown } | null;
-        // Normalize feature ID - ensure it's a string and try multiple sources
-        const featureId = feature.id
-          ? String(feature.id)
-          : props?.objid
-            ? String(props.objid)
-            : props?.segment_objid
-              ? String(props.segment_objid)
-              : null;
-
-        if (props) {
-          layer.bindPopup(`
-          <strong>Segment ${props.objid ?? 'N/A'}</strong><br>
-          Rute: ${props.rutenummer || 'N/A'}<br>
-          Navn: ${props.rutenavn || 'Uten navn'}<br>
-          Lengde: ${typeof props.length_m === 'number' ? props.length_m.toFixed(2) : 'N/A'} m
-        `);
-        }
-
-        // Add click handler for selection
-        layer.on('click', (e: L.LeafletMouseEvent) => {
-          if (onFeatureSelect && featureId) {
-            const featureProps = feature.properties as Record<string, unknown> | null;
-            const isMultiSelect = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
-            debugLog('Segment clicked:', { featureId, selectedFeatureId, isMultiSelect, props: featureProps });
-            onFeatureSelect(featureId, featureProps || undefined, isMultiSelect);
-          } else {
-            console.warn('Segment click ignored - missing featureId or onFeatureSelect', { featureId, hasHandler: !!onFeatureSelect });
-          }
-        });
-      },
-    }).addTo(mapRef.current);
-
-    segmentsLayerRef.current = segmentsLayer;
-  }, [showSegments, segmentsData, mapReady, selectedFeatureId, selectedFeatureIds, onFeatureSelect]);
-
-  // Display links
-  useEffect(() => {
-    if (!mapRef.current || !mapReady) {
-      if (linksLayerRef.current && mapRef.current) {
-        mapRef.current.removeLayer(linksLayerRef.current);
-        linksLayerRef.current = null;
-      }
-      return;
-    }
-
-    // Remove layer if not showing or no data
-    if (!showLinks || !linksData) {
-      if (linksLayerRef.current) {
-        mapRef.current.removeLayer(linksLayerRef.current);
-        linksLayerRef.current = null;
-      }
-      return;
-    }
-
-    // Clear previous links layer
-    if (linksLayerRef.current) {
-      mapRef.current.removeLayer(linksLayerRef.current);
-      linksLayerRef.current = null;
-    }
-
-    debugLog('Displaying links:', linksData.features.length, 'features');
-    const linksLayer = L.geoJSON(linksData, {
-      style: (feature) => {
-        const props = feature?.properties as { link_id?: number; [key: string]: unknown } | null;
-        // Normalize feature ID for style matching
-        const featureId = feature?.id
-          ? String(feature.id)
-          : props?.link_id
-            ? String(props.link_id)
-            : null;
-        const isSelected = featureId && (selectedFeatureIds.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
-        return {
-          color: isSelected ? '#2196f3' : '#16a085',
-          weight: isSelected ? 5 : 4,
-          opacity: isSelected ? 1.0 : 0.85,
-          dashArray: '5, 5',
-        };
-      },
-      onEachFeature: (feature, layer) => {
-        const props = feature.properties as { link_id?: number; a_node?: number | null; b_node?: number | null; length_m?: number | null; [key: string]: unknown } | null;
-        // Normalize feature ID - ensure it's a string
-        const featureId = feature.id
-          ? String(feature.id)
-          : props?.link_id
-            ? String(props.link_id)
-            : null;
-
-        if (props) {
-          layer.bindPopup(`
-          <strong>Link ${props.link_id ?? 'N/A'}</strong><br>
-          A-node: ${props.a_node ?? 'N/A'}<br>
-          B-node: ${props.b_node ?? 'N/A'}<br>
-          Lengde: ${typeof props.length_m === 'number' ? props.length_m.toFixed(2) : 'N/A'} m
-        `);
-        }
-
-        // Add click handler for selection
-        layer.on('click', (e: L.LeafletMouseEvent) => {
-          // Property ownership mode: fetch ownership for link geometry
-          if (activeMode === 'property-ownership' && onGeometrySelectForOwnership && feature.geometry) {
-            if (feature.geometry.type === 'LineString') {
-              onGeometrySelectForOwnership(feature.geometry);
-              // Fetch ownership data
-              if (onOwnershipDataChange) {
-                onOwnershipDataChange(null); // Clear previous data
-                api.getGeometryOwners(feature.geometry)
-                  .then((data) => {
-                    if (onOwnershipDataChange) {
-                      onOwnershipDataChange(data);
-                    }
-                  })
-                  .catch((error) => {
-                    const appError = handleApiError(error, 'Property Ownership');
-                    notificationManager.error(`Kunne ikke laste grunneierinformasjon: ${appError.message}`);
-                  });
-              }
-            }
-            return;
-          }
-
-          if (onFeatureSelect && featureId) {
-            const featureProps = feature.properties as Record<string, unknown> | null;
-            const isMultiSelect = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
-            debugLog('Link clicked:', { featureId, selectedFeatureId, isMultiSelect, props: featureProps });
-            onFeatureSelect(featureId, featureProps || undefined, isMultiSelect);
-          } else {
-            console.warn('Link click ignored - missing featureId or onFeatureSelect', { featureId, hasHandler: !!onFeatureSelect });
-          }
-        });
-      },
-    }).addTo(mapRef.current);
-
-    linksLayerRef.current = linksLayer;
-  }, [showLinks, linksData, mapReady, selectedFeatureId, selectedFeatureIds, onFeatureSelect]);
+  // Links are now handled by LinksLayer component in LayersControl
+  // Style updates are handled within that component when selection changes
 
   // Display endpoints (for segments and links)
   useEffect(() => {
@@ -1944,6 +2019,27 @@ export function MapView({
               maxZoom={19}
             />
           </LayersControl.BaseLayer>
+          <LayersControl.Overlay checked={showSegments} name="Segmenter">
+            <SegmentsLayer 
+              segmentsData={segmentsData}
+              segmentsLayerRef={segmentsLayerRef}
+              selectedFeatureId={selectedFeatureId}
+              selectedFeatureIds={selectedFeatureIds}
+              onFeatureSelect={onFeatureSelect}
+            />
+          </LayersControl.Overlay>
+          <LayersControl.Overlay checked={showLinks} name="Ankere">
+            <LinksLayer 
+              linksData={linksData}
+              linksLayerRef={linksLayerRef}
+              selectedFeatureId={selectedFeatureId}
+              selectedFeatureIds={selectedFeatureIds}
+              onFeatureSelect={onFeatureSelect}
+              activeMode={activeMode}
+              onGeometrySelectForOwnership={onGeometrySelectForOwnership}
+              onOwnershipDataChange={onOwnershipDataChange}
+            />
+          </LayersControl.Overlay>
           <LayersControl.Overlay checked={showSigns} name="Skilt">
             <SignsLayer 
               signsData={signsData}
@@ -1954,6 +2050,10 @@ export function MapView({
           </LayersControl.Overlay>
         </LayersControl>
 
+        <SegmentsLinksLayerControl 
+          onSegmentsToggle={setShowSegments}
+          onLinksToggle={setShowLinks}
+        />
         <SignsLayerControl onToggle={setShowSigns} />
 
         <MapInitializer
@@ -2385,68 +2485,6 @@ export function MapView({
         </div>
       )}
 
-      {/* Layer toggles - always visible in inspection mode */}
-      {activeMode === 'inspection' && (
-        <div style={{
-          position: 'absolute',
-          top: 80,
-          left: 20,
-          zIndex: 1000,
-          background: 'white',
-          borderRadius: '8px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-          padding: '8px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '4px',
-        }}>
-          {/* Toggle segments */}
-          <button
-            onClick={() => setShowSegments(!showSegments)}
-            style={{
-              padding: '12px',
-              border: 'none',
-              borderRadius: '6px',
-              background: showSegments ? '#9b59b6' : '#f8f9fa',
-              color: showSegments ? 'white' : '#333',
-              cursor: 'pointer',
-              fontSize: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s',
-              minWidth: '48px',
-              minHeight: '48px',
-            }}
-            title="Vis/skjul segmenter"
-          >
-            📍
-          </button>
-
-          {/* Toggle links */}
-          <button
-            onClick={() => setShowLinks(!showLinks)}
-            style={{
-              padding: '12px',
-              border: 'none',
-              borderRadius: '6px',
-              background: showLinks ? '#16a085' : '#f8f9fa',
-              color: showLinks ? 'white' : '#333',
-              cursor: 'pointer',
-              fontSize: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s',
-              minWidth: '48px',
-              minHeight: '48px',
-            }}
-            title="Vis/skjul linker"
-          >
-            🔗
-          </button>
-        </div>
-      )}
 
       {/* Pending changes indicator */}
       {localEventsCount > 0 && (
