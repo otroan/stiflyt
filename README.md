@@ -200,4 +200,3 @@ Anchor node IDs can change after a fresh import. To keep validated names attache
 python scripts/remap_anchor_names.py --radius 50
 ```
 This remaps endpoint names to the nearest anchor node within the radius (in meters).
-

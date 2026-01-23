@@ -134,6 +134,7 @@ export interface RouteResponse {
   rutenavn: string | null;
   vedlikeholdsansvarlig: string | null;
   rutetype?: string | null;
+  gradering?: string | null;
   route_geometry: GeoJSON.Geometry | null;
   total_length_m?: number;
   total_length_meters?: number;
@@ -211,6 +212,65 @@ export interface RouteAnchorsResponse {
   rutenummer: string;
   anchors: AnchorNodeInfo[];
   total: number;
+}
+
+export interface SignDestination {
+  anchor_node_id: number;
+  name: string;
+  distance_meters: number;
+}
+
+export interface SignStatus {
+  direction?: string | null;
+  status?: string | null;
+  last_inspected?: string | null;
+  notes?: string | null;
+  front_lon?: number | null;
+  front_lat?: number | null;
+  back_lon?: number | null;
+  back_lat?: number | null;
+  updated_by?: string | null;
+  updated_at?: string | null;
+}
+
+export interface SignReportItem {
+  anchor_node_id: number;
+  coordinates?: [number | null, number | null] | null;
+  link_count: number;
+  is_endpoint: boolean;
+  is_junction: boolean;
+  name?: string | null;
+  destinations: SignDestination[];
+  status?: SignStatus[];
+}
+
+export interface SignsMissingItem {
+  anchor_node_id: number;
+  coordinates?: [number | null, number | null] | null;
+  reason: string;
+}
+
+export interface SignsMissingReport {
+  missing_signs: SignsMissingItem[];
+  missing_destinations: SignsMissingItem[];
+  missing_anchor_names: SignsMissingItem[];
+}
+
+export interface SignsReportResponse {
+  scope: Record<string, unknown>;
+  signs: SignReportItem[];
+  missing: SignsMissingReport;
+  totals: {
+    sign_count?: number;
+    endpoint_count?: number;
+    junction_count?: number;
+    destination_count?: number;
+  };
+}
+
+export interface SignsProductionResponse {
+  scope: Record<string, unknown>;
+  rows: Record<string, unknown>[];
 }
 
 export interface PlacenameCandidate {

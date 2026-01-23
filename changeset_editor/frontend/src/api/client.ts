@@ -15,6 +15,9 @@ import type {
   PlacenameCandidatesResponse,
   AnchorNameUpsertRequest,
   AnchorNameUpsertResponse,
+  SignsReportResponse,
+  SignsMissingReport,
+  SignsProductionResponse,
 } from '../types';
 import { isRetryableError } from '../utils/errorHandler';
 
@@ -250,6 +253,67 @@ export const api = {
       options
     ),
 
+  getLinksByBbox: (
+    bbox: { xmin: number; ymin: number; xmax: number; ymax: number },
+    limit = 500,
+    options: RequestOptions = {}
+  ): Promise<GeoJSON.FeatureCollection> =>
+    requestWithAbort<GeoJSON.FeatureCollection>(
+      `/v1/links?bbox=${bbox.xmin},${bbox.ymin},${bbox.xmax},${bbox.ymax}&limit=${limit}`,
+      options
+    ),
+
+  getRouteSigns: (
+    rutenummer: string,
+    options: RequestOptions = {}
+  ): Promise<SignsReportResponse> =>
+    requestWithAbort<SignsReportResponse>(`/v1/routes/${rutenummer}/signs`, options),
+
+  getSignsByPrefix: (
+    prefix: string,
+    options: RequestOptions = {}
+  ): Promise<SignsReportResponse> =>
+    requestWithAbort<SignsReportResponse>(
+      `/v1/signs?prefix=${encodeURIComponent(prefix)}`,
+      options
+    ),
+
+  getSignsByBbox: (
+    bbox: { xmin: number; ymin: number; xmax: number; ymax: number },
+    options: RequestOptions = {}
+  ): Promise<SignsReportResponse> =>
+    requestWithAbort<SignsReportResponse>(
+      `/v1/signs?bbox=${bbox.xmin},${bbox.ymin},${bbox.xmax},${bbox.ymax}`,
+      options
+    ),
+
+  getSignsMissing: (
+    prefix: string,
+    options: RequestOptions = {}
+  ): Promise<SignsMissingReport> =>
+    requestWithAbort<SignsMissingReport>(
+      `/v1/signs/missing?prefix=${encodeURIComponent(prefix)}`,
+      options
+    ),
+
+  getSignsProductionByPrefix: (
+    prefix: string,
+    options: RequestOptions = {}
+  ): Promise<SignsProductionResponse> =>
+    requestWithAbort<SignsProductionResponse>(
+      `/v1/signs/production?prefix=${encodeURIComponent(prefix)}`,
+      options
+    ),
+
+  getRouteSignsProduction: (
+    rutenummer: string,
+    options: RequestOptions = {}
+  ): Promise<SignsProductionResponse> =>
+    requestWithAbort<SignsProductionResponse>(
+      `/v1/routes/${rutenummer}/signs/production`,
+      options
+    ),
+
   validateRoute: (
     rutenummer: string,
     options: RequestOptions = {}
@@ -291,6 +355,37 @@ export const api = {
     requestWithAbort<AnchorNameUpsertResponse>(`/v1/anchors/${anchorId}/name`, {
       method: 'POST',
       body: JSON.stringify(payload),
+      ...options,
+    }),
+
+  getAnchorsByBbox: (
+    bbox: { xmin: number; ymin: number; xmax: number; ymax: number },
+    limit = 500,
+    options: RequestOptions = {}
+  ): Promise<GeoJSON.FeatureCollection> =>
+    requestWithAbort<GeoJSON.FeatureCollection>(
+      `/v1/anchor-nodes?bbox=${bbox.xmin},${bbox.ymin},${bbox.xmax},${bbox.ymax}&limit=${limit}`,
+      options
+    ),
+
+  getGeometryOwners: (
+    geometry: GeoJSON.LineString,
+    options: RequestOptions = {}
+  ): Promise<any> =>
+    requestWithAbort<any>(`/v1/geometry/owners`, {
+      method: 'POST',
+      body: JSON.stringify({ geometry }),
+      ...options,
+    }),
+
+  getPointMatrikkelenhet: (
+    lat: number,
+    lon: number,
+    options: RequestOptions = {}
+  ): Promise<any> =>
+    requestWithAbort<any>(`/v1/point/matrikkelenhet`, {
+      method: 'POST',
+      body: JSON.stringify({ lat, lon }),
       ...options,
     }),
 };

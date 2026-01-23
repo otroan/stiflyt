@@ -25,6 +25,9 @@ from .formatters import (
     format_routes_summary,
     build_changeset_report,
     format_changeset_report,
+    format_signs_table,
+    format_signs_missing_table,
+    format_signs_production_csv,
 )
 from .find_available_numbers import analyze_available_numbers, format_available_numbers, parse_rutenummer, get_existing_rutenummer
 from services.operational_database import op_db_connection
@@ -89,6 +92,18 @@ Examples:
   %(prog)s routes anchors-missing --prefix bre
   %(prog)s routes anchors-missing --vedlikeholdsansvarlig "DNT Oslo"
   %(prog)s routes anchors-missing --prefix bre --format json
+
+  # Signs report
+  %(prog)s signs --prefix bre
+  %(prog)s signs --route bre10
+  %(prog)s signs --prefix bre --missing
+  %(prog)s signs --prefix bre --production --format csv
+
+  # Name anchor nodes without route scope
+  %(prog)s anchors-name --anchor-id 42 --list-candidates
+  %(prog)s anchors-name --anchor-id 42 --candidate-index 1
+  %(prog)s anchors-name --anchor-id 42 --manual-name "Haukeliseter"
+  %(prog)s anchors-name --anchor-id 42 --route bre10 --candidate-index 1
         """
     )
 
@@ -156,11 +171,6 @@ Examples:
         '--output',
         type=Path,
         help='Write output to file instead of stdout'
-    )
-    output_file_parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Show verbose error messages'
     )
 
     pagination_parser = argparse.ArgumentParser(add_help=False)
@@ -333,6 +343,81 @@ Examples:
         type=str,
         metavar='REASON',
         help='Filter routes by multilinestring_reason value (valid values documented in help output)'
+    )
+
+    signs_parser = subparsers.add_parser(
+        'signs',
+        parents=[config_parser, format_parser, output_file_parser],
+        help='Signs report for routes and areas'
+    )
+    signs_parser.add_argument(
+        '--prefix',
+        type=str,
+        help='Area prefix (e.g., "bre")'
+    )
+    signs_parser.add_argument(
+        '--route',
+        type=str,
+        help='Route number (e.g., "bre10")'
+    )
+    signs_parser.add_argument(
+        '--missing',
+        action='store_true',
+        help='Output missing signs report (prefix only)'
+    )
+    signs_parser.add_argument(
+        '--production',
+        action='store_true',
+        help='Output production rows for sign ordering'
+    )
+
+    anchor_name_parser = subparsers.add_parser(
+        'anchors-name',
+        parents=[config_parser, format_parser, output_file_parser],
+        help='Set anchor name without a route scope'
+    )
+    anchor_name_parser.add_argument(
+        '--anchor-id',
+        type=int,
+        required=True,
+        help='Anchor node ID to update or inspect'
+    )
+    anchor_name_parser.add_argument(
+        '--route',
+        type=str,
+        help='Optional route number for a route-specific override'
+    )
+    anchor_name_parser.add_argument(
+        '--radius',
+        type=float,
+        default=1500.0,
+        help='Search radius in meters for candidate placenames (default: 1500)'
+    )
+    anchor_name_parser.add_argument(
+        '--limit',
+        type=int,
+        default=10,
+        help='Maximum number of placename candidates (default: 10)'
+    )
+    anchor_name_parser.add_argument(
+        '--candidate-index',
+        type=int,
+        help='Select candidate by index (1-based) from --list-candidates'
+    )
+    anchor_name_parser.add_argument(
+        '--manual-name',
+        type=str,
+        help='Manually set anchor name (source_type=manual)'
+    )
+    anchor_name_parser.add_argument(
+        '--list-candidates',
+        action='store_true',
+        help='List candidate placenames for the selected anchor'
+    )
+    anchor_name_parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Show the proposed change without saving'
     )
 
     segments_parser = subparsers.add_parser('segments', help='Segment queries (legacy segments API)')
@@ -1159,6 +1244,157 @@ Examples:
             sys.exit(0)
         except Exception as e:
             print(f"Error finding available numbers: {e}", file=sys.stderr)
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
+
+    if args.command == 'signs':
+        if not args.prefix and not args.route:
+            parser.error("Provide either --prefix or --route for signs report")
+        if args.prefix and args.route:
+            parser.error("Use only one of --prefix or --route for signs report")
+        if args.missing and not args.prefix:
+            parser.error("--missing requires --prefix")
+
+        config = CLIConfig(
+            api_url=args.api_url,
+            username=args.username,
+            password=args.password,
+            timeout=args.timeout
+        )
+        client = RoutesClient(config)
+
+        try:
+            if args.production:
+                if args.route:
+                    response = client.get_route_signs_production(args.route)
+                else:
+                    response = client.get_signs_production_by_prefix(args.prefix)
+                rows = response.get("rows", [])
+                if args.format == "json":
+                    output_text = format_json(response)
+                else:
+                    output_text = format_signs_production_csv(rows)
+            elif args.missing:
+                response = client.get_signs_missing(args.prefix)
+                if args.format == "json":
+                    output_text = format_json(response)
+                else:
+                    output_text = format_signs_missing_table(response)
+            else:
+                if args.route:
+                    response = client.get_route_signs(args.route)
+                else:
+                    response = client.get_signs_by_prefix(args.prefix)
+                if args.format == "json":
+                    output_text = format_json(response)
+                else:
+                    output_text = format_signs_table(response.get("signs", []))
+
+            if args.output:
+                with open(args.output, 'w', encoding='utf-8') as f:
+                    f.write(output_text)
+            else:
+                print(output_text)
+
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error loading signs report: {e}", file=sys.stderr)
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            sys.exit(1)
+
+    if args.command == 'anchors-name':
+        config = CLIConfig(
+            api_url=args.api_url,
+            username=args.username,
+            password=args.password,
+            timeout=args.timeout
+        )
+        client = RoutesClient(config)
+
+        try:
+            if args.list_candidates:
+                candidates_response = client.get_anchor_placenames(
+                    args.anchor_id,
+                    radius=args.radius,
+                    limit=args.limit,
+                )
+                candidates = candidates_response.get("candidates", [])
+                if args.format == "json":
+                    output_text = format_json(candidates_response)
+                else:
+                    lines = []
+                    lines.append(
+                        f"Placename candidates for anchor {args.anchor_id} (radius {args.radius}m)"
+                    )
+                    lines.append("-" * 80)
+                    if not candidates:
+                        lines.append("No candidates found.")
+                    else:
+                        for idx, candidate in enumerate(candidates, 1):
+                            distance = candidate.get("distance_meters")
+                            distance_str = f"{distance:.1f} m" if distance is not None else "N/A"
+                            source_type = candidate.get("source_type")
+                            lines.append(
+                                f"{idx:2d}. {candidate.get('name')} | {source_type} | {distance_str}"
+                            )
+                    output_text = "\n".join(lines)
+
+            elif args.manual_name or args.candidate_index:
+                payload = None
+                if args.manual_name:
+                    payload = {
+                        "name": args.manual_name,
+                        "source_type": "manual",
+                        "rutenummer": args.route,
+                    }
+                else:
+                    candidates_response = client.get_anchor_placenames(
+                        args.anchor_id,
+                        radius=args.radius,
+                        limit=args.limit,
+                    )
+                    candidates = candidates_response.get("candidates", [])
+                    idx = (args.candidate_index or 0) - 1
+                    if idx < 0 or idx >= len(candidates):
+                        raise ValueError("Invalid --candidate-index. Run with --list-candidates first.")
+                    candidate = candidates[idx]
+                    payload = {
+                        "name": candidate.get("name"),
+                        "source_type": candidate.get("source_type"),
+                        "source_id": candidate.get("source_id"),
+                        "distance_meters": candidate.get("distance_meters"),
+                        "rutenummer": args.route,
+                    }
+
+                if args.dry_run:
+                    output_text = format_json({
+                        "anchor_id": args.anchor_id,
+                        "payload": payload,
+                        "dry_run": True,
+                    })
+                else:
+                    result = client.upsert_anchor_name(args.anchor_id, payload)
+                    output_text = format_json(result) if args.format == "json" else (
+                        f"Updated anchor {args.anchor_id}: {result.get('name')} ({result.get('source_type')})"
+                    )
+            else:
+                output_text = (
+                    "Use --list-candidates to view options, or --manual-name/--candidate-index to set a name."
+                )
+
+            if args.output:
+                with open(args.output, 'w', encoding='utf-8') as f:
+                    f.write(output_text)
+            else:
+                print(output_text)
+
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error updating anchor name: {e}", file=sys.stderr)
             if args.verbose:
                 import traceback
                 traceback.print_exc()

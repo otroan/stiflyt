@@ -38,6 +38,9 @@ from .schemas import (
     AnchorNameUpsertRequest,
     AnchorNameUpsertResponse,
     FacilityCandidate,
+    SignsReportResponse,
+    SignsMissingReport,
+    SignsProductionResponse,
 )
 from services.route_service import (
     search_places,
@@ -50,9 +53,10 @@ from services.route_service import (
     get_route_anchor_nodes,
     get_anchor_node_coords,
 )
-from services.route_endpoints import list_placename_candidates, list_ruteinfopunkt_facilities
+from services.route_endpoints import list_placename_candidates, list_ruteinfopunkt_facilities, lookup_name_in_stedsnavn_cached, lookup_named_anchor_within_radius, CLUSTER_RADIUS_METERS
 from services.operational_database import op_db_connection
 from services.operational_store import upsert_endpoint_name, get_endpoint_names_for_anchors
+from services.signs import get_signs_for_route, get_signs_for_prefix, get_signs_for_bbox, build_sign_production_rows
 from services.validators import get_validator_registry
 from collections import defaultdict
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
@@ -570,13 +574,10 @@ async def get_anchor_nodes(
                 anchor_nodes_table_quoted = quote_identifier(table_row["relname"])
                 full_anchor_nodes_name = f"{schema_quoted}.{anchor_nodes_table_quoted}"
 
-                # Common SELECT clause (table name is safe - validated via quote_identifier)
+                # SELECT clause - only node_id and geometry (names come from ops.endpoint_names)
                 select_clause = f"""
                     SELECT
                         node_id,
-                        navn,
-                        navn_kilde,
-                        navn_distance_m,
                         ST_AsGeoJSON(ST_Transform(geom, 4326))::json as geometry
                     FROM {full_anchor_nodes_name}
                 """
@@ -605,6 +606,25 @@ async def get_anchor_nodes(
 
                 rows = cur.fetchall()
 
+        # Get anchor node IDs to fetch names from operational database
+        anchor_ids = [row["node_id"] for row in rows if row.get("node_id") is not None]
+        
+        # Fetch names from operational database (ops.endpoint_names)
+        endpoint_names = {}
+        if anchor_ids:
+            from services.operational_database import op_db_connection
+            from services.operational_store import get_endpoint_names_for_anchors
+            try:
+                with op_db_connection() as op_conn:
+                    endpoint_names = get_endpoint_names_for_anchors(
+                        op_conn,
+                        anchor_ids,
+                        rutenummer=None  # Get global names (not route-specific)
+                    )
+            except Exception as e:
+                print(f"Error fetching endpoint names: {str(e)}")
+                # Continue without names if operational DB is unavailable
+
         # Build GeoJSON FeatureCollection
         features = []
         for row in rows:
@@ -612,16 +632,25 @@ async def get_anchor_nodes(
             if not geometry:
                 continue  # Skip nodes without geometry
 
+            node_id = row["node_id"]
+            properties = {
+                "node_id": node_id
+            }
+            
+            # Add name from operational database if available
+            name_info = endpoint_names.get(node_id)
+            if name_info:
+                properties["navn"] = name_info.get("name")
+                properties["navn_kilde"] = name_info.get("source_type")
+                properties["navn_distance_m"] = name_info.get("distance_meters")
+                if name_info.get("validated_at"):
+                    properties["is_validated"] = True
+
             feature = {
                 "type": "Feature",
-                "id": row["node_id"],
+                "id": node_id,
                 "geometry": geometry,
-                "properties": {
-                    "node_id": row["node_id"],
-                    "navn": row.get("navn"),
-                    "navn_kilde": row.get("navn_kilde"),
-                    "navn_distance_m": row.get("navn_distance_m")
-                }
+                "properties": properties
             }
             features.append(feature)
 
@@ -657,6 +686,40 @@ async def get_route_anchors(
                     **override,
                     "validated_at": override["validated_at"].isoformat(),
                 }
+            if not override:
+                cluster_name = lookup_named_anchor_within_radius(
+                    conn,
+                    anchor["lon"],
+                    anchor["lat"],
+                    radius_meters=CLUSTER_RADIUS_METERS,
+                )
+                if cluster_name:
+                    override = {
+                        "name": cluster_name.get("name"),
+                        "source_type": cluster_name.get("source"),
+                        "source_id": cluster_name.get("source_id"),
+                        "distance_meters": cluster_name.get("distance_meters"),
+                        "validated_by": None,
+                        "validated_at": None,
+                    }
+
+            if not override:
+                stedsnavn = lookup_name_in_stedsnavn_cached(
+                    conn,
+                    anchor["lon"],
+                    anchor["lat"],
+                    search_radius_meters=500.0,
+                    anchor_node_id=anchor["anchor_node_id"],
+                )
+                if stedsnavn:
+                    override = {
+                        "name": stedsnavn.get("name"),
+                        "source_type": stedsnavn.get("source"),
+                        "source_id": stedsnavn.get("source_id"),
+                        "distance_meters": stedsnavn.get("distance_meters"),
+                        "validated_by": None,
+                        "validated_at": None,
+                    }
             anchor_models.append(
                 AnchorNodeInfo(
                     anchor_node_id=anchor["anchor_node_id"],
@@ -1156,6 +1219,7 @@ async def get_route_by_number(
 ) -> Route:
     """
     Get a single route by rutenummer from stiflyt.routes materialized view.
+    Endpoint names are enriched with dynamic lookup if not in the view.
 
     Example:
     - /api/v1/routes/bre10
@@ -1177,7 +1241,131 @@ async def get_route_by_number(
                     detail=f"Route with rutenummer '{rutenummer}' not found"
                 )
 
-            return Route(**routes[0])
+            route_data = routes[0]
+            
+            # Enrich with dynamic endpoint names if missing (use separate connection to avoid transaction issues)
+            try:
+                from services.route_endpoints import lookup_endpoint_name
+                from_name = route_data.get("from_name")
+                to_name = route_data.get("to_name")
+                needs_from = not from_name or (from_name and from_name.strip() == "")
+                needs_to = not to_name or (to_name and to_name.strip() == "")
+                if needs_from or needs_to:
+                    # Use a fresh connection for enrichment to avoid transaction state issues
+                    with db_connection() as enrich_conn:
+                        # Get endpoint anchor nodes from links_with_routes
+                        anchor_ids = {}
+                        try:
+                            # Check if table exists first
+                            with enrich_conn.cursor() as check_cur:
+                                check_cur.execute("""
+                                    SELECT EXISTS (
+                                        SELECT FROM information_schema.tables
+                                        WHERE table_schema = %s AND table_name = 'links_with_routes'
+                                    )
+                                """, (ROUTE_SCHEMA,))
+                                table_exists = check_cur.fetchone()[0]
+                        
+                            if table_exists:
+                                anchor_query = f"""
+                                    SELECT
+                                        (SELECT a_node FROM {ROUTE_SCHEMA}.links_with_routes 
+                                         WHERE %s = ANY(rutenummer_list) 
+                                         ORDER BY link_id ASC LIMIT 1) as first_a_node,
+                                        (SELECT b_node FROM {ROUTE_SCHEMA}.links_with_routes 
+                                         WHERE %s = ANY(rutenummer_list) 
+                                         ORDER BY link_id DESC LIMIT 1) as last_b_node
+                                """
+                                with enrich_conn.cursor(row_factory=dict_row) as cur:
+                                    cur.execute(anchor_query, (rutenummer, rutenummer))
+                                    anchor_row = cur.fetchone()
+                                if anchor_row:
+                                    if anchor_row.get("first_a_node") is not None:
+                                        anchor_ids["from"] = int(anchor_row["first_a_node"])
+                                    if anchor_row.get("last_b_node") is not None:
+                                        anchor_ids["to"] = int(anchor_row["last_b_node"])
+                        except Exception as e:
+                            # If query fails, skip enrichment but continue
+                            print(f"Warning: Could not get anchor nodes for route {rutenummer}: {e}")
+                            anchor_ids = {}
+                        
+                        # Try validated names first
+                        overrides = {}
+                        if anchor_ids:
+                            try:
+                                with op_db_connection() as op_conn:
+                                    overrides = get_endpoint_names_for_anchors(
+                                        op_conn,
+                                        list(anchor_ids.values()),
+                                        rutenummer=rutenummer,
+                                    )
+                            except Exception as e:
+                                print(f"Warning: Could not get validated names for route {rutenummer}: {e}")
+                        
+                        # Fill from name
+                        if needs_from:
+                            if anchor_ids.get("from"):
+                                override = overrides.get(anchor_ids["from"])
+                                if override and override.get("name"):
+                                    route_data["from_name"] = override.get("name")
+                                else:
+                                    # Fallback to dynamic lookup
+                                    try:
+                                        coords = get_anchor_node_coords(enrich_conn, anchor_ids["from"])
+                                        if coords:
+                                            name_info = lookup_endpoint_name(enrich_conn, coords["lon"], coords["lat"], rutenummer)
+                                            if name_info and name_info.get('name'):
+                                                route_data["from_name"] = name_info.get('name')
+                                    except Exception as e:
+                                        print(f"Warning: Could not lookup from name for route {rutenummer}: {e}")
+                            else:
+                                # No anchor ID found, try geometry-based lookup
+                                try:
+                                    route_geometry = route_data.get("route_geometry")
+                                    if route_geometry:
+                                        from services.route_endpoints import extract_route_endpoints
+                                        start_point, _ = extract_route_endpoints(route_geometry)
+                                        if start_point:
+                                            name_info = lookup_endpoint_name(enrich_conn, start_point[0], start_point[1], rutenummer)
+                                            if name_info and name_info.get('name'):
+                                                route_data["from_name"] = name_info.get('name')
+                                except Exception as e:
+                                    print(f"Warning: Could not lookup from name via geometry for route {rutenummer}: {e}")
+                        
+                        # Fill to name
+                        if needs_to:
+                            if anchor_ids.get("to"):
+                                override = overrides.get(anchor_ids["to"])
+                                if override and override.get("name"):
+                                    route_data["to_name"] = override.get("name")
+                                else:
+                                    # Fallback to dynamic lookup
+                                    try:
+                                        coords = get_anchor_node_coords(enrich_conn, anchor_ids["to"])
+                                        if coords:
+                                            name_info = lookup_endpoint_name(enrich_conn, coords["lon"], coords["lat"], rutenummer)
+                                            if name_info and name_info.get('name'):
+                                                route_data["to_name"] = name_info.get('name')
+                                    except Exception as e:
+                                        print(f"Warning: Could not lookup to name for route {rutenummer}: {e}")
+                            else:
+                                # No anchor ID found, try geometry-based lookup
+                                try:
+                                    route_geometry = route_data.get("route_geometry")
+                                    if route_geometry:
+                                        from services.route_endpoints import extract_route_endpoints
+                                        _, end_point = extract_route_endpoints(route_geometry)
+                                        if end_point:
+                                            name_info = lookup_endpoint_name(enrich_conn, end_point[0], end_point[1], rutenummer)
+                                            if name_info and name_info.get('name'):
+                                                route_data["to_name"] = name_info.get('name')
+                                except Exception as e:
+                                    print(f"Warning: Could not lookup to name via geometry for route {rutenummer}: {e}")
+            except Exception as e:
+                # If enrichment fails entirely, log but continue with route data from view
+                print(f"Warning: Could not enrich endpoint names for route {rutenummer}: {e}")
+
+            return Route(**route_data)
 
     except HTTPException:
         raise
@@ -1203,16 +1391,17 @@ async def get_route_segments_detail(
     - /api/v1/routes/bre10/segments?include_geometry=true
     """
     try:
-        with db_connection() as conn:
-            # First verify route exists
-            routes, _ = get_routes_from_view(conn, rutenummer=rutenummer, limit=1, offset=0)
+        # Check route exists first
+        with db_connection() as check_conn:
+            routes, _ = get_routes_from_view(check_conn, rutenummer=rutenummer, limit=1, offset=0)
             if not routes:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Route with rutenummer '{rutenummer}' not found"
                 )
-
-            # Get segments
+        
+        # Use separate connection for segments lookup to avoid transaction issues
+        with db_connection() as conn:
             segments = get_route_segments_from_view(conn, rutenummer, include_geometry=include_geometry)
 
         # Convert to Pydantic models
@@ -1253,16 +1442,17 @@ async def get_route_links_endpoint(
     - /api/v1/routes/bre10/links?include_geometry=true
     """
     try:
-        with db_connection() as conn:
-            # First verify route exists
-            routes, _ = get_routes_from_view(conn, rutenummer=rutenummer, limit=1, offset=0)
+        # First verify route exists (use separate connection to avoid transaction issues)
+        with db_connection() as check_conn:
+            routes, _ = get_routes_from_view(check_conn, rutenummer=rutenummer, limit=1, offset=0)
             if not routes:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Route with rutenummer '{rutenummer}' not found"
                 )
 
-            # Get links
+        # Use a fresh connection for getting links
+        with db_connection() as conn:
             links = get_route_links(conn, rutenummer, include_geometry=include_geometry)
 
         # Convert to Pydantic models
@@ -1285,6 +1475,124 @@ async def get_route_links_endpoint(
             status_code=500,
             detail=f"Error getting route links: {str(e)}"
         )
+
+
+@router.get("/routes/{rutenummer}/signs", response_model=SignsReportResponse)
+async def get_route_signs_endpoint(
+    rutenummer: str,
+) -> SignsReportResponse:
+    """Get computed signs report for a route."""
+    try:
+        # Check route exists first
+        with db_connection() as check_conn:
+            routes, _ = get_routes_from_view(check_conn, rutenummer=rutenummer, limit=1, offset=0)
+            if not routes:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Route with rutenummer '{rutenummer}' not found"
+                )
+        
+        # Use separate connection for signs lookup to avoid transaction issues
+        with db_connection() as conn:
+            report = get_signs_for_route(conn, rutenummer)
+        return SignsReportResponse(**report)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting signs for route: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting signs for route: {str(e)}")
+
+
+@router.get("/signs", response_model=SignsReportResponse)
+async def get_signs_by_prefix(
+    prefix: Annotated[Optional[str], Query(description="Route prefix (e.g., bre)")] = None,
+    bbox: Annotated[Optional[str], Query(description="Bounding box as 'xmin,ymin,xmax,ymax' in WGS84")] = None,
+) -> SignsReportResponse:
+    """
+    Get computed signs report for an area prefix or bounding box.
+    
+    Either prefix or bbox must be provided.
+    """
+    try:
+        if not prefix and not bbox:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'prefix' or 'bbox' parameter must be provided"
+            )
+        
+        with db_connection() as conn:
+            if bbox:
+                # Parse bbox
+                try:
+                    bbox_tuple = parse_bbox(bbox)
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=f"Invalid bbox format: {e}")
+                
+                report = get_signs_for_bbox(conn, bbox_tuple)
+            else:
+                report = get_signs_for_prefix(conn, prefix)
+        return SignsReportResponse(**report)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting signs: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting signs: {str(e)}")
+
+
+@router.get("/signs/missing", response_model=SignsMissingReport)
+async def get_signs_missing(
+    prefix: Annotated[str, Query(min_length=1, description="Route prefix (e.g., bre)")]
+) -> SignsMissingReport:
+    """Get missing signs report for an area prefix."""
+    try:
+        with db_connection() as conn:
+            report = get_signs_for_prefix(conn, prefix)
+        return SignsMissingReport(**report.get("missing", {}))
+    except Exception as e:
+        print(f"Error getting missing signs for prefix: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting missing signs for prefix: {str(e)}")
+
+
+@router.get("/signs/production", response_model=SignsProductionResponse)
+async def get_signs_production(
+    prefix: Annotated[str, Query(min_length=1, description="Route prefix (e.g., bre)")]
+) -> SignsProductionResponse:
+    """Get production-ready signs rows for an area prefix."""
+    try:
+        with db_connection() as conn:
+            report = get_signs_for_prefix(conn, prefix)
+            rows = build_sign_production_rows(report)
+        return SignsProductionResponse(scope=report.get("scope", {}), rows=rows)
+    except Exception as e:
+        print(f"Error getting signs production rows: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting signs production rows: {str(e)}")
+
+
+@router.get("/routes/{rutenummer}/signs/production", response_model=SignsProductionResponse)
+async def get_route_signs_production(
+    rutenummer: str,
+) -> SignsProductionResponse:
+    """Get production-ready signs rows for a route."""
+    try:
+        # Check route exists first
+        with db_connection() as check_conn:
+            routes, _ = get_routes_from_view(check_conn, rutenummer=rutenummer, limit=1, offset=0)
+            if not routes:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Route with rutenummer '{rutenummer}' not found"
+                )
+        
+        # Use separate connection for signs lookup to avoid transaction issues
+        with db_connection() as conn:
+            report = get_signs_for_route(conn, rutenummer)
+            rows = build_sign_production_rows(report)
+        return SignsProductionResponse(scope=report.get("scope", {}), rows=rows)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting route signs production rows: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting route signs production rows: {str(e)}")
 
 
 @router.get("/routes/{rutenummer}/validate", response_model=RouteValidationResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
@@ -1310,15 +1618,17 @@ async def validate_route(
     - 404 if rutenummer not found
     """
     try:
-        with db_connection() as conn:
-            # First verify route exists
-            routes, _ = get_routes_from_view(conn, rutenummer=rutenummer, limit=1, offset=0)
+        # First verify route exists (use separate connection to avoid transaction issues)
+        with db_connection() as check_conn:
+            routes, _ = get_routes_from_view(check_conn, rutenummer=rutenummer, limit=1, offset=0)
             if not routes:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Route with rutenummer '{rutenummer}' not found"
                 )
 
+        # Use a fresh connection for the actual validation
+        with db_connection() as conn:
             schema_quoted = quote_identifier(ROUTE_SCHEMA)
 
             # Get all segments for the route with all metadata including length
@@ -1391,16 +1701,18 @@ async def validate_route(
             # Get link count for summary
             link_count = validation_result.metadata.get('link_count', 0)
             if link_count == 0:
-                # Fallback: query directly
+                # Fallback: query directly using a separate connection to avoid transaction issues
+                # (validators may have aborted the transaction)
                 link_count_query = f"""
                     SELECT COUNT(DISTINCT lwr.link_id) as link_count
                     FROM {schema_quoted}.links_with_routes lwr
                     WHERE %s = ANY(lwr.rutenummer_list)
                 """
-                with conn.cursor(row_factory=dict_row) as cur:
-                    cur.execute(link_count_query, (rutenummer,))
-                    link_count_row = cur.fetchone()
-                    link_count = link_count_row.get('link_count', 0) if link_count_row else 0
+                with db_connection() as fallback_conn:
+                    with fallback_conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(link_count_query, (rutenummer,))
+                        link_count_row = cur.fetchone()
+                        link_count = link_count_row.get('link_count', 0) if link_count_row else 0
 
             # Extract summary values
             all_rutenavn = []

@@ -52,4 +52,3 @@ markers = [
 addopts = [
     "--ignore=scripts/test_matrikkel_integration.py",
 ]
-

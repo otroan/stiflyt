@@ -27,6 +27,34 @@ function App() {
   // Local changes (before changeset is created)
   const [localEvents, setLocalEvents] = useState<LocalEvent[]>([]);
 
+  // Signs state
+  const [signsPrefix, setSignsPrefix] = useState<string>('');
+  const [selectedSignDestinations, setSelectedSignDestinations] = useState<Set<string>>(new Set());
+
+  // Mode management
+  type AppMode = 'inspection' | 'edit' | 'anchor-naming' | 'signs' | 'property-ownership';
+  const [activeMode, setActiveMode] = useState<AppMode>('inspection');
+  
+  // Property ownership state
+  const [selectedGeometryForOwnership, setSelectedGeometryForOwnership] = useState<GeoJSON.Geometry | null>(null);
+  const [ownershipData, setOwnershipData] = useState<any>(null);
+
+  const handleSignDestinationSelect = (destKey: string, selected: boolean) => {
+    setSelectedSignDestinations(prev => {
+      const newSet = new Set(prev);
+      if (selected) {
+        newSet.add(destKey);
+      } else {
+        newSet.delete(destKey);
+      }
+      return newSet;
+    });
+  };
+
+  const handleSignsPrefixChange = (prefix: string) => {
+    setSignsPrefix(prefix);
+  };
+
   // Get changeset ID or route number from URL
   useEffect(() => {
     const loadInitialData = async () => {
@@ -286,6 +314,15 @@ function App() {
             onEventAdded={changeset ? handleEventAdded : handleLocalEventAdded}
             selectedFeatureId={selectedFeatureId}
             selectedFeatureIds={selectedFeatureIds}
+            signsPrefix={signsPrefix}
+            onSignDestinationSelect={handleSignDestinationSelect}
+            selectedSignDestinations={selectedSignDestinations}
+            activeMode={activeMode}
+            onModeChange={setActiveMode}
+            selectedGeometryForOwnership={selectedGeometryForOwnership}
+            onGeometrySelectForOwnership={setSelectedGeometryForOwnership}
+            ownershipData={ownershipData}
+            onOwnershipDataChange={setOwnershipData}
             onFeatureSelect={(id, properties, isMultiSelect) => {
               if (isMultiSelect) {
                 // Multi-select mode: toggle selection
@@ -337,7 +374,7 @@ function App() {
             selectedFeatureIds={selectedFeatureIds}
             selectedFeatureProperties={selectedFeatureProperties}
             selectedFeaturesMap={selectedFeaturesMap}
-          localEvents={localEvents}
+            localEvents={localEvents}
             localEventsCount={localEvents.length}
             onChangesetUpdate={handleChangesetUpdate}
             onSaveChanges={handleSaveLocally}
@@ -350,6 +387,13 @@ function App() {
             loading={loading}
             shouldOpenEditForm={shouldOpenEditForm}
             onEditFormOpened={() => setShouldOpenEditForm(false)}
+            selectedSignDestinations={selectedSignDestinations}
+            onSignDestinationSelect={handleSignDestinationSelect}
+            onSignsPrefixChange={handleSignsPrefixChange}
+            activeMode={activeMode}
+            ownershipData={ownershipData}
+            selectedGeometryForOwnership={selectedGeometryForOwnership}
+            onOwnershipDataChange={setOwnershipData}
           />
         </div>
       </div>

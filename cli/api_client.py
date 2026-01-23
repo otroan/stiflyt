@@ -419,6 +419,34 @@ class RoutesClient:
         url = f"{self.base_url}/routes/{rutenummer}/links"
         return self._make_request("GET", url, params)
 
+    def get_route_signs(self, rutenummer: str) -> Dict[str, Any]:
+        """Get signs report for a route."""
+        url = f"{self.base_url}/routes/{rutenummer}/signs"
+        return self._make_request("GET", url)
+
+    def get_signs_by_prefix(self, prefix: str) -> Dict[str, Any]:
+        """Get signs report for a prefix."""
+        params = {"prefix": prefix}
+        url = f"{self.base_url}/signs"
+        return self._make_request("GET", url, params)
+
+    def get_signs_missing(self, prefix: str) -> Dict[str, Any]:
+        """Get missing signs report for a prefix."""
+        params = {"prefix": prefix}
+        url = f"{self.base_url}/signs/missing"
+        return self._make_request("GET", url, params)
+
+    def get_signs_production_by_prefix(self, prefix: str) -> Dict[str, Any]:
+        """Get production rows for signs by prefix."""
+        params = {"prefix": prefix}
+        url = f"{self.base_url}/signs/production"
+        return self._make_request("GET", url, params)
+
+    def get_route_signs_production(self, rutenummer: str) -> Dict[str, Any]:
+        """Get production rows for signs by route."""
+        url = f"{self.base_url}/routes/{rutenummer}/signs/production"
+        return self._make_request("GET", url)
+
     def get_route_anchors(self, rutenummer: str) -> Dict[str, Any]:
         """Get anchor nodes for a route."""
         url = f"{self.base_url}/routes/{rutenummer}/anchors"

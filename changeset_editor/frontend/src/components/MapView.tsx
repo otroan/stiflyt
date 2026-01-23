@@ -1,9 +1,9 @@
 /** Map view component with Leaflet and Geoman */
 import { useEffect, useRef, useState } from 'react';
-import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl } from 'react-leaflet';
+import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest, FacilityCandidate } from '../types';
+import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest, FacilityCandidate, SignsReportResponse } from '../types';
 import type { GeoJSON } from 'geojson';
 import { SnapManager } from '../utils/snap';
 import { api, isAbortError } from '../api/client';
@@ -34,6 +34,8 @@ const DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
+type AppMode = 'inspection' | 'edit' | 'anchor-naming' | 'signs' | 'property-ownership';
+
 interface MapViewProps {
   changeset: Changeset | null;
   routeGeometry?: GeoJSON.Geometry | null;
@@ -46,6 +48,191 @@ interface MapViewProps {
   onFeatureSelect?: (id: string, properties?: Record<string, unknown>, isMultiSelect?: boolean) => void;
   onOpenEditForm?: () => void; // Callback to open edit form in InfoPanel
   localEventsCount?: number;
+  signsPrefix?: string | null; // Prefix for loading signs by area
+  onSignDestinationSelect?: (destKey: string, selected: boolean) => void; // Callback for destination selection
+  selectedSignDestinations?: Set<string>; // Selected destination keys
+  activeMode: AppMode;
+  onModeChange: (mode: AppMode) => void;
+  selectedGeometryForOwnership?: GeoJSON.Geometry | null;
+  onGeometrySelectForOwnership?: (geometry: GeoJSON.Geometry | null) => void;
+  ownershipData?: any;
+  onOwnershipDataChange?: (data: any) => void;
+}
+
+// Component to render the signs layer for LayersControl
+function SignsLayer({ 
+  signsData,
+  selectedSignDestinations,
+  onSignDestinationSelect,
+  signsLayerRef
+}: { 
+  signsData: SignsReportResponse | null;
+  selectedSignDestinations: Set<string>;
+  onSignDestinationSelect?: (destKey: string, selected: boolean) => void;
+  signsLayerRef: React.MutableRefObject<L.LayerGroup | null>;
+}) {
+  const layerGroupRef = useRef<L.LayerGroup | null>(null);
+  const map = useMap();
+
+  // Initialize layer group and sync with signsLayerRef
+  useEffect(() => {
+    if (!layerGroupRef.current) {
+      layerGroupRef.current = L.layerGroup();
+      signsLayerRef.current = layerGroupRef.current;
+    }
+  }, [signsLayerRef]);
+
+  // Create markers when signs data changes
+  useEffect(() => {
+    if (!layerGroupRef.current || !signsData) {
+      return;
+    }
+
+    // Clear existing markers
+    layerGroupRef.current.clearLayers();
+
+    // Create flag icon for endpoints (blue)
+    const endpointFlagIcon = L.divIcon({
+      className: 'sign-marker',
+      html: '<div style="font-size: 20px; line-height: 1;">🚩</div>',
+      iconSize: [20, 20],
+      iconAnchor: [10, 20],
+    });
+
+    // Create flag icon for junctions (orange/red)
+    const junctionFlagIcon = L.divIcon({
+      className: 'sign-marker',
+      html: '<div style="font-size: 20px; line-height: 1; filter: hue-rotate(20deg) saturate(1.5);">🚩</div>',
+      iconSize: [20, 20],
+      iconAnchor: [10, 20],
+    });
+
+    const formatDistanceKm = (distanceMeters?: number | null) => {
+      if (distanceMeters === undefined || distanceMeters === null) return '';
+      const km = distanceMeters / 1000;
+      if (km > 5) {
+        return `${Math.round(km)}km`;
+      }
+      return `${(Math.round(km * 2) / 2).toFixed(1)}km`;
+    };
+
+    signsData.signs.forEach((sign) => {
+      const [lon, lat] = sign.coordinates || [null, null];
+      if (lon === null || lat === null) return;
+
+      const icon = sign.is_endpoint ? endpointFlagIcon : junctionFlagIcon;
+      const marker = L.marker([lat, lon], { icon });
+      layerGroupRef.current?.addLayer(marker);
+
+      // Create popup content with destinations
+      const createDestinationPopup = (sign: typeof signsData.signs[0]) => {
+        const signName = sign.name || `Anchor ${sign.anchor_node_id}`;
+        const signType = sign.is_endpoint ? 'Endepunkt' : sign.is_junction ? 'Kryss' : 'Node';
+        
+        const destinationsHtml = sign.destinations.length > 0
+          ? sign.destinations
+              .map((dest) => {
+                const destKey = `${sign.anchor_node_id}-${dest.anchor_node_id}`;
+                const isSelected = selectedSignDestinations.has(destKey);
+                return `
+                  <div 
+                    class="sign-destination-item ${isSelected ? 'selected' : ''}" 
+                    data-dest-key="${destKey}"
+                    style="
+                      padding: 4px 8px; 
+                      margin: 2px 0; 
+                      cursor: pointer; 
+                      border-radius: 4px;
+                      background: ${isSelected ? '#e3f2fd' : '#f5f5f5'};
+                      border: 1px solid ${isSelected ? '#2196f3' : '#ddd'};
+                    "
+                    onmouseover="this.style.background='${isSelected ? '#bbdefb' : '#e0e0e0'}'"
+                    onmouseout="this.style.background='${isSelected ? '#e3f2fd' : '#f5f5f5'}'"
+                  >
+                    ${isSelected ? '✓ ' : ''}${dest.name} (${formatDistanceKm(dest.distance_meters)})
+                  </div>
+                `;
+              })
+              .join('')
+          : '<div style="padding: 4px; color: #999;">Ingen destinasjoner</div>';
+
+        return `
+          <div style="min-width: 200px;">
+            <strong>${signName}</strong><br>
+            <small>${signType} (${sign.anchor_node_id})</small><br>
+            <br>
+            <strong>Destinasjoner:</strong><br>
+            ${destinationsHtml}
+          </div>
+        `;
+      };
+
+      marker.bindPopup(createDestinationPopup(sign), {
+        maxWidth: 250,
+      });
+
+      // Handle click on destination items in popup
+      marker.on('popupopen', () => {
+        const popup = marker.getPopup();
+        if (!popup) return;
+        
+        const popupElement = popup.getElement();
+        if (!popupElement) return;
+
+        // Add click handlers to destination items
+        const destItems = popupElement.querySelectorAll('.sign-destination-item');
+        destItems.forEach((item) => {
+          const destKey = item.getAttribute('data-dest-key');
+          if (!destKey) return;
+
+          item.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isCurrentlySelected = selectedSignDestinations.has(destKey);
+            if (onSignDestinationSelect) {
+              onSignDestinationSelect(destKey, !isCurrentlySelected);
+            }
+            // Refresh popup to show updated selection
+            marker.openPopup();
+          });
+        });
+      });
+    });
+  }, [signsData, selectedSignDestinations, onSignDestinationSelect]);
+
+  return <LayerGroup ref={layerGroupRef} />;
+}
+
+// Component to handle layer control changes
+function SignsLayerControl({ 
+  onToggle
+}: { 
+  onToggle: (enabled: boolean) => void;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    const handleOverlayAdd = (e: L.LayersControlEvent) => {
+      if (e.name === 'Skilt') {
+        onToggle(true);
+      }
+    };
+
+    const handleOverlayRemove = (e: L.LayersControlEvent) => {
+      if (e.name === 'Skilt') {
+        onToggle(false);
+      }
+    };
+
+    map.on('overlayadd', handleOverlayAdd);
+    map.on('overlayremove', handleOverlayRemove);
+
+    return () => {
+      map.off('overlayadd', handleOverlayAdd);
+      map.off('overlayremove', handleOverlayRemove);
+    };
+  }, [map, onToggle]);
+
+  return null;
 }
 
 // Component to initialize map reference when map is ready
@@ -197,6 +384,15 @@ export function MapView({
   onFeatureSelect,
   onOpenEditForm,
   localEventsCount = 0,
+  signsPrefix,
+  onSignDestinationSelect,
+  selectedSignDestinations = new Set(),
+  activeMode,
+  onModeChange,
+  selectedGeometryForOwnership,
+  onGeometrySelectForOwnership,
+  ownershipData,
+  onOwnershipDataChange,
 }: MapViewProps) {
   const [diffLayer, setDiffLayer] = useState<GeoJSON.FeatureCollection | null>(null);
   const [effectiveLayer, setEffectiveLayer] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -207,13 +403,17 @@ export function MapView({
   const [mapReady, setMapReady] = useState(false);
   const [routesInView, setRoutesInView] = useState<GeoJSON.FeatureCollection | null>(null);
   const [activeTool, setActiveTool] = useState<string | null>(null);
-  const [showSegments, setShowSegments] = useState(false);
-  const [showLinks, setShowLinks] = useState(false);
+  const [showSegments, setShowSegments] = useState(true); // Default: inspection mode
+  const [showLinks, setShowLinks] = useState(true); // Default: inspection mode
+  const [showSigns, setShowSigns] = useState(false);
+  const [editMode, setEditMode] = useState(false); // Separate edit mode toggle
   const [segmentsData, setSegmentsData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [linksData, setLinksData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [signsData, setSignsData] = useState<SignsReportResponse | null>(null);
   const segmentsLayerRef = useRef<L.GeoJSON | null>(null);
   const linksLayerRef = useRef<L.GeoJSON | null>(null);
   const endpointsLayerRef = useRef<L.LayerGroup | null>(null);
+  const signsLayerRef = useRef<L.LayerGroup | null>(null);
   const [anchorNodes, setAnchorNodes] = useState<AnchorNodeInfo[]>([]);
   const [anchorCandidates, setAnchorCandidates] = useState<PlacenameCandidate[]>([]);
   const [anchorFacilities, setAnchorFacilities] = useState<FacilityCandidate[]>([]);
@@ -335,14 +535,106 @@ export function MapView({
   }, [mapReady]);
 
 
-  // Load segments and links when route is selected
+  // Load segments and links - by route if selected, otherwise by bbox in inspection mode
   useEffect(() => {
-    if (!routeNumber || !mapReady) {
+    if (!mapReady) {
+      return;
+    }
+
+    // In edit mode, require route selection
+    if (activeMode === 'edit' && !routeNumber) {
       setSegmentsData(null);
       setLinksData(null);
       setShowSegments(false);
       setShowLinks(false);
       setAnchorNodes([]);
+      return;
+    }
+
+    // In inspection mode, load by bbox if no route selected
+    if (activeMode === 'inspection' && !routeNumber && mapRef.current) {
+      const bounds = mapRef.current.getBounds();
+      const bbox = {
+        xmin: bounds.getWest(),
+        ymin: bounds.getSouth(),
+        xmax: bounds.getEast(),
+        ymax: bounds.getNorth(),
+      };
+
+      const linksController = new AbortController();
+      
+      // Load links by bbox
+      api.getLinksByBbox(bbox, 500, { signal: linksController.signal })
+        .then((data: GeoJSON.FeatureCollection) => {
+          debugLog('Links by bbox API response:', data);
+          setLinksData(data);
+        })
+        .catch((error) => {
+          if (isAbortError(error)) return;
+          const appError = handleApiError(error, 'Load Links');
+          notificationManager.warning(`Kunne ikke laste linker: ${appError.message}`);
+        });
+
+      // Note: Segments don't have a bbox endpoint yet, so we skip them when no route is selected
+      setSegmentsData(null);
+      setAnchorNodes([]); // Clear anchor nodes when loading by bbox
+
+      return () => {
+        linksController.abort();
+      };
+    }
+
+    // Load anchors by bbox in anchor-naming mode
+    if (activeMode === 'anchor-naming' && mapRef.current && !routeNumber) {
+      const bounds = mapRef.current.getBounds();
+      const bbox = {
+        xmin: bounds.getWest(),
+        ymin: bounds.getSouth(),
+        xmax: bounds.getEast(),
+        ymax: bounds.getNorth(),
+      };
+
+      const anchorsController = new AbortController();
+      
+      api.getAnchorsByBbox(bbox, 500, { signal: anchorsController.signal })
+        .then((data: GeoJSON.FeatureCollection) => {
+          const anchors: AnchorNodeInfo[] = (data.features || []).map((feature) => {
+            const props = feature.properties || {};
+            const geometry = feature.geometry;
+            let coordinates: [number, number] = [0, 0];
+            if (geometry && geometry.type === 'Point' && geometry.coordinates) {
+              coordinates = [geometry.coordinates[0], geometry.coordinates[1]];
+            }
+            return {
+              anchor_node_id: props.node_id as number || parseInt(String(feature.id || '0'), 10),
+              coordinates,
+              name: props.navn ? {
+                name: String(props.navn),
+                source_type: String(props.navn_kilde || 'unknown'),
+                distance_meters: props.navn_distance_m ? Number(props.navn_distance_m) : null,
+              } : null,
+              link_count: 0, // Not available from bbox endpoint
+            };
+          });
+          setAnchorNodes(anchors);
+        })
+        .catch((error) => {
+          if (isAbortError(error)) return;
+          // Silently fail - anchors are optional
+        });
+
+      return () => {
+        anchorsController.abort();
+      };
+    }
+
+    // Clear anchors when not in anchor-naming mode or when route changes
+    if (activeMode !== 'anchor-naming' && !showLinks) {
+      setAnchorNodes([]);
+    }
+
+    // Load by route if route is selected
+    if (!routeNumber) {
       return;
     }
 
@@ -353,7 +645,7 @@ export function MapView({
     const linksController = new AbortController();
 
     // Load segments
-      api.getRouteSegments(routeNumber, true, { signal: segmentsController.signal })
+    api.getRouteSegments(routeNumber, true, { signal: segmentsController.signal })
       .then((data: RouteSegmentsResponse) => {
         debugLog('Segments API response:', data);
         const features: GeoJSON.Feature[] = (data.segments || [])
@@ -434,11 +726,164 @@ export function MapView({
         notificationManager.warning(`Kunne ikke laste lenker: ${appError.message}`);
       });
 
+    // Load anchor nodes for the route (for anchor naming and display)
+    if (activeMode === 'anchor-naming' || showLinks) {
+      api.getRouteAnchors(routeNumber, { signal: linksController.signal })
+        .then((data) => {
+          const anchors: AnchorNodeInfo[] = (data.anchors || []).map((anchor) => ({
+            anchor_node_id: anchor.anchor_node_id,
+            coordinates: anchor.coordinates || [0, 0],
+            name: anchor.name || null,
+            link_count: anchor.link_count || 0,
+          }));
+          setAnchorNodes(anchors);
+        })
+        .catch((error) => {
+          if (isAbortError(error)) return;
+          // Silently fail - anchors are optional
+        });
+    }
+
     return () => {
       segmentsController.abort();
       linksController.abort();
     };
-  }, [routeNumber, mapReady]);
+  }, [routeNumber, mapReady, activeMode, showLinks]);
+
+  // Reload links by bbox when map moves/zooms in inspection mode without route
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || activeMode !== 'inspection' || routeNumber) {
+      return; // Only reload on map changes if in inspection mode without route
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout>;
+    let activeController: AbortController | null = null;
+
+    const loadLinksInView = () => {
+      if (activeController) {
+        activeController.abort();
+      }
+      activeController = new AbortController();
+
+      const bounds = mapRef.current?.getBounds();
+      if (!bounds) return;
+
+      const bbox = {
+        xmin: bounds.getWest(),
+        ymin: bounds.getSouth(),
+        xmax: bounds.getEast(),
+        ymax: bounds.getNorth(),
+      };
+
+      api.getLinksByBbox(bbox, 500, { signal: activeController.signal })
+        .then((data: GeoJSON.FeatureCollection) => {
+          if (data) {
+            setLinksData(data);
+          }
+        })
+        .catch((error) => {
+          if (isAbortError(error)) return;
+          const appError = handleApiError(error, 'Load Links');
+          notificationManager.warning(`Kunne ikke laste linker: ${appError.message}`);
+        });
+    };
+
+    mapRef.current.on('moveend', loadLinksInView);
+    mapRef.current.on('zoomend', loadLinksInView);
+
+    // Initial load with a small delay
+    timeoutId = setTimeout(() => {
+      loadLinksInView();
+    }, 300);
+
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (activeController) {
+        activeController.abort();
+      }
+      if (mapRef.current) {
+        mapRef.current.off('moveend', loadLinksInView);
+        mapRef.current.off('zoomend', loadLinksInView);
+      }
+    };
+  }, [mapReady, activeMode, routeNumber, showLinks]);
+
+  // Reload anchors by bbox when map moves/zooms in anchor-naming mode
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || activeMode !== 'anchor-naming' || routeNumber) {
+      return; // Only reload on map changes if in anchor-naming mode without route
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout>;
+    let activeController: AbortController | null = null;
+
+    const loadAnchorsInView = () => {
+      if (activeController) {
+        activeController.abort();
+      }
+      activeController = new AbortController();
+
+      const bounds = mapRef.current?.getBounds();
+      if (!bounds) return;
+
+      const bbox = {
+        xmin: bounds.getWest(),
+        ymin: bounds.getSouth(),
+        xmax: bounds.getEast(),
+        ymax: bounds.getNorth(),
+      };
+
+      api.getAnchorsByBbox(bbox, 500, { signal: activeController.signal })
+        .then((data: GeoJSON.FeatureCollection) => {
+          const anchors: AnchorNodeInfo[] = (data.features || []).map((feature) => {
+            const props = feature.properties || {};
+            const geometry = feature.geometry;
+            let coordinates: [number, number] = [0, 0];
+            if (geometry && geometry.type === 'Point' && geometry.coordinates) {
+              coordinates = [geometry.coordinates[0], geometry.coordinates[1]];
+            }
+            return {
+              anchor_node_id: props.node_id as number || parseInt(String(feature.id || '0'), 10),
+              coordinates,
+              name: props.navn ? {
+                name: String(props.navn),
+                source_type: String(props.navn_kilde || 'unknown'),
+                distance_meters: props.navn_distance_m ? Number(props.navn_distance_m) : null,
+              } : null,
+              link_count: 0,
+            };
+          });
+          setAnchorNodes(anchors);
+        })
+        .catch((error) => {
+          if (isAbortError(error)) return;
+          // Silently fail
+        });
+    };
+
+    mapRef.current.on('moveend', loadAnchorsInView);
+    mapRef.current.on('zoomend', loadAnchorsInView);
+
+    // Initial load
+    timeoutId = setTimeout(() => {
+      loadAnchorsInView();
+    }, 300);
+
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (activeController) {
+        activeController.abort();
+      }
+      if (mapRef.current) {
+        mapRef.current.off('moveend', loadAnchorsInView);
+        mapRef.current.off('zoomend', loadAnchorsInView);
+      }
+    };
+  }, [mapReady, activeMode, routeNumber]);
 
   // Load anchor nodes for selected route
   useEffect(() => {
@@ -462,6 +907,121 @@ export function MapView({
       controller.abort();
     };
   }, [routeNumber, mapReady]);
+
+  // Load signs data when layer is enabled - based on map viewport or route/prefix
+  // In signs mode, always load by viewport
+  useEffect(() => {
+    if (!showSigns || !mapReady || !mapRef.current) {
+      setSignsData(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    
+    // Priority: route > prefix > bbox (map viewport)
+    // In signs mode, prefer bbox unless route/prefix is explicitly provided
+    let loadPromise: Promise<SignsReportResponse | null> = Promise.resolve(null);
+    
+    if (routeNumber && activeMode !== 'signs') {
+      // Load by route if available (unless in signs mode)
+      loadPromise = api.getRouteSigns(routeNumber, { signal: controller.signal });
+    } else if (signsPrefix && signsPrefix.trim().length >= 2 && activeMode !== 'signs') {
+      // Load by prefix if provided (unless in signs mode)
+      loadPromise = api.getSignsByPrefix(signsPrefix.trim(), { signal: controller.signal });
+    } else {
+      // Load by map viewport (bbox) - default for signs mode
+      const bounds = mapRef.current.getBounds();
+      const bbox = {
+        xmin: bounds.getWest(),
+        ymin: bounds.getSouth(),
+        xmax: bounds.getEast(),
+        ymax: bounds.getNorth(),
+      };
+      loadPromise = api.getSignsByBbox(bbox, { signal: controller.signal });
+    }
+
+    loadPromise
+      .then((data) => {
+        if (data) {
+          setSignsData(data);
+        }
+      })
+      .catch((error) => {
+        if (isAbortError(error)) return;
+        const appError = handleApiError(error, 'Load Signs');
+        notificationManager.warning(`Kunne ikke laste skilt: ${appError.message}`);
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [showSigns, mapReady, routeNumber, signsPrefix, activeMode]);
+
+  // Reload signs when map moves/zooms (if using bbox mode or in signs mode)
+  useEffect(() => {
+    if (!showSigns || !mapReady || !mapRef.current) {
+      return;
+    }
+    
+    // In signs mode, always use bbox. Otherwise, only if no route/prefix
+    const shouldUseBbox = activeMode === 'signs' || (!routeNumber && (!signsPrefix || signsPrefix.trim().length < 2));
+    if (!shouldUseBbox) {
+      return;
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout>;
+    let activeController: AbortController | null = null;
+
+    const loadSignsInView = () => {
+      if (activeController) {
+        activeController.abort();
+      }
+      activeController = new AbortController();
+
+      const bounds = mapRef.current?.getBounds();
+      if (!bounds) return;
+
+      const bbox = {
+        xmin: bounds.getWest(),
+        ymin: bounds.getSouth(),
+        xmax: bounds.getEast(),
+        ymax: bounds.getNorth(),
+      };
+
+      api.getSignsByBbox(bbox, { signal: activeController.signal })
+        .then((data) => {
+          if (data) {
+            setSignsData(data);
+          }
+        })
+        .catch((error) => {
+          if (isAbortError(error)) return;
+          const appError = handleApiError(error, 'Load Signs');
+          notificationManager.warning(`Kunne ikke laste skilt: ${appError.message}`);
+        });
+    };
+
+    mapRef.current.on('moveend', loadSignsInView);
+    mapRef.current.on('zoomend', loadSignsInView);
+
+    // Initial load with a small delay
+    timeoutId = setTimeout(() => {
+      loadSignsInView();
+    }, 300);
+
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      if (activeController) {
+        activeController.abort();
+      }
+      if (mapRef.current) {
+        mapRef.current.off('moveend', loadSignsInView);
+        mapRef.current.off('zoomend', loadSignsInView);
+      }
+    };
+  }, [showSigns, mapReady, routeNumber, signsPrefix, activeMode]);
 
   // Display selected route geometry on map (highlighted)
   useEffect(() => {
@@ -642,6 +1202,28 @@ export function MapView({
 
         // Add click handler for selection
         layer.on('click', (e: L.LeafletMouseEvent) => {
+          // Property ownership mode: fetch ownership for link geometry
+          if (activeMode === 'property-ownership' && onGeometrySelectForOwnership && feature.geometry) {
+            if (feature.geometry.type === 'LineString') {
+              onGeometrySelectForOwnership(feature.geometry);
+              // Fetch ownership data
+              if (onOwnershipDataChange) {
+                onOwnershipDataChange(null); // Clear previous data
+                api.getGeometryOwners(feature.geometry)
+                  .then((data) => {
+                    if (onOwnershipDataChange) {
+                      onOwnershipDataChange(data);
+                    }
+                  })
+                  .catch((error) => {
+                    const appError = handleApiError(error, 'Property Ownership');
+                    notificationManager.error(`Kunne ikke laste grunneierinformasjon: ${appError.message}`);
+                  });
+              }
+            }
+            return;
+          }
+
           if (onFeatureSelect && featureId) {
             const featureProps = feature.properties as Record<string, unknown> | null;
             const isMultiSelect = e.originalEvent.ctrlKey || e.originalEvent.metaKey;
@@ -802,25 +1384,34 @@ export function MapView({
     }
 
     // Add anchor node markers (clickable for naming)
-    if (showLinks && anchorNodes.length > 0) {
+    // Show in anchor-naming mode OR when links are shown
+    if ((activeMode === 'anchor-naming' || showLinks) && anchorNodes.length > 0) {
       anchorNodes.forEach((anchor) => {
         const [lon, lat] = anchor.coordinates;
         const nameLabel = anchor.name?.name || `Anchor ${anchor.anchor_node_id}`;
+        const hasName = !!anchor.name?.name;
         const marker = L.circleMarker([lat, lon], {
-          radius: 9,
-          fillColor: '#2563eb',
+          radius: activeMode === 'anchor-naming' ? 10 : 9,
+          fillColor: activeMode === 'anchor-naming' 
+            ? (hasName ? '#16a085' : '#e74c3c') 
+            : '#2563eb',
           color: '#ffffff',
-          weight: 2,
+          weight: activeMode === 'anchor-naming' ? 3 : 2,
           opacity: 1,
           fillOpacity: 0.9,
           pane: 'link-endpoints',
         }).addTo(endpointsGroup);
-        marker.bindTooltip(nameLabel, {
-          permanent: false,
-          direction: 'top',
-          className: 'link-midpoint-label',
-          opacity: 0.9,
-        });
+        marker.bindTooltip(
+          activeMode === 'anchor-naming' && !hasName
+            ? `${nameLabel} (mangler navn)`
+            : nameLabel,
+          {
+            permanent: false,
+            direction: 'top',
+            className: 'link-midpoint-label',
+            opacity: 0.9,
+          }
+        );
         marker.on('click', () => openAnchorDialog(anchor));
       });
     }
@@ -843,7 +1434,9 @@ export function MapView({
     });
 
     endpointsLayerRef.current = endpointsGroup;
-  }, [showSegments, showLinks, segmentsData, linksData, mapReady, anchorNodes]);
+  }, [showSegments, showLinks, segmentsData, linksData, mapReady, anchorNodes, activeMode]);
+
+  // Signs markers are now handled by the SignsLayer component in LayersControl
 
   // Load layers
   useEffect(() => {
@@ -944,7 +1537,11 @@ export function MapView({
   };
 
   const handleSaveAnchorName = async () => {
-    if (!selectedAnchor || !routeNumber) return;
+    if (!selectedAnchor) return;
+    
+    // In anchor-naming mode, we don't require routeNumber
+    // Use the first route from the anchor's links, or allow global naming
+    const anchorRouteNumber = routeNumber || null;
 
     const trimmedManual = anchorManualName.trim();
     let payload: AnchorNameUpsertRequest | null = null;
@@ -953,7 +1550,7 @@ export function MapView({
       payload = {
         name: trimmedManual,
         source_type: 'manual',
-        rutenummer: routeNumber,
+        rutenummer: anchorRouteNumber || undefined, // Optional in anchor-naming mode
       };
     } else if (anchorSelectedIndex !== null) {
       const candidate = anchorCandidates[anchorSelectedIndex];
@@ -963,7 +1560,7 @@ export function MapView({
           source_type: candidate.source_type,
           source_id: candidate.source_id,
           distance_meters: candidate.distance_meters ?? undefined,
-          rutenummer: routeNumber,
+          rutenummer: anchorRouteNumber || undefined, // Optional in anchor-naming mode
         };
       }
     }
@@ -1283,6 +1880,28 @@ export function MapView({
         return;
       }
 
+      // Property ownership mode: fetch ownership for selected geometry
+      if (activeMode === 'property-ownership' && onGeometrySelectForOwnership && feature.geometry) {
+        if (feature.geometry.type === 'LineString') {
+          onGeometrySelectForOwnership(feature.geometry);
+          // Fetch ownership data
+          if (onOwnershipDataChange) {
+            onOwnershipDataChange(null); // Clear previous data
+            api.getGeometryOwners(feature.geometry)
+              .then((data) => {
+                if (onOwnershipDataChange) {
+                  onOwnershipDataChange(data);
+                }
+              })
+              .catch((error) => {
+                const appError = handleApiError(error, 'Property Ownership');
+                notificationManager.error(`Kunne ikke laste grunneierinformasjon: ${appError.message}`);
+              });
+          }
+        }
+        return;
+      }
+
       // Normal selection
       if (onFeatureSelect && featureId) {
         // Pass feature properties (which contain segment attributes)
@@ -1325,7 +1944,17 @@ export function MapView({
               maxZoom={19}
             />
           </LayersControl.BaseLayer>
+          <LayersControl.Overlay checked={showSigns} name="Skilt">
+            <SignsLayer 
+              signsData={signsData}
+              selectedSignDestinations={selectedSignDestinations}
+              onSignDestinationSelect={onSignDestinationSelect}
+              signsLayerRef={signsLayerRef}
+            />
+          </LayersControl.Overlay>
         </LayersControl>
+
+        <SignsLayerControl onToggle={setShowSigns} />
 
         <MapInitializer
           onMapReady={(map) => {
@@ -1335,10 +1964,12 @@ export function MapView({
           }}
         />
 
-        <GeomanControl
-          onDrawComplete={handleDrawComplete}
-          onEditComplete={handleEditComplete}
-        />
+        {activeMode === 'edit' && editMode && (
+          <GeomanControl
+            onDrawComplete={handleDrawComplete}
+            onEditComplete={handleEditComplete}
+          />
+        )}
 
         {mapReady && mapRef.current && <SnapLayer map={mapRef.current} snapManager={snapManager} />}
 
@@ -1431,8 +2062,69 @@ export function MapView({
         </div>
       )}
 
-      {/* Toolbar - show when route is selected */}
-      {routeNumber && (
+      {/* Mode Selector - Always visible */}
+      <div style={{
+        position: 'absolute',
+        top: 10,
+        left: 20,
+        zIndex: 1000,
+        background: 'white',
+        borderRadius: '8px',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        padding: '8px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '4px',
+      }}>
+        <div style={{ fontSize: '12px', fontWeight: 'bold', marginBottom: '4px', color: '#666' }}>
+          Modus:
+        </div>
+        {(['inspection', 'edit', 'anchor-naming', 'signs', 'property-ownership'] as AppMode[]).map((mode) => {
+          const modeLabels: Record<AppMode, string> = {
+            'inspection': '👁️ Inspiser',
+            'edit': '✏️ Rediger',
+            'anchor-naming': '🏷️ Navngi Ankere',
+            'signs': '🚩 Skilt',
+            'property-ownership': '🏠 Grunneier',
+          };
+          const isActive = activeMode === mode;
+          return (
+            <button
+              key={mode}
+              onClick={() => {
+                onModeChange(mode);
+                // Auto-enable edit mode when entering edit mode
+                if (mode === 'edit') {
+                  setEditMode(true);
+                } else {
+                  setEditMode(false);
+                }
+              }}
+              style={{
+                padding: '8px 12px',
+                border: 'none',
+                borderRadius: '6px',
+                background: isActive ? '#007bff' : '#f8f9fa',
+                color: isActive ? 'white' : '#333',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: isActive ? 'bold' : 'normal',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s',
+                whiteSpace: 'nowrap',
+              }}
+              title={modeLabels[mode]}
+            >
+              {modeLabels[mode]}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Toolbar - show when route is selected or in edit mode */}
+      {(routeNumber || activeMode === 'edit') && (
         <div style={{
           position: 'absolute',
           top: 80,
@@ -1446,9 +2138,47 @@ export function MapView({
           flexDirection: 'column',
           gap: '4px',
         }}>
-          {/* Draw new segment */}
-          <button
-            onClick={() => {
+          {/* Edit Mode Toggle - only in edit mode */}
+          {activeMode === 'edit' && (
+            <button
+              onClick={() => setEditMode(!editMode)}
+              style={{
+                padding: '12px',
+                border: 'none',
+                borderRadius: '6px',
+                background: editMode ? '#e74c3c' : '#f8f9fa',
+                color: editMode ? 'white' : '#333',
+                cursor: 'pointer',
+                fontSize: '16px',
+                fontWeight: editMode ? 'bold' : 'normal',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s',
+                minWidth: '48px',
+                minHeight: '48px',
+              }}
+              title={editMode ? 'Deaktiver redigeringsverktøy' : 'Aktiver redigeringsverktøy'}
+            >
+              {editMode ? '🔧 Verktøy På' : '🔧 Verktøy Av'}
+            </button>
+          )}
+
+          {/* Divider */}
+          {editMode && (
+            <div style={{
+              height: '1px',
+              background: '#dee2e6',
+              margin: '4px 0',
+            }} />
+          )}
+
+          {/* Edit tools - only show in edit mode and when edit mode is active */}
+          {activeMode === 'edit' && editMode && (
+            <>
+              {/* Draw new segment */}
+              <button
+                onClick={() => {
               if (mapRef.current?.pm) {
                 const isActive = activeTool === 'draw';
                 if (isActive) {
@@ -1462,30 +2192,30 @@ export function MapView({
                   setActiveTool('draw');
                 }
               }
-            }}
-            style={{
-              padding: '12px',
-              border: 'none',
-              borderRadius: '6px',
-              background: activeTool === 'draw' ? '#007bff' : '#f8f9fa',
-              color: activeTool === 'draw' ? 'white' : '#333',
-              cursor: 'pointer',
-              fontSize: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s',
-              minWidth: '48px',
-              minHeight: '48px',
-            }}
-            title="Tegn nytt segment"
-          >
-            ✏️
-          </button>
+                }}
+                style={{
+                  padding: '12px',
+                  border: 'none',
+                  borderRadius: '6px',
+                  background: activeTool === 'draw' ? '#007bff' : '#f8f9fa',
+                  color: activeTool === 'draw' ? 'white' : '#333',
+                  cursor: 'pointer',
+                  fontSize: '20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.2s',
+                  minWidth: '48px',
+                  minHeight: '48px',
+                }}
+                title="Tegn nytt segment"
+              >
+                ✏️
+              </button>
 
-          {/* Edit geometry */}
-          <button
-            onClick={() => {
+              {/* Edit geometry */}
+              <button
+                onClick={() => {
               if (mapRef.current?.pm) {
                 const isActive = activeTool === 'edit';
                 if (isActive) {
@@ -1496,30 +2226,30 @@ export function MapView({
                   setActiveTool('edit');
                 }
               }
-            }}
-            style={{
-              padding: '12px',
-              border: 'none',
-              borderRadius: '6px',
-              background: activeTool === 'edit' ? '#007bff' : '#f8f9fa',
-              color: activeTool === 'edit' ? 'white' : '#333',
-              cursor: 'pointer',
-              fontSize: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s',
-              minWidth: '48px',
-              minHeight: '48px',
-            }}
-            title="Rediger geometri"
-          >
-            🔧
-          </button>
+                }}
+                style={{
+                  padding: '12px',
+                  border: 'none',
+                  borderRadius: '6px',
+                  background: activeTool === 'edit' ? '#007bff' : '#f8f9fa',
+                  color: activeTool === 'edit' ? 'white' : '#333',
+                  cursor: 'pointer',
+                  fontSize: '20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.2s',
+                  minWidth: '48px',
+                  minHeight: '48px',
+                }}
+                title="Rediger geometri"
+              >
+                🔧
+              </button>
 
-          {/* Edit segment/route data */}
-          <button
-            onClick={() => {
+              {/* Edit segment/route data */}
+              <button
+                onClick={() => {
               debugLog('Edit button clicked:', {
                 selectedFeatureId,
                 selectedFeatureIdsSize: selectedFeatureIds.size,
@@ -1552,30 +2282,30 @@ export function MapView({
               } else {
                 notificationManager.warning('Velg en rute eller et segment først for å redigere data');
               }
-            }}
-            style={{
-              padding: '12px',
-              border: 'none',
-              borderRadius: '6px',
-              background: activeTool === 'edit-data' ? '#6f42c1' : '#f8f9fa',
-              color: activeTool === 'edit-data' ? 'white' : '#333',
-              cursor: 'pointer',
-              fontSize: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s',
-              minWidth: '48px',
-              minHeight: '48px',
-            }}
-            title="Rediger segment/rutedata (rutenummer, rutenavn, etc.)"
-          >
-            📋
-          </button>
+                }}
+                style={{
+                  padding: '12px',
+                  border: 'none',
+                  borderRadius: '6px',
+                  background: activeTool === 'edit-data' ? '#6f42c1' : '#f8f9fa',
+                  color: activeTool === 'edit-data' ? 'white' : '#333',
+                  cursor: 'pointer',
+                  fontSize: '20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.2s',
+                  minWidth: '48px',
+                  minHeight: '48px',
+                }}
+                title="Rediger segment/rutedata (rutenummer, rutenavn, etc.)"
+              >
+                📋
+              </button>
 
-          {/* Split segment */}
-          <button
-            onClick={() => {
+              {/* Split segment */}
+              <button
+                onClick={() => {
               if (activeTool === 'split') {
                 setActiveTool(null);
                 notificationManager.info('Deling av segment avbrutt');
@@ -1583,30 +2313,30 @@ export function MapView({
                 notificationManager.info('Del segment: Klikk på et punkt på segmentet for å dele det');
                 setActiveTool('split');
               }
-            }}
-            style={{
-              padding: '12px',
-              border: 'none',
-              borderRadius: '6px',
-              background: activeTool === 'split' ? '#ffc107' : '#f8f9fa',
-              color: activeTool === 'split' ? 'white' : '#333',
-              cursor: 'pointer',
-              fontSize: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s',
-              minWidth: '48px',
-              minHeight: '48px',
-            }}
-            title="Del segment"
-          >
-            ✂️
-          </button>
+                }}
+                style={{
+                  padding: '12px',
+                  border: 'none',
+                  borderRadius: '6px',
+                  background: activeTool === 'split' ? '#ffc107' : '#f8f9fa',
+                  color: activeTool === 'split' ? 'white' : '#333',
+                  cursor: 'pointer',
+                  fontSize: '20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.2s',
+                  minWidth: '48px',
+                  minHeight: '48px',
+                }}
+                title="Del segment"
+              >
+                ✂️
+              </button>
 
-          {/* Delete segment */}
-          <button
-            onClick={() => {
+              {/* Delete segment */}
+              <button
+                onClick={() => {
               if (!selectedFeatureId) {
                 notificationManager.warning('Velg et segment først for å slette det');
                 return;
@@ -1627,34 +2357,49 @@ export function MapView({
                   setConfirmDialog(null);
                 },
               });
-            }}
-            style={{
-              padding: '12px',
-              border: 'none',
-              borderRadius: '6px',
-              background: activeTool === 'delete' ? '#dc3545' : '#f8f9fa',
-              color: activeTool === 'delete' ? 'white' : '#333',
-              cursor: 'pointer',
-              fontSize: '20px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s',
-              minWidth: '48px',
-              minHeight: '48px',
-            }}
-            title="Slett segment"
-          >
-            🗑️
-          </button>
+                }}
+                style={{
+                  padding: '12px',
+                  border: 'none',
+                  borderRadius: '6px',
+                  background: activeTool === 'delete' ? '#dc3545' : '#f8f9fa',
+                  color: activeTool === 'delete' ? 'white' : '#333',
+                  cursor: 'pointer',
+                  fontSize: '20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.2s',
+                  minWidth: '48px',
+                  minHeight: '48px',
+                }}
+                title="Slett segment"
+              >
+                🗑️
+              </button>
+            </>
+          )}
 
-          {/* Divider */}
-          <div style={{
-            height: '1px',
-            background: '#dee2e6',
-            margin: '4px 0',
-          }} />
+          {/* Divider between edit tools and inspection tools */}
 
+        </div>
+      )}
+
+      {/* Layer toggles - always visible in inspection mode */}
+      {activeMode === 'inspection' && (
+        <div style={{
+          position: 'absolute',
+          top: 80,
+          left: 20,
+          zIndex: 1000,
+          background: 'white',
+          borderRadius: '8px',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+          padding: '8px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '4px',
+        }}>
           {/* Toggle segments */}
           <button
             onClick={() => setShowSegments(!showSegments)}
@@ -1700,7 +2445,6 @@ export function MapView({
           >
             🔗
           </button>
-
         </div>
       )}
 

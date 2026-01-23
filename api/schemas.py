@@ -120,6 +120,7 @@ class EndpointName(BaseModel):
     distance_meters: Optional[float] = None
     coordinates: Optional[List[float]] = None  # [lon, lat]
     tilrettelegging: Optional[str] = None  # Only present for ruteinfopunkt source
+    is_validated: bool = False  # True if name comes from ops.endpoint_names
 
 
 class PlacenameCandidate(BaseModel):
@@ -177,6 +178,67 @@ class RouteAnchorsResponse(BaseModel):
     rutenummer: str
     anchors: List[AnchorNodeInfo]
     total: int
+
+
+class SignDestination(BaseModel):
+    """Destination entry for a sign report."""
+    anchor_node_id: int
+    name: str
+    distance_meters: float
+
+
+class SignStatus(BaseModel):
+    """Operational sign status metadata."""
+    direction: Optional[str] = None
+    status: Optional[str] = None
+    last_inspected: Optional[str] = None
+    notes: Optional[str] = None
+    front_lon: Optional[float] = None
+    front_lat: Optional[float] = None
+    back_lon: Optional[float] = None
+    back_lat: Optional[float] = None
+    updated_by: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class SignReportItem(BaseModel):
+    """Computed sign report item."""
+    anchor_node_id: int
+    coordinates: Optional[List[float]] = None  # [lon, lat]
+    link_count: int
+    is_endpoint: bool
+    is_junction: bool
+    name: Optional[str] = None
+    destinations: List[SignDestination]
+    status: List[SignStatus] = []
+
+
+class SignsMissingItem(BaseModel):
+    """Missing sign item."""
+    anchor_node_id: int
+    coordinates: Optional[List[float]] = None
+    reason: str
+
+
+class SignsMissingReport(BaseModel):
+    """Missing signs report."""
+    missing_signs: List[SignsMissingItem]
+    missing_destinations: List[SignsMissingItem]
+    missing_anchor_names: List[SignsMissingItem]
+
+
+class SignsReportResponse(BaseModel):
+    """Signs report response."""
+    scope: Dict[str, Any]
+    signs: List[SignReportItem]
+    missing: SignsMissingReport
+    totals: Dict[str, Any]
+
+
+class SignsProductionResponse(BaseModel):
+    """Signs production export response."""
+    scope: Dict[str, Any]
+    rows: List[Dict[str, Any]]
 
 
 class AnchorNameUpsertRequest(BaseModel):

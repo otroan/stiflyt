@@ -79,6 +79,34 @@ def ensure_operational_schema(conn) -> None:
             """
         )
 
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {schema_quoted}.sign_status (
+                id BIGSERIAL PRIMARY KEY,
+                anchor_node_id INTEGER NOT NULL,
+                direction TEXT NOT NULL,
+                status TEXT NULL,
+                last_inspected TIMESTAMPTZ NULL,
+                notes TEXT NULL,
+                front_lon DOUBLE PRECISION NULL,
+                front_lat DOUBLE PRECISION NULL,
+                back_lon DOUBLE PRECISION NULL,
+                back_lat DOUBLE PRECISION NULL,
+                updated_by TEXT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (anchor_node_id, direction)
+            );
+            """
+        )
+
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS sign_status_anchor_idx
+            ON {schema_quoted}.sign_status (anchor_node_id);
+            """
+        )
+
 
 def upsert_endpoint_name(
     conn,
@@ -275,3 +303,136 @@ def get_endpoint_names_for_anchor_routes(
             resolved[rutenummer] = anchor_map
 
     return resolved
+
+
+def upsert_sign_status(
+    conn,
+    anchor_node_id: int,
+    direction: str,
+    status: Optional[str] = None,
+    last_inspected: Optional[datetime] = None,
+    notes: Optional[str] = None,
+    front_coords: Optional[tuple[float, float]] = None,
+    back_coords: Optional[tuple[float, float]] = None,
+    updated_by: Optional[str] = None,
+) -> Dict:
+    """Upsert sign status metadata."""
+    ensure_operational_schema(conn)
+
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    now = datetime.utcnow()
+    front_lon = front_coords[0] if front_coords else None
+    front_lat = front_coords[1] if front_coords else None
+    back_lon = back_coords[0] if back_coords else None
+    back_lat = back_coords[1] if back_coords else None
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            INSERT INTO {schema_quoted}.sign_status (
+                anchor_node_id,
+                direction,
+                status,
+                last_inspected,
+                notes,
+                front_lon,
+                front_lat,
+                back_lon,
+                back_lat,
+                updated_by,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (anchor_node_id, direction)
+            DO UPDATE SET
+                status = EXCLUDED.status,
+                last_inspected = EXCLUDED.last_inspected,
+                notes = EXCLUDED.notes,
+                front_lon = EXCLUDED.front_lon,
+                front_lat = EXCLUDED.front_lat,
+                back_lon = EXCLUDED.back_lon,
+                back_lat = EXCLUDED.back_lat,
+                updated_by = EXCLUDED.updated_by,
+                updated_at = NOW()
+            RETURNING
+                anchor_node_id,
+                direction,
+                status,
+                last_inspected,
+                notes,
+                front_lon,
+                front_lat,
+                back_lon,
+                back_lat,
+                updated_by,
+                created_at,
+                updated_at;
+            """,
+            (
+                anchor_node_id,
+                direction,
+                status,
+                last_inspected,
+                notes,
+                front_lon,
+                front_lat,
+                back_lon,
+                back_lat,
+                updated_by,
+                now,
+            ),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else {}
+
+
+def get_sign_status_for_anchors(
+    conn,
+    anchor_node_ids: List[int],
+) -> Dict[int, List[Dict]]:
+    """Fetch sign status rows for anchors."""
+    ensure_operational_schema(conn)
+
+    if not anchor_node_ids:
+        return {}
+
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+
+    schema_quoted = quote_identifier(OP_SCHEMA)
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT
+                anchor_node_id,
+                direction,
+                status,
+                last_inspected,
+                notes,
+                front_lon,
+                front_lat,
+                back_lon,
+                back_lat,
+                updated_by,
+                created_at,
+                updated_at
+            FROM {schema_quoted}.sign_status
+            WHERE anchor_node_id = ANY(%s)
+            ORDER BY anchor_node_id, direction;
+            """,
+            (anchor_node_ids,),
+        )
+        rows = cur.fetchall()
+
+    grouped: Dict[int, List[Dict]] = {}
+    for row in rows:
+        anchor_id = row.get("anchor_node_id")
+        if anchor_id is None:
+            continue
+        grouped.setdefault(int(anchor_id), []).append(dict(row))
+
+    return grouped

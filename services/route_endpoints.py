@@ -4,9 +4,12 @@ Uses stedsnavn for names; ruteinfopunkt is used for facility signals.
 """
 import json
 import re
+import time
 from typing import Optional, Dict, Any, Tuple, List
 from psycopg.rows import dict_row
 from .database import ROUTE_SCHEMA, validate_schema_name
+from .operational_database import op_db_connection
+from .operational_store import get_endpoint_names_for_anchors
 
 
 def format_utm_shortform(name: str) -> str:
@@ -28,6 +31,11 @@ def format_utm_shortform(name: str) -> str:
         return name
 
     return f"UTM32V {easting} {northing}"
+
+
+STEDSNAVN_CACHE_TTL_SECONDS = 600
+_STEDSNAVN_CACHE: Dict[Tuple[Optional[int], float], Tuple[float, Optional[Dict[str, Any]]]] = {}
+CLUSTER_RADIUS_METERS = 200.0
 
 
 def extract_route_endpoints(route_geometry_geojson: Dict[str, Any]) -> Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]:
@@ -501,11 +509,207 @@ def lookup_name_in_anchor_nodes(conn, point_lon: float, point_lat: float, search
     return None
 
 
+def find_nearest_anchor_node(
+    conn,
+    point_lon: float,
+    point_lat: float,
+    search_radius_meters: float = 500.0,
+) -> Optional[Dict[str, Any]]:
+    """Find nearest anchor node by coordinates."""
+    from .database import quote_identifier
+
+    if not validate_schema_name(ROUTE_SCHEMA):
+        return None
+
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = %s AND table_name = 'anchor_nodes'
+                )
+                """,
+                (ROUTE_SCHEMA,),
+            )
+            result = cur.fetchone()
+            table_exists = result[0] if result else False
+            if not table_exists:
+                return None
+
+            schema_quoted = quote_identifier(ROUTE_SCHEMA)
+            table_quoted = quote_identifier("anchor_nodes")
+            query = f"""
+                SELECT
+                    node_id,
+                    ST_X(ST_Transform(geom, 4326)) as lon,
+                    ST_Y(ST_Transform(geom, 4326)) as lat,
+                    ST_Distance(
+                        ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                        ST_Transform(geom, 25833)
+                    ) as distance_meters
+                FROM {schema_quoted}.{table_quoted}
+                WHERE ST_DWithin(
+                    ST_Transform(geom, 25833),
+                    ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                    %s
+                )
+                  AND navn IS NOT NULL
+                ORDER BY distance_meters ASC
+                LIMIT 1
+            """
+            cur.execute(query, (point_lon, point_lat, point_lon, point_lat, search_radius_meters))
+            row = cur.fetchone()
+            if not row:
+                return None
+            if row.get("node_id") is None:
+                return None
+            return {
+                "anchor_node_id": int(row["node_id"]),
+                "lon": float(row["lon"]) if row.get("lon") is not None else None,
+                "lat": float(row["lat"]) if row.get("lat") is not None else None,
+                "distance_meters": float(row["distance_meters"]) if row.get("distance_meters") is not None else None,
+            }
+    except Exception:
+        try:
+            conn.rollback()
+        except:
+            pass
+        return None
+
+
+def lookup_anchor_name_override(
+    anchor_node_id: int,
+    rutenummer: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Lookup validated anchor name from ops table."""
+    if anchor_node_id is None:
+        return None
+    try:
+        with op_db_connection() as op_conn:
+            overrides = get_endpoint_names_for_anchors(
+                op_conn,
+                [anchor_node_id],
+                rutenummer=rutenummer,
+            )
+        override = overrides.get(anchor_node_id)
+        if override and override.get("name"):
+            return {
+                "name": override.get("name"),
+                "source": override.get("source_type", "manual"),
+                "source_id": override.get("source_id"),
+                "distance_meters": override.get("distance_meters"),
+            }
+    except Exception:
+        return None
+    return None
+
+
+def lookup_named_anchor_within_radius(
+    conn,
+    point_lon: float,
+    point_lat: float,
+    radius_meters: float = CLUSTER_RADIUS_METERS,
+) -> Optional[Dict[str, Any]]:
+    """Find nearest named anchor within radius (cluster fallback)."""
+    from .database import quote_identifier
+
+    if not validate_schema_name(ROUTE_SCHEMA):
+        return None
+
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_schema = %s AND table_name = 'anchor_nodes'
+                )
+                """,
+                (ROUTE_SCHEMA,),
+            )
+            result = cur.fetchone()
+            table_exists = result[0] if result else False
+            if not table_exists:
+                return None
+
+            schema_quoted = quote_identifier(ROUTE_SCHEMA)
+            table_quoted = quote_identifier("anchor_nodes")
+            query = f"""
+                SELECT
+                    node_id,
+                    ST_X(ST_Transform(geom, 4326)) as lon,
+                    ST_Y(ST_Transform(geom, 4326)) as lat,
+                    ST_Distance(
+                        ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                        ST_Transform(geom, 25833)
+                    ) as distance_meters
+                FROM {schema_quoted}.{table_quoted}
+                WHERE ST_DWithin(
+                    ST_Transform(geom, 25833),
+                    ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833),
+                    %s
+                )
+                ORDER BY distance_meters ASC
+                LIMIT 1
+            """
+            cur.execute(query, (point_lon, point_lat, point_lon, point_lat, radius_meters))
+            row = cur.fetchone()
+            if not row or row.get("node_id") is None:
+                return None
+
+        anchor_id = int(row["node_id"])
+        override = lookup_anchor_name_override(anchor_id, rutenummer=None)
+        if override:
+            return {
+                **override,
+                "anchor_node_id": anchor_id,
+                "distance_meters": float(row.get("distance_meters")) if row.get("distance_meters") is not None else None,
+            }
+        return None
+    except Exception:
+        try:
+            conn.rollback()
+        except:
+            pass
+        return None
+
+
+def lookup_name_in_stedsnavn_cached(
+    conn,
+    point_lon: float,
+    point_lat: float,
+    search_radius_meters: float = 500.0,
+    anchor_node_id: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Lookup stedsnavn with a short TTL cache."""
+    if anchor_node_id is None:
+        cache_key = (None, round(point_lon, 6), round(point_lat, 6), float(search_radius_meters))
+    else:
+        cache_key = (anchor_node_id, float(search_radius_meters))
+    now = time.time()
+    cached = _STEDSNAVN_CACHE.get(cache_key)
+    if cached:
+        timestamp, value = cached
+        if now - timestamp < STEDSNAVN_CACHE_TTL_SECONDS:
+            return value
+
+    result = lookup_name_in_stedsnavn(
+        conn,
+        point_lon,
+        point_lat,
+        search_radius_meters=search_radius_meters,
+    )
+    _STEDSNAVN_CACHE[cache_key] = (now, result)
+    return result
+
+
 def lookup_endpoint_name(conn, point_lon: float, point_lat: float, rutenummer: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Look up a name for a route endpoint using hierarchical lookup:
-    1. First try anchor_nodes (already has names found via stedsnavn)
-    2. Then check stedsnavn directly
+    1. Prefer validated anchor names from ops.endpoint_names
+    2. Then check nearest named anchor within cluster radius
+    3. Then check stedsnavn directly
 
     Args:
         conn: Database connection
@@ -519,12 +723,28 @@ def lookup_endpoint_name(conn, point_lon: float, point_lat: float, rutenummer: O
     # Use same search radius for all sources to allow fair comparison
     search_radius = 500.0
 
-    # First try anchor_nodes (fastest, already has names)
-    anchor_node_result = lookup_name_in_anchor_nodes(conn, point_lon, point_lat, search_radius_meters=search_radius)
-    if anchor_node_result:
-        return anchor_node_result
+    anchor_node = find_nearest_anchor_node(conn, point_lon, point_lat, search_radius_meters=search_radius)
+    if anchor_node:
+        override = lookup_anchor_name_override(anchor_node["anchor_node_id"], rutenummer=rutenummer)
+        if override:
+            return override
 
-    stedsnavn_result = lookup_name_in_stedsnavn(conn, point_lon, point_lat, search_radius_meters=search_radius)
+    cluster_name = lookup_named_anchor_within_radius(
+        conn,
+        point_lon,
+        point_lat,
+        radius_meters=CLUSTER_RADIUS_METERS,
+    )
+    if cluster_name:
+        return cluster_name
+
+    stedsnavn_result = lookup_name_in_stedsnavn_cached(
+        conn,
+        point_lon,
+        point_lat,
+        search_radius_meters=search_radius,
+        anchor_node_id=anchor_node.get("anchor_node_id") if anchor_node else None,
+    )
 
     if stedsnavn_result:
         return stedsnavn_result

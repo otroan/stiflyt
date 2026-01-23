@@ -160,6 +160,115 @@ def format_csv(segments: List[Dict[str, Any]], include_geometry: bool = False) -
     return output.getvalue()
 
 
+def format_signs_table(signs: List[Dict[str, Any]]) -> str:
+    """Format signs report as a table."""
+    if not signs:
+        return "No signs found."
+
+    def format_distance_km(distance_meters: Optional[float]) -> str:
+        if distance_meters is None:
+            return ""
+        km = distance_meters / 1000.0
+        if km > 5:
+            return f"{round(km):.0f}km"
+        return f"{round(km * 2) / 2:.1f}km"
+
+    def destinations_str(destinations: List[Dict[str, Any]]) -> str:
+        if not destinations:
+            return "None"
+        parts = []
+        for dest in destinations:
+            name = dest.get("name") or "Unknown"
+            dist = dest.get("distance_meters")
+            if dist is None:
+                parts.append(f"{name}")
+            else:
+                parts.append(f"{name} ({format_distance_km(dist)})")
+        return ", ".join(parts)
+
+    rows = []
+    for sign in signs:
+        sign_type = "endpoint" if sign.get("is_endpoint") else "junction" if sign.get("is_junction") else "node"
+        rows.append({
+            "anchor_node_id": str(sign.get("anchor_node_id", "")),
+            "type": sign_type,
+            "name": sign.get("name") or "N/A",
+            "destinations": destinations_str(sign.get("destinations", [])),
+        })
+
+    col_widths = {
+        "anchor_node_id": max(len("anchor"), max(len(r["anchor_node_id"]) for r in rows)),
+        "type": max(len("type"), max(len(r["type"]) for r in rows)),
+        "name": max(len("name"), max(len(r["name"]) for r in rows)),
+        "destinations": max(len("destinations"), max(len(r["destinations"]) for r in rows)),
+    }
+
+    header = (
+        f"{'anchor':<{col_widths['anchor_node_id']}} | "
+        f"{'type':<{col_widths['type']}} | "
+        f"{'name':<{col_widths['name']}} | "
+        f"{'destinations':<{col_widths['destinations']}}"
+    )
+    lines = [header, "-" * len(header)]
+    for row in rows:
+        lines.append(
+            f"{row['anchor_node_id']:<{col_widths['anchor_node_id']}} | "
+            f"{row['type']:<{col_widths['type']}} | "
+            f"{row['name']:<{col_widths['name']}} | "
+            f"{row['destinations']:<{col_widths['destinations']}}"
+        )
+    return "\n".join(lines)
+
+
+def format_signs_missing_table(missing: Dict[str, Any]) -> str:
+    """Format missing signs report as text."""
+    missing_signs = missing.get("missing_signs", [])
+    missing_destinations = missing.get("missing_destinations", [])
+    missing_anchor_names = missing.get("missing_anchor_names", [])
+
+    lines = [
+        "Missing signs report",
+        "-" * 80,
+        f"Missing destinations: {len(missing_destinations)}",
+        f"Missing anchor names: {len(missing_anchor_names)}",
+        f"Missing signs: {len(missing_signs)}",
+        "",
+    ]
+    for item in missing_signs:
+        coords = item.get("coordinates") or []
+        lon = coords[0] if len(coords) > 0 else None
+        lat = coords[1] if len(coords) > 1 else None
+        coord_str = f"{lat:.6f}, {lon:.6f}" if lat is not None and lon is not None else "N/A"
+        lines.append(f"Anchor {item.get('anchor_node_id')} | {coord_str} | {item.get('reason')}")
+    return "\n".join(lines)
+
+
+def format_signs_production_csv(rows: List[Dict[str, Any]]) -> str:
+    """Format production signs rows as CSV."""
+    output = StringIO()
+    fieldnames = [
+        "anchor_node_id",
+        "sign_name",
+        "direction",
+        "status",
+        "destination_name",
+        "destination_anchor_id",
+        "distance_meters",
+        "front_lon",
+        "front_lat",
+        "back_lon",
+        "back_lat",
+        "last_inspected",
+        "notes",
+        "updated_by",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: row.get(key) for key in fieldnames})
+    return output.getvalue()
+
+
 def format_text_summary(response: Dict[str, Any]) -> str:
     """
     Format a summary of the query results.
@@ -234,10 +343,12 @@ def format_complete_route_table(route: Dict[str, Any]) -> str:
         distance = from_name.get("distance_meters")
         distance_str = f"{distance:.1f} m" if distance is not None else "N/A"
         tilrettelegging = from_name.get("tilrettelegging")
+        is_validated = from_name.get("is_validated", False)
+        validated_str = " [validert]" if is_validated else " [ikke validert]"
         if tilrettelegging:
-            lines.append(f"Fra:  {name} ({source}, {distance_str}, tilrettelegging: {tilrettelegging})")
+            lines.append(f"Fra:  {name} ({source}, {distance_str}, tilrettelegging: {tilrettelegging}){validated_str}")
         else:
-            lines.append(f"Fra:  {name} ({source}, {distance_str})")
+            lines.append(f"Fra:  {name} ({source}, {distance_str}){validated_str}")
     else:
         lines.append("Fra:  Ikke funnet")
 
@@ -247,10 +358,12 @@ def format_complete_route_table(route: Dict[str, Any]) -> str:
         distance = to_name.get("distance_meters")
         distance_str = f"{distance:.1f} m" if distance is not None else "N/A"
         tilrettelegging = to_name.get("tilrettelegging")
+        is_validated = to_name.get("is_validated", False)
+        validated_str = " [validert]" if is_validated else " [ikke validert]"
         if tilrettelegging:
-            lines.append(f"Til:  {name} ({source}, {distance_str}, tilrettelegging: {tilrettelegging})")
+            lines.append(f"Til:  {name} ({source}, {distance_str}, tilrettelegging: {tilrettelegging}){validated_str}")
         else:
-            lines.append(f"Til:  {name} ({source}, {distance_str})")
+            lines.append(f"Til:  {name} ({source}, {distance_str}){validated_str}")
     else:
         lines.append("Til:  Ikke funnet")
     lines.append("")

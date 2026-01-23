@@ -9,6 +9,7 @@ from .database import (
     TEIG_SCHEMA,
     validate_schema_name,
     get_route_schema,
+    quote_identifier,
 )
 from .operational_database import op_db_connection
 from .operational_store import get_endpoint_names_for_anchors, get_endpoint_names_for_anchor_routes
@@ -1317,6 +1318,7 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
                 "source": override.get("source_type", "manual"),
                 "distance_meters": override.get("distance_meters"),
                 "coordinates": [coords["lon"], coords["lat"]] if coords else None,
+                "is_validated": True,
             }
 
         if anchor_ids.get("to") and overrides.get(anchor_ids.get("to")):
@@ -1327,6 +1329,7 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
                 "source": override.get("source_type", "manual"),
                 "distance_meters": override.get("distance_meters"),
                 "coordinates": [coords["lon"], coords["lat"]] if coords else None,
+                "is_validated": True,
             }
 
         # Fallback to lookup by geometry if overrides not present
@@ -1340,7 +1343,8 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
                         'name': start_name_info.get('name'),
                         'source': start_name_info.get('source', 'unknown'),
                         'distance_meters': start_name_info.get('distance_meters'),
-                        'coordinates': [start_point[0], start_point[1]]
+                        'coordinates': [start_point[0], start_point[1]],
+                        'is_validated': False,
                     }
 
             if end_point and not to_name:
@@ -1350,7 +1354,8 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
                         'name': end_name_info.get('name'),
                         'source': end_name_info.get('source', 'unknown'),
                         'distance_meters': end_name_info.get('distance_meters'),
-                        'coordinates': [end_point[0], end_point[1]]
+                        'coordinates': [end_point[0], end_point[1]],
+                        'is_validated': False,
                     }
 
     # Build segments list if requested
@@ -1724,26 +1729,58 @@ def get_route_links(conn, rutenummer: str, include_geometry: bool = False):
     if not validate_schema_name(ROUTE_SCHEMA):
         raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
 
+    # Check if navn column exists in anchor_nodes
+    schema_quoted = quote_identifier(ROUTE_SCHEMA)
+    has_navn_column = False
+    with conn.cursor() as check_cur:
+        check_cur.execute("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = 'anchor_nodes'
+                  AND column_name = 'navn'
+            )
+        """, (ROUTE_SCHEMA,))
+        has_navn_column = check_cur.fetchone()[0]
+
     select_parts = [
         "l.link_id",
         "l.a_node",
         "l.b_node",
         "l.length_m",
         "l.segment_objids",
-        "an_a.navn as a_node_name",
-        "an_b.navn as b_node_name"
+        "l.rutenummer_list",
     ]
+
+    # Only include navn columns if they exist
+    if has_navn_column:
+        select_parts.extend([
+            "an_a.navn as a_node_name",
+            "an_b.navn as b_node_name"
+        ])
+    else:
+        select_parts.extend([
+            "NULL as a_node_name",
+            "NULL as b_node_name"
+        ])
 
     if include_geometry:
         select_parts.append("ST_AsGeoJSON(ST_Transform(l.geom, 4326))::json as geom")
 
-    # Use links_with_routes with JOIN to anchor_nodes for node names
+    # Use links_with_routes with JOIN to anchor_nodes for node names (if column exists)
+    join_clause = ""
+    if has_navn_column:
+        join_clause = f"""
+        LEFT JOIN {schema_quoted}.anchor_nodes an_a ON an_a.node_id = l.a_node
+        LEFT JOIN {schema_quoted}.anchor_nodes an_b ON an_b.node_id = l.b_node
+        """
+    
     query = f"""
         SELECT
             {', '.join(select_parts)}
-        FROM {ROUTE_SCHEMA}.links_with_routes l
-        LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_a ON an_a.node_id = l.a_node
-        LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_b ON an_b.node_id = l.b_node
+        FROM {schema_quoted}.links_with_routes l
+        {join_clause}
         WHERE %s = ANY(l.rutenummer_list)
         ORDER BY l.link_id
     """
