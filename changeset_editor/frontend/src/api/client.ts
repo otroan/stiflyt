@@ -229,7 +229,7 @@ export const api = {
     options: RequestOptions = {}
   ): Promise<RoutesResponse> =>
     requestWithAbort<RoutesResponse>(
-      `/v1/routes?bbox=${bbox}&include_geometry=true&limit=500`,
+      `/v1/routes?bbox=${bbox}&include_geometry=true&limit=1000`,
       options
     ),
 

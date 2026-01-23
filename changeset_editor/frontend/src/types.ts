@@ -148,6 +148,8 @@ export interface RouteResponse {
 export interface RoutesResponse {
   routes: (RouteInfo & { route_geometry?: GeoJSON.Geometry | null })[];
   total?: number;
+  limit?: number;
+  offset?: number;
 }
 
 export interface RouteSegment {

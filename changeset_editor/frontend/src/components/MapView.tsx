@@ -820,16 +820,22 @@ export function MapView({
     let activeController: AbortController | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-    const loadRoutesInView = () => {
+    const loadRoutesInView = async () => {
       if (!mapRef.current) {
         debugLog('mapRef.current is null in loadRoutesInView');
         return;
       }
 
       const bounds = mapRef.current.getBounds();
+      const zoom = mapRef.current.getZoom();
       const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
+      
+      // Calculate bbox area for logging
+      const bboxWidth = bounds.getEast() - bounds.getWest();
+      const bboxHeight = bounds.getNorth() - bounds.getSouth();
+      const bboxArea = bboxWidth * bboxHeight;
 
-      debugLog('Loading routes in bbox:', bbox);
+      debugLog('Loading routes in bbox:', { bbox, zoom, bboxArea: bboxArea.toFixed(6) });
 
       requestId += 1;
       const currentRequestId = requestId;
@@ -838,49 +844,69 @@ export function MapView({
       }
       activeController = new AbortController();
 
-      api.getRoutesInBbox(bbox, { signal: activeController.signal })
-        .then((data: RoutesResponse) => {
-          if (currentRequestId !== requestId) {
-            return;
-          }
-          debugLog('Routes API response:', data);
-          // Convert routes to GeoJSON FeatureCollection
-          // Convert routes to GeoJSON FeatureCollection
-          // Note: RouteInfo doesn't have route_geometry, but RoutesResponse routes might
-          const features: GeoJSON.Feature[] = (data.routes || [])
-            .map((route) => {
-              // Type assertion: routes from API may have route_geometry
-              const routeWithGeometry = route as RouteInfo & { route_geometry?: GeoJSON.Geometry | null };
-              const geometry = routeWithGeometry.route_geometry;
-              if (!geometry) {
-                return null;
-              }
-              return {
-                type: 'Feature' as const,
-                id: route.rutenummer,
-                geometry: geometry,
-                properties: {
-                  rutenummer: route.rutenummer,
-                  rutenavn: route.rutenavn,
-                  vedlikeholdsansvarlig: route.vedlikeholdsansvarlig,
-                },
-              } as GeoJSON.Feature;
-            })
-            .filter((f): f is GeoJSON.Feature => f !== null);
-
-          const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
-          debugLog(`Loaded ${filteredFeatures.length} routes with geometry`);
-
-          setRoutesInView({
-            type: 'FeatureCollection',
-            features: filteredFeatures,
-          });
-        })
-        .catch((error) => {
-          if (isAbortError(error)) return;
-          // Don't show notification for background route loading - just log silently
-          // Errors are logged by handleApiError
+      try {
+        // Load routes with max limit 1000 (API maximum)
+        // If there are more routes, user should zoom in to reduce bbox size
+        const limit = 1000;
+        const data = await api.getRoutesInBbox(bbox, { signal: activeController.signal });
+        
+        if (currentRequestId !== requestId) {
+          return;
+        }
+        
+        const totalRoutes = data.total ?? 0;
+        const returnedRoutes = data.routes?.length || 0;
+        
+        debugLog('Routes API response:', { 
+          total: totalRoutes, 
+          limit: limit, 
+          returned: returnedRoutes,
+          zoom,
+          bboxArea: bboxArea.toFixed(6)
         });
+        
+        // Warn if not all routes are loaded - user should zoom in
+        if (totalRoutes > limit) {
+          console.warn(
+            `Not all routes are displayed: ${totalRoutes} total routes in view, but only ${limit} loaded. ` +
+            `Zoom in to see more routes in the smaller area.`
+          );
+        }
+        
+        // Convert routes to GeoJSON FeatureCollection
+        const features: GeoJSON.Feature[] = (data.routes || [])
+          .map((route) => {
+            // Type assertion: routes from API may have route_geometry
+            const routeWithGeometry = route as RouteInfo & { route_geometry?: GeoJSON.Geometry | null };
+            const geometry = routeWithGeometry.route_geometry;
+            if (!geometry) {
+              return null;
+            }
+            return {
+              type: 'Feature' as const,
+              id: route.rutenummer,
+              geometry: geometry,
+              properties: {
+                rutenummer: route.rutenummer,
+                rutenavn: route.rutenavn,
+                vedlikeholdsansvarlig: route.vedlikeholdsansvarlig,
+              },
+            } as GeoJSON.Feature;
+          })
+          .filter((f): f is GeoJSON.Feature => f !== null);
+
+        const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
+        debugLog(`Loaded ${filteredFeatures.length} routes with geometry (out of ${totalRoutes} total, zoom: ${zoom}, bbox area: ${bboxArea.toFixed(6)})`);
+
+        setRoutesInView({
+          type: 'FeatureCollection',
+          features: filteredFeatures,
+        });
+      } catch (error) {
+        if (isAbortError(error)) return;
+        // Don't show notification for background route loading - just log silently
+        // Errors are logged by handleApiError
+      }
     };
 
     // Load routes on map move/zoom
