@@ -1,5 +1,5 @@
 /** Map view component with Leaflet and Geoman */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
@@ -1463,6 +1463,25 @@ export function MapView({
   // Links are now handled by LinksLayer component in LayersControl
   // Style updates are handled within that component when selection changes
 
+  const openAnchorDialog = useCallback((anchor: AnchorNodeInfo) => {
+    setSelectedAnchor(anchor);
+    setAnchorDialogOpen(true);
+    setAnchorCandidates([]);
+    setAnchorFacilities([]);
+    setAnchorSelectedIndex(null);
+    setAnchorManualName('');
+
+    api.getAnchorPlacenames(anchor.anchor_node_id, anchorSearchRadius, 10)
+      .then((data) => {
+        setAnchorCandidates(data.candidates || []);
+        setAnchorFacilities(data.facilities || []);
+      })
+      .catch((error) => {
+        const appError = handleApiError(error, 'Load Placenames');
+        notificationManager.warning(`Kunne ikke hente stedsnavn: ${appError.message}`);
+      });
+  }, [anchorSearchRadius]);
+
   // Display endpoints (for segments and links)
   useEffect(() => {
     if (!mapRef.current || !mapReady) {
@@ -1493,6 +1512,34 @@ export function MapView({
     const linkEndpointSet = new Set<string>(); // Keep link endpoints visible even when shared
     const linkEndpointCounts = new Map<string, number>();
     const linkEndpointCoords = new Map<string, number[]>();
+
+    // Create a map of anchor coordinates for quick lookup (key: "lon,lat", value: anchor)
+    const anchorCoordMap = new Map<string, AnchorNodeInfo>();
+    if ((activeMode === 'anchor-naming' || showLinks) && anchorNodes.length > 0) {
+      anchorNodes.forEach((anchor) => {
+        const [lon, lat] = anchor.coordinates;
+        const key = `${lon},${lat}`;
+        anchorCoordMap.set(key, anchor);
+      });
+    }
+
+    // Helper function to check if coordinates match an anchor (with tolerance for floating point)
+    const findAnchorAtCoord = (lon: number, lat: number): AnchorNodeInfo | null => {
+      // Check exact match first
+      const exactKey = `${lon},${lat}`;
+      if (anchorCoordMap.has(exactKey)) {
+        return anchorCoordMap.get(exactKey)!;
+      }
+      // Check with small tolerance (0.000001 degrees ≈ 0.1m)
+      const tolerance = 0.000001;
+      for (const [key, anchor] of anchorCoordMap.entries()) {
+        const [anchorLon, anchorLat] = anchor.coordinates;
+        if (Math.abs(anchorLon - lon) < tolerance && Math.abs(anchorLat - lat) < tolerance) {
+          return anchor;
+        }
+      }
+      return null;
+    };
 
     if (!mapRef.current.getPane('link-endpoints')) {
       const pane = mapRef.current.createPane('link-endpoints');
@@ -1543,12 +1590,17 @@ export function MapView({
           if (coords.length === 0) return;
 
           // Start point
-          const startKey = `${coords[0][0]},${coords[0][1]}`;
+          const startLon = coords[0][0];
+          const startLat = coords[0][1];
+          const startKey = `${startLon},${startLat}`;
           linkEndpointCounts.set(startKey, (linkEndpointCounts.get(startKey) ?? 0) + 1);
           linkEndpointCoords.set(startKey, coords[0]);
-          if (!linkEndpointSet.has(startKey)) {
+          
+          // Check if this coordinate is an anchor - if so, skip creating duplicate marker
+          const startAnchor = findAnchorAtCoord(startLon, startLat);
+          if (!linkEndpointSet.has(startKey) && !startAnchor) {
             linkEndpointSet.add(startKey);
-            L.circleMarker([coords[0][1], coords[0][0]], {
+            const marker = L.circleMarker([startLat, startLon], {
               radius: 8,
               fillColor: '#f39c12',
               color: '#2c3e50',
@@ -1557,15 +1609,24 @@ export function MapView({
               fillOpacity: 0.95,
               pane: 'link-endpoints',
             }).addTo(endpointsGroup);
+            // Add click handler if this is an anchor (shouldn't happen due to check above, but just in case)
+            if (startAnchor) {
+              marker.on('click', () => openAnchorDialog(startAnchor));
+            }
           }
 
           // End point
-          const endKey = `${coords[coords.length - 1][0]},${coords[coords.length - 1][1]}`;
+          const endLon = coords[coords.length - 1][0];
+          const endLat = coords[coords.length - 1][1];
+          const endKey = `${endLon},${endLat}`;
           linkEndpointCounts.set(endKey, (linkEndpointCounts.get(endKey) ?? 0) + 1);
           linkEndpointCoords.set(endKey, coords[coords.length - 1]);
-          if (!linkEndpointSet.has(endKey)) {
+          
+          // Check if this coordinate is an anchor - if so, skip creating duplicate marker
+          const endAnchor = findAnchorAtCoord(endLon, endLat);
+          if (!linkEndpointSet.has(endKey) && !endAnchor) {
             linkEndpointSet.add(endKey);
-            L.circleMarker([coords[coords.length - 1][1], coords[coords.length - 1][0]], {
+            const marker = L.circleMarker([endLat, endLon], {
               radius: 8,
               fillColor: '#f39c12',
               color: '#2c3e50',
@@ -1574,6 +1635,10 @@ export function MapView({
               fillOpacity: 0.95,
               pane: 'link-endpoints',
             }).addTo(endpointsGroup);
+            // Add click handler if this is an anchor (shouldn't happen due to check above, but just in case)
+            if (endAnchor) {
+              marker.on('click', () => openAnchorDialog(endAnchor));
+            }
           }
 
           const midIndex = Math.floor(coords.length / 2);
@@ -1641,23 +1706,33 @@ export function MapView({
     }
 
     // Highlight junctions where multiple links meet
+    // Skip creating junction markers if there's already an anchor marker at that location
     linkEndpointCounts.forEach((count, key) => {
       if (count > 1) {
         const coord = linkEndpointCoords.get(key);
         if (!coord) return;
-        L.circleMarker([coord[1], coord[0]], {
-          radius: 10,
-          fillColor: '#e74c3c',
-          color: '#ffffff',
-          weight: 3,
-          opacity: 1,
-          fillOpacity: 0.95,
-          pane: 'link-endpoints',
-        }).addTo(endpointsGroup);
+        const [lon, lat] = coord;
+        
+        // Check if this coordinate is an anchor - if so, skip creating duplicate marker
+        const anchor = findAnchorAtCoord(lon, lat);
+        if (!anchor) {
+          // Only create junction marker if there's no anchor at this location
+          L.circleMarker([lat, lon], {
+            radius: 10,
+            fillColor: '#e74c3c',
+            color: '#ffffff',
+            weight: 3,
+            opacity: 1,
+            fillOpacity: 0.95,
+            pane: 'link-endpoints',
+          }).addTo(endpointsGroup);
+        }
       }
     });
 
     endpointsLayerRef.current = endpointsGroup;
+    // Note: openAnchorDialog is intentionally not in dependencies as it's stable (uses stable state setters and constant anchorSearchRadius)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showSegments, showLinks, segmentsData, linksData, mapReady, anchorNodes, activeMode]);
 
   // Signs markers are now handled by the SignsLayer component in LayersControl
@@ -1731,25 +1806,6 @@ export function MapView({
       }
     };
   }, [activeTool]);
-
-  const openAnchorDialog = (anchor: AnchorNodeInfo) => {
-    setSelectedAnchor(anchor);
-    setAnchorDialogOpen(true);
-    setAnchorCandidates([]);
-    setAnchorFacilities([]);
-    setAnchorSelectedIndex(null);
-    setAnchorManualName('');
-
-    api.getAnchorPlacenames(anchor.anchor_node_id, anchorSearchRadius, 10)
-      .then((data) => {
-        setAnchorCandidates(data.candidates || []);
-        setAnchorFacilities(data.facilities || []);
-      })
-      .catch((error) => {
-        const appError = handleApiError(error, 'Load Placenames');
-        notificationManager.warning(`Kunne ikke hente stedsnavn: ${appError.message}`);
-      });
-  };
 
   const closeAnchorDialog = () => {
     setAnchorDialogOpen(false);
