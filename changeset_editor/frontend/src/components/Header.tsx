@@ -3,6 +3,7 @@
  */
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client';
+import { loadAreas, type Area } from '../utils/areas';
 import './Header.css';
 
 interface Route {
@@ -21,6 +22,8 @@ interface HeaderProps {
   onSaveChanges?: () => void;
   onLoadFromFile?: (file: File) => void;
   onPublish?: () => void;
+  selectedArea?: string | null; // Area prefix (e.g., 'bre', 'jot')
+  onAreaChange?: (areaPrefix: string | null) => void;
 }
 
 export function Header({
@@ -32,13 +35,21 @@ export function Header({
   onSaveChanges,
   onLoadFromFile,
   onPublish,
+  selectedArea = null,
+  onAreaChange,
 }: HeaderProps) {
   const [searchQuery, setSearchQuery] = useState(selectedRouteNumber || '');
   const [routes, setRoutes] = useState<Route[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
+  const [areas, setAreas] = useState<Area[]>([]);
   const searchControllerRef = useRef<AbortController | null>(null);
   const routesLimit = 200; // Default limit for route searches
+
+  // Load areas on mount
+  useEffect(() => {
+    loadAreas().then(setAreas).catch(console.error);
+  }, []);
 
   // Update search query when selected route changes
   useEffect(() => {
@@ -62,8 +73,33 @@ export function Header({
 
     setIsSearching(true);
     try {
-      // If empty query, show all routes (with reasonable limit)
-      if (queryTrimmed.length === 0) {
+      // Build search prefix - combine area prefix with query prefix if both exist
+      let searchPrefix: string | undefined = undefined;
+      if (selectedArea) {
+        // If area is selected, always filter by area prefix
+        if (queryTrimmed.length === 0) {
+          // Empty query: show all routes in area
+          searchPrefix = selectedArea;
+        } else if (queryTrimmed.length <= 2) {
+          // Short query: treat as additional prefix filter (e.g., "01" in "bre" area = "bre01")
+          searchPrefix = `${selectedArea}${queryTrimmed}`;
+        } else {
+          // Longer query: check if it starts with area prefix, otherwise combine
+          const lowerQuery = queryTrimmed.toLowerCase();
+          if (lowerQuery.startsWith(selectedArea.toLowerCase())) {
+            searchPrefix = queryTrimmed;
+          } else {
+            // Query doesn't start with area prefix, so filter by area only and let exact match handle it
+            searchPrefix = selectedArea;
+          }
+        }
+      } else if (queryTrimmed.length <= 2 && queryTrimmed.length > 0) {
+        // No area selected, but short query - treat as prefix
+        searchPrefix = queryTrimmed;
+      }
+
+      // If empty query and no area selected, show all routes (with reasonable limit)
+      if (queryTrimmed.length === 0 && !selectedArea) {
         try {
           const data = await api.listRoutes({ limit: routesLimit }, { signal });
           if (signal.aborted) return;
@@ -81,26 +117,45 @@ export function Header({
         return;
       }
 
-      // If query is short (1-2 chars), treat as prefix search
-      if (queryTrimmed.length <= 2) {
+      // If we have a prefix to search with, use it
+      if (searchPrefix) {
         try {
-          const data = await api.listRoutes({ prefix: queryTrimmed, limit: routesLimit }, { signal });
+          const data = await api.listRoutes({ prefix: searchPrefix, limit: routesLimit }, { signal });
           if (signal.aborted) return;
-          setRoutes(data.routes || []);
+          // If area is selected and query is longer, filter results to match query
+          let filteredRoutes = data.routes || [];
+          if (selectedArea && queryTrimmed.length > 2 && !queryTrimmed.toLowerCase().startsWith(selectedArea.toLowerCase())) {
+            // Filter by exact route number match
+            filteredRoutes = filteredRoutes.filter((r: Route) => 
+              r.rutenummer.toLowerCase().includes(queryTrimmed.toLowerCase())
+            );
+          }
+          setRoutes(filteredRoutes);
           setShowResults(true);
         } catch {
           if (signal.aborted) return;
           setRoutes([]);
           setShowResults(false);
+        } finally {
+          if (!signal.aborted) {
+            setIsSearching(false);
+          }
         }
         return;
       }
 
-      // For longer queries, try exact match first via search places, then prefix search
+      // For longer queries without area, try exact match first via search places, then prefix search
       try {
         const data = await searchPlaces(queryTrimmed, 20);
         if (signal.aborted) return;
-        const exactRoutes = (data.results || []).filter((r: Route) => r.type === 'rute');
+        let exactRoutes = (data.results || []).filter((r: Route) => r.type === 'rute');
+        
+        // If area is selected, filter exact matches by area
+        if (selectedArea) {
+          exactRoutes = exactRoutes.filter((r: Route) => 
+            r.rutenummer.toLowerCase().startsWith(selectedArea.toLowerCase())
+          );
+        }
         
         if (exactRoutes.length > 0) {
           setRoutes(exactRoutes);
@@ -109,7 +164,14 @@ export function Header({
           // If no exact match, try prefix search
           const routeData = await api.listRoutes({ prefix: queryTrimmed, limit: routesLimit }, { signal });
           if (signal.aborted) return;
-          setRoutes(routeData.routes || []);
+          let filteredRoutes = routeData.routes || [];
+          // If area is selected, filter by area
+          if (selectedArea) {
+            filteredRoutes = filteredRoutes.filter((r: Route) => 
+              r.rutenummer.toLowerCase().startsWith(selectedArea.toLowerCase())
+            );
+          }
+          setRoutes(filteredRoutes);
           setShowResults(true);
         }
       } catch (error) {
@@ -137,7 +199,7 @@ export function Header({
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery]);
+  }, [searchQuery, selectedArea]);
 
   useEffect(() => {
     return () => {
@@ -185,6 +247,33 @@ export function Header({
             e.preventDefault();
             alert('Om Changeset Editor\n\nEt verktøy for å redigere rutesegmenter med event sourcing, validering og GitHub PR-integrasjon.');
           }}>Om</a>
+          {onAreaChange && areas.length > 0 && (
+            <select
+              value={selectedArea || 'all'}
+              onChange={(e) => {
+                const value = e.target.value;
+                onAreaChange(value === 'all' ? null : value);
+              }}
+              disabled={loading}
+              style={{
+                marginLeft: '12px',
+                padding: '6px 10px',
+                fontSize: '0.9rem',
+                border: '1px solid #ccc',
+                borderRadius: '4px',
+                backgroundColor: 'white',
+                cursor: 'pointer',
+              }}
+              title="Velg område"
+            >
+              <option value="all">Alle områder</option>
+              {areas.map((area) => (
+                <option key={area.prefix} value={area.prefix}>
+                  {area.name}
+                </option>
+              ))}
+            </select>
+          )}
         </nav>
       </div>
       <div className="header-controls">

@@ -58,6 +58,7 @@ interface MapViewProps {
   onGeometrySelectForOwnership?: (geometry: GeoJSON.Geometry | null) => void;
   ownershipData?: any;
   onOwnershipDataChange?: (data: any) => void;
+  selectedArea?: string | null; // Area prefix (e.g., 'bre', 'jot')
 }
 
 // Component to render the segments layer for LayersControl
@@ -766,6 +767,7 @@ export function MapView({
   onGeometrySelectForOwnership,
   ownershipData,
   onOwnershipDataChange,
+  selectedArea,
 }: MapViewProps) {
   const [diffLayer, setDiffLayer] = useState<GeoJSON.FeatureCollection | null>(null);
   const [effectiveLayer, setEffectiveLayer] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -807,9 +809,9 @@ export function MapView({
     onConfirm: () => void;
   } | null>(null);
 
-  // Load routes within bounding box
+  // Load routes - either by area prefix or by bounding box
   useEffect(() => {
-    debugLog('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current });
+    debugLog('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current, selectedArea });
 
     if (!mapRef.current || !mapReady) {
       debugLog('Skipping routes load - map not ready');
@@ -823,29 +825,71 @@ export function MapView({
     let lastBbox: string | null = null;
     const DEBOUNCE_DELAY = 300; // ms - delay before making API call after map movement stops
 
+    // Helper to calculate bounding box from GeoJSON features
+    const calculateBbox = (features: GeoJSON.Feature[]): L.LatLngBounds | null => {
+      if (features.length === 0) return null;
+
+      let minLat = Infinity;
+      let minLng = Infinity;
+      let maxLat = -Infinity;
+      let maxLng = -Infinity;
+
+      const processGeometry = (geom: GeoJSON.Geometry) => {
+        if (geom.type === 'Point') {
+          const [lng, lat] = geom.coordinates;
+          minLat = Math.min(minLat, lat);
+          minLng = Math.min(minLng, lng);
+          maxLat = Math.max(maxLat, lat);
+          maxLng = Math.max(maxLng, lng);
+        } else if (geom.type === 'LineString' || geom.type === 'MultiPoint') {
+          for (const coord of geom.coordinates) {
+            const [lng, lat] = coord;
+            minLat = Math.min(minLat, lat);
+            minLng = Math.min(minLng, lng);
+            maxLat = Math.max(maxLat, lat);
+            maxLng = Math.max(maxLng, lng);
+          }
+        } else if (geom.type === 'Polygon' || geom.type === 'MultiLineString') {
+          for (const ring of geom.coordinates) {
+            for (const coord of ring) {
+              const [lng, lat] = coord;
+              minLat = Math.min(minLat, lat);
+              minLng = Math.min(minLng, lng);
+              maxLat = Math.max(maxLat, lat);
+              maxLng = Math.max(maxLng, lng);
+            }
+          }
+        } else if (geom.type === 'MultiPolygon') {
+          for (const polygon of geom.coordinates) {
+            for (const ring of polygon) {
+              for (const coord of ring) {
+                const [lng, lat] = coord;
+                minLat = Math.min(minLat, lat);
+                minLng = Math.min(minLng, lng);
+                maxLat = Math.max(maxLat, lat);
+                maxLng = Math.max(maxLng, lng);
+              }
+            }
+          }
+        }
+      };
+
+      for (const feature of features) {
+        if (feature.geometry) {
+          processGeometry(feature.geometry);
+        }
+      }
+
+      if (minLat === Infinity) return null;
+
+      return L.latLngBounds([minLat, minLng], [maxLat, maxLng]);
+    };
+
     const loadRoutesInView = async () => {
       if (!mapRef.current) {
         debugLog('mapRef.current is null in loadRoutesInView');
         return;
       }
-
-      const bounds = mapRef.current.getBounds();
-      const zoom = mapRef.current.getZoom();
-      const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
-
-      // Request deduplication: skip if bbox hasn't changed
-      if (bbox === lastBbox) {
-        debugLog('Skipping duplicate bbox request:', bbox);
-        return;
-      }
-      lastBbox = bbox;
-
-      // Calculate bbox area for logging
-      const bboxWidth = bounds.getEast() - bounds.getWest();
-      const bboxHeight = bounds.getNorth() - bounds.getSouth();
-      const bboxArea = bboxWidth * bboxHeight;
-
-      debugLog('Loading routes in bbox:', { bbox, zoom, bboxArea: bboxArea.toFixed(6) });
 
       requestId += 1;
       const currentRequestId = requestId;
@@ -858,10 +902,28 @@ export function MapView({
       activeController = new AbortController();
 
       try {
-        // Load routes with max limit 1000 (API maximum)
-        // If there are more routes, user should zoom in to reduce bbox size
-        const limit = 1000;
-        const data = await api.getRoutesInBbox(bbox, { signal: activeController.signal });
+        let data: RoutesResponse;
+
+        if (selectedArea) {
+          // Load routes by area prefix
+          debugLog('Loading routes by area prefix:', selectedArea);
+          data = await api.listRoutes({ prefix: selectedArea, limit: 1000, include_geometry: true }, { signal: activeController.signal });
+        } else {
+          // Load routes by bounding box (original behavior)
+          const bounds = mapRef.current.getBounds();
+          const zoom = mapRef.current.getZoom();
+          const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
+
+          // Request deduplication: skip if bbox hasn't changed
+          if (bbox === lastBbox) {
+            debugLog('Skipping duplicate bbox request:', bbox);
+            return;
+          }
+          lastBbox = bbox;
+
+          debugLog('Loading routes in bbox:', { bbox, zoom });
+          data = await api.getRoutesInBbox(bbox, { signal: activeController.signal });
+        }
 
         // Ignore response if it's outdated (newer request was made)
         if (currentRequestId !== requestId) {
@@ -874,19 +936,9 @@ export function MapView({
 
         debugLog('Routes API response:', {
           total: totalRoutes,
-          limit: limit,
           returned: returnedRoutes,
-          zoom,
-          bboxArea: bboxArea.toFixed(6)
+          selectedArea,
         });
-
-        // Warn if not all routes are loaded - user should zoom in
-        if (totalRoutes > limit) {
-          console.warn(
-            `Not all routes are displayed: ${totalRoutes} total routes in view, but only ${limit} loaded. ` +
-            `Zoom in to see more routes in the smaller area.`
-          );
-        }
 
         // Convert routes to GeoJSON FeatureCollection
         const features: GeoJSON.Feature[] = (data.routes || [])
@@ -911,12 +963,22 @@ export function MapView({
           .filter((f): f is GeoJSON.Feature => f !== null);
 
         const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
-        debugLog(`Loaded ${filteredFeatures.length} routes with geometry (out of ${totalRoutes} total, zoom: ${zoom}, bbox area: ${bboxArea.toFixed(6)})`);
+        debugLog(`Loaded ${filteredFeatures.length} routes with geometry (out of ${totalRoutes} total)`);
 
         setRoutesInView({
           type: 'FeatureCollection',
           features: filteredFeatures,
         });
+
+        // If area is selected, center map on routes
+        if (selectedArea && mapRef.current && filteredFeatures.length > 0) {
+          const bbox = calculateBbox(filteredFeatures);
+          if (bbox) {
+            // Add some padding
+            mapRef.current.fitBounds(bbox, { padding: [50, 50] });
+            debugLog('Centered map on area routes');
+          }
+        }
       } catch (error) {
         if (isAbortError(error)) {
           debugLog('Request aborted');
@@ -934,6 +996,11 @@ export function MapView({
 
     // Debounced version that waits for map movement to stop
     const debouncedLoadRoutes = () => {
+      // If area is selected, don't reload on map movement
+      if (selectedArea) {
+        return;
+      }
+
       // Clear any existing debounce timer
       if (debounceTimeoutId) {
         clearTimeout(debounceTimeoutId);
@@ -953,9 +1020,11 @@ export function MapView({
       }, DEBOUNCE_DELAY);
     };
 
-    // Load routes on map move/zoom (with debouncing)
-    mapRef.current.on('moveend', debouncedLoadRoutes);
-    mapRef.current.on('zoomend', debouncedLoadRoutes);
+    // Load routes on map move/zoom (with debouncing) - only if no area is selected
+    if (!selectedArea) {
+      mapRef.current.on('moveend', debouncedLoadRoutes);
+      mapRef.current.on('zoomend', debouncedLoadRoutes);
+    }
 
     // Initial load with a small delay to ensure map is fully initialized
     initialLoadTimeoutId = setTimeout(() => {
@@ -978,7 +1047,7 @@ export function MapView({
         mapRef.current.off('zoomend', debouncedLoadRoutes);
       }
     };
-  }, [mapReady]);
+  }, [mapReady, selectedArea]);
 
 
   // Load segments and links - by route if selected, otherwise by bbox in inspection mode

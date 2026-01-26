@@ -23,6 +23,7 @@ function App() {
   const [routeNumber, setRouteNumber] = useState<string | null>(null);
   const [selectedRouteNumber, setSelectedRouteNumber] = useState<string | null>(null);
   const [routeGeometry, setRouteGeometry] = useState<GeoJSON.Geometry | null>(null);
+  const [selectedArea, setSelectedArea] = useState<string | null>(null); // Area prefix (e.g., 'bre', 'jot')
 
   // Local changes (before changeset is created)
   const [localEvents, setLocalEvents] = useState<LocalEvent[]>([]);
@@ -303,6 +304,8 @@ function App() {
           onSaveChanges={handleSaveLocally}
           onLoadFromFile={handleLoadFromFile}
           onPublish={handlePublish}
+          selectedArea={selectedArea}
+          onAreaChange={setSelectedArea}
         />
 
         {/* Main Content Area - Below header */}
@@ -334,6 +337,7 @@ function App() {
             onGeometrySelectForOwnership={setSelectedGeometryForOwnership}
             ownershipData={ownershipData}
             onOwnershipDataChange={setOwnershipData}
+            selectedArea={selectedArea}
             onFeatureSelect={(id, properties, isMultiSelect) => {
               if (isMultiSelect) {
                 // Multi-select mode: toggle selection

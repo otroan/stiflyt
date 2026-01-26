@@ -214,12 +214,13 @@ export const api = {
     ),
 
   listRoutes: (
-    params: { limit?: number; prefix?: string } = {},
+    params: { limit?: number; prefix?: string; include_geometry?: boolean } = {},
     options: RequestOptions = {}
   ): Promise<RoutesResponse> => {
     const query = new URLSearchParams();
     if (params.limit) query.set('limit', String(params.limit));
     if (params.prefix) query.set('prefix', params.prefix);
+    if (params.include_geometry !== undefined) query.set('include_geometry', String(params.include_geometry));
     const qs = query.toString();
     return requestWithAbort<RoutesResponse>(`/v1/routes${qs ? `?${qs}` : ''}`, options);
   },
