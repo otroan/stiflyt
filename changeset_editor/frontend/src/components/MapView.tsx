@@ -1699,6 +1699,8 @@ export function MapView({
             direction: 'top',
             className: 'link-midpoint-label',
             opacity: 0.9,
+            interactive: false,
+            sticky: true,
           }
         );
         marker.on('click', () => openAnchorDialog(anchor));

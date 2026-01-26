@@ -57,12 +57,20 @@ def get_operational_db_connection():
 def op_db_connection():
     """
     Context manager for operational database connections.
-    Ensures connections are always closed.
+    Ensures connections are always closed and transactions are committed.
+    Commits on success, rolls back on exception.
     """
     conn = None
     try:
         conn = get_operational_db_connection()
         yield conn
+        # Commit transaction if no exception occurred
+        conn.commit()
+    except Exception:
+        # Rollback transaction on error
+        if conn is not None:
+            conn.rollback()
+        raise
     finally:
         if conn is not None:
             conn.close()
