@@ -94,8 +94,19 @@ function App() {
     loadInitialData();
   }, []);
 
-  const handleSelectRoute = async (rutenummer: string) => {
-    if (!rutenummer || rutenummer.trim() === '') return;
+  const handleSelectRoute = async (rutenummer: string | null) => {
+    // Handle deselection
+    if (!rutenummer || rutenummer.trim() === '') {
+      setSelectedRouteNumber(null);
+      setRouteNumber(null);
+      setRouteGeometry(null);
+      // Update URL to remove route parameter
+      const urlParams = new URLSearchParams(window.location.search);
+      urlParams.delete('route');
+      const newUrl = urlParams.toString() ? `?${urlParams.toString()}` : window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
+      return;
+    }
 
     setSelectedRouteNumber(rutenummer);
     setLoading(true);

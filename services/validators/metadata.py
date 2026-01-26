@@ -374,6 +374,28 @@ class RouteNameSuggestionValidator(BaseValidator):
         if not start_name and not end_name:
             try:
                 from psycopg.rows import dict_row
+                
+                # Check if navn column exists in anchor_nodes
+                has_navn_column = False
+                try:
+                    with conn.cursor() as check_cur:
+                        check_cur.execute("""
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM information_schema.columns
+                                WHERE table_schema = %s
+                                  AND table_name = 'anchor_nodes'
+                                  AND column_name = 'navn'
+                            )
+                        """, (ROUTE_SCHEMA,))
+                        has_navn_column = check_cur.fetchone()[0]
+                except Exception:
+                    # If check fails, assume column doesn't exist
+                    has_navn_column = False
+                
+                # Build SELECT clause conditionally
+                navn_select = "an_a.navn as from_name, an_b.navn as to_name" if has_navn_column else "NULL as from_name, NULL as to_name"
+                
                 endpoint_query = f"""
                     WITH route_links_expanded AS (
                         SELECT
@@ -398,8 +420,7 @@ class RouteNameSuggestionValidator(BaseValidator):
                     )
                     SELECT
                         fll.rutenummer,
-                        an_a.navn as from_name,
-                        an_b.navn as to_name
+                        {navn_select}
                     FROM first_last_links fll
                     LEFT JOIN {schema_quoted}.anchor_nodes an_a ON an_a.node_id = fll.first_a_node
                     LEFT JOIN {schema_quoted}.anchor_nodes an_b ON an_b.node_id = fll.last_b_node

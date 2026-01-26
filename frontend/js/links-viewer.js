@@ -20,8 +20,10 @@ class LinksViewer {
         this._bboxQueryTimer = null;
         this._bboxQueryDelay = 300; // 300ms delay for links (can be heavier than routes)
 
-        // Track loading state
+        // Track loading state and abort controller
         this._isLoading = false;
+        this._activeController = null;
+        this._lastBbox = null;
     }
 
     /**
@@ -247,26 +249,44 @@ class LinksViewer {
             return;
         }
 
+        // Abort any pending request
+        if (this._activeController) {
+            this._activeController.abort();
+            this._activeController = null;
+        }
+
         if (this._isLoading) {
             return;
         }
 
+        // Get current map bounds
+        const bounds = this.map.getBounds();
+        const bbox = {
+            min_lat: bounds.getSouth(),
+            min_lng: bounds.getWest(),
+            max_lat: bounds.getNorth(),
+            max_lng: bounds.getEast()
+        };
+
+        // Request deduplication: skip if bbox hasn't changed
+        const bboxStr = `${bbox.min_lng},${bbox.min_lat},${bbox.max_lng},${bbox.max_lat}`;
+        if (bboxStr === this._lastBbox) {
+            console.log('Skipping duplicate links bbox request:', bboxStr);
+            return;
+        }
+        this._lastBbox = bboxStr;
+
         this._isLoading = true;
+        this._activeController = new AbortController();
 
         try {
-            // Get current map bounds
-            const bounds = this.map.getBounds();
-            const bbox = {
-                min_lat: bounds.getSouth(),
-                min_lng: bounds.getWest(),
-                max_lat: bounds.getNorth(),
-                max_lng: bounds.getEast()
-            };
-
             // Load links in bounding box
             // Note: Backend expects bbox in same SRID as links.geom (25833)
             // We pass WGS84 coordinates - backend should handle conversion
-            const data = await loadLinksInBbox(bbox, { limit: 1000 });
+            const data = await loadLinksInBbox(bbox, { 
+                limit: 1000,
+                signal: this._activeController.signal
+            });
 
             // Preserve selection when reloading (user might have selected links)
             const preservedSelection = new Set(this.selectedLinks);
@@ -505,8 +525,14 @@ class LinksViewer {
                 }
             }
         } catch (error) {
+            // Ignore abort errors
+            if (error.name === 'AbortError') {
+                return;
+            }
             console.error('Error loading links:', error);
+        } finally {
             this._isLoading = false;
+            this._activeController = null;
         }
     }
 }

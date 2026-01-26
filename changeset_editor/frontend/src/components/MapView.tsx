@@ -42,7 +42,7 @@ interface MapViewProps {
   routeGeometry?: GeoJSON.Geometry | null;
   routeNumber?: string | null;
   selectedRouteNumber?: string | null;
-  onRouteSelect?: (rutenummer: string) => void;
+  onRouteSelect?: (rutenummer: string | null) => void;
   onEventAdded: (event: LocalEvent) => void;
   selectedFeatureId?: string;
   selectedFeatureIds?: Set<string>; // Multi-select support - all selected feature IDs
@@ -61,13 +61,13 @@ interface MapViewProps {
 }
 
 // Component to render the segments layer for LayersControl
-function SegmentsLayer({ 
+function SegmentsLayer({
   segmentsData,
   segmentsLayerRef,
   selectedFeatureId,
   selectedFeatureIds,
   onFeatureSelect
-}: { 
+}: {
   segmentsData: GeoJSON.FeatureCollection | null;
   segmentsLayerRef: React.MutableRefObject<L.GeoJSON | null>;
   selectedFeatureId?: string;
@@ -152,7 +152,7 @@ function SegmentsLayer({
 }
 
 // Component to render the links layer for LayersControl
-function LinksLayer({ 
+function LinksLayer({
   linksData,
   linksLayerRef,
   selectedFeatureId,
@@ -161,7 +161,7 @@ function LinksLayer({
   activeMode,
   onGeometrySelectForOwnership,
   onOwnershipDataChange
-}: { 
+}: {
   linksData: GeoJSON.FeatureCollection | null;
   linksLayerRef: React.MutableRefObject<L.GeoJSON | null>;
   selectedFeatureId?: string;
@@ -268,12 +268,12 @@ function LinksLayer({
 }
 
 // Component to render the signs layer for LayersControl
-function SignsLayer({ 
+function SignsLayer({
   signsData,
   selectedSignDestinations,
   onSignDestinationSelect,
   signsLayerRef
-}: { 
+}: {
   signsData: SignsReportResponse | null;
   selectedSignDestinations: Set<string>;
   onSignDestinationSelect?: (destKey: string, selected: boolean) => void;
@@ -336,20 +336,20 @@ function SignsLayer({
       const createDestinationPopup = (sign: typeof signsData.signs[0]) => {
         const signName = sign.name || `Anchor ${sign.anchor_node_id}`;
         const signType = sign.is_endpoint ? 'Endepunkt' : sign.is_junction ? 'Kryss' : 'Node';
-        
+
         const destinationsHtml = sign.destinations.length > 0
           ? sign.destinations
               .map((dest) => {
                 const destKey = `${sign.anchor_node_id}-${dest.anchor_node_id}`;
                 const isSelected = selectedSignDestinations.has(destKey);
                 return `
-                  <div 
-                    class="sign-destination-item ${isSelected ? 'selected' : ''}" 
+                  <div
+                    class="sign-destination-item ${isSelected ? 'selected' : ''}"
                     data-dest-key="${destKey}"
                     style="
-                      padding: 4px 8px; 
-                      margin: 2px 0; 
-                      cursor: pointer; 
+                      padding: 4px 8px;
+                      margin: 2px 0;
+                      cursor: pointer;
                       border-radius: 4px;
                       background: ${isSelected ? '#e3f2fd' : '#f5f5f5'};
                       border: 1px solid ${isSelected ? '#2196f3' : '#ddd'};
@@ -383,7 +383,7 @@ function SignsLayer({
       marker.on('popupopen', () => {
         const popup = marker.getPopup();
         if (!popup) return;
-        
+
         const popupElement = popup.getElement();
         if (!popupElement) return;
 
@@ -411,10 +411,10 @@ function SignsLayer({
 }
 
 // Component to handle layer control changes for segments and links (mutually exclusive)
-function SegmentsLinksLayerControl({ 
+function SegmentsLinksLayerControl({
   onSegmentsToggle,
   onLinksToggle
-}: { 
+}: {
   onSegmentsToggle: (enabled: boolean) => void;
   onLinksToggle: (enabled: boolean) => void;
 }) {
@@ -454,11 +454,11 @@ function SegmentsLinksLayerControl({
 }
 
 // Custom Leaflet Control for Mode Selection
-function ModeControl({ 
-  activeMode, 
+function ModeControl({
+  activeMode,
   onModeChange,
   onEditModeChange
-}: { 
+}: {
   activeMode: AppMode;
   onModeChange: (mode: AppMode) => void;
   onEditModeChange: (enabled: boolean) => void;
@@ -477,11 +477,11 @@ function ModeControl({
         containerDiv.style.boxShadow = '0 1px 5px rgba(0,0,0,0.4)';
         containerDiv.style.padding = '4px';
         containerDiv.style.marginTop = '10px'; // Space below zoom controls
-        
+
         // Prevent map panning when clicking on control
         L.DomEvent.disableClickPropagation(containerDiv);
         L.DomEvent.disableScrollPropagation(containerDiv);
-        
+
         setContainer(containerDiv);
         return containerDiv;
       },
@@ -524,10 +524,10 @@ function ModeControl({
       flexDirection: 'column',
       gap: '4px',
     }}>
-      <div style={{ 
-        fontSize: '11px', 
-        fontWeight: 'bold', 
-        marginBottom: '2px', 
+      <div style={{
+        fontSize: '11px',
+        fontWeight: 'bold',
+        marginBottom: '2px',
         color: '#666',
         padding: '0 4px',
         textAlign: 'center',
@@ -576,9 +576,9 @@ function ModeControl({
 }
 
 // Component to handle layer control changes
-function SignsLayerControl({ 
+function SignsLayerControl({
   onToggle
-}: { 
+}: {
   onToggle: (enabled: boolean) => void;
 }) {
   const map = useMap();
@@ -818,7 +818,10 @@ export function MapView({
 
     let requestId = 0;
     let activeController: AbortController | null = null;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let debounceTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    let initialLoadTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    let lastBbox: string | null = null;
+    const DEBOUNCE_DELAY = 300; // ms - delay before making API call after map movement stops
 
     const loadRoutesInView = async () => {
       if (!mapRef.current) {
@@ -829,7 +832,14 @@ export function MapView({
       const bounds = mapRef.current.getBounds();
       const zoom = mapRef.current.getZoom();
       const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
-      
+
+      // Request deduplication: skip if bbox hasn't changed
+      if (bbox === lastBbox) {
+        debugLog('Skipping duplicate bbox request:', bbox);
+        return;
+      }
+      lastBbox = bbox;
+
       // Calculate bbox area for logging
       const bboxWidth = bounds.getEast() - bounds.getWest();
       const bboxHeight = bounds.getNorth() - bounds.getSouth();
@@ -839,8 +849,11 @@ export function MapView({
 
       requestId += 1;
       const currentRequestId = requestId;
+      
+      // Abort any pending request
       if (activeController) {
         activeController.abort();
+        activeController = null;
       }
       activeController = new AbortController();
 
@@ -849,22 +862,24 @@ export function MapView({
         // If there are more routes, user should zoom in to reduce bbox size
         const limit = 1000;
         const data = await api.getRoutesInBbox(bbox, { signal: activeController.signal });
-        
+
+        // Ignore response if it's outdated (newer request was made)
         if (currentRequestId !== requestId) {
+          debugLog('Ignoring outdated response for request', currentRequestId);
           return;
         }
-        
+
         const totalRoutes = data.total ?? 0;
         const returnedRoutes = data.routes?.length || 0;
-        
-        debugLog('Routes API response:', { 
-          total: totalRoutes, 
-          limit: limit, 
+
+        debugLog('Routes API response:', {
+          total: totalRoutes,
+          limit: limit,
           returned: returnedRoutes,
           zoom,
           bboxArea: bboxArea.toFixed(6)
         });
-        
+
         // Warn if not all routes are loaded - user should zoom in
         if (totalRoutes > limit) {
           console.warn(
@@ -872,7 +887,7 @@ export function MapView({
             `Zoom in to see more routes in the smaller area.`
           );
         }
-        
+
         // Convert routes to GeoJSON FeatureCollection
         const features: GeoJSON.Feature[] = (data.routes || [])
           .map((route) => {
@@ -903,32 +918,64 @@ export function MapView({
           features: filteredFeatures,
         });
       } catch (error) {
-        if (isAbortError(error)) return;
+        if (isAbortError(error)) {
+          debugLog('Request aborted');
+          return;
+        }
         // Don't show notification for background route loading - just log silently
         // Errors are logged by handleApiError
+      } finally {
+        // Clear controller after request completes
+        if (currentRequestId === requestId) {
+          activeController = null;
+        }
       }
     };
 
-    // Load routes on map move/zoom
-    mapRef.current.on('moveend', loadRoutesInView);
-    mapRef.current.on('zoomend', loadRoutesInView);
+    // Debounced version that waits for map movement to stop
+    const debouncedLoadRoutes = () => {
+      // Clear any existing debounce timer
+      if (debounceTimeoutId) {
+        clearTimeout(debounceTimeoutId);
+        debounceTimeoutId = null;
+      }
+
+      // Abort any pending request when new movement starts
+      if (activeController) {
+        activeController.abort();
+        activeController = null;
+      }
+
+      // Set new debounce timer
+      debounceTimeoutId = setTimeout(() => {
+        debounceTimeoutId = null;
+        loadRoutesInView();
+      }, DEBOUNCE_DELAY);
+    };
+
+    // Load routes on map move/zoom (with debouncing)
+    mapRef.current.on('moveend', debouncedLoadRoutes);
+    mapRef.current.on('zoomend', debouncedLoadRoutes);
 
     // Initial load with a small delay to ensure map is fully initialized
-    timeoutId = setTimeout(() => {
+    initialLoadTimeoutId = setTimeout(() => {
       debugLog('Initial routes load');
       loadRoutesInView();
     }, 500);
 
     return () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
+      if (debounceTimeoutId) {
+        clearTimeout(debounceTimeoutId);
+      }
+      if (initialLoadTimeoutId) {
+        clearTimeout(initialLoadTimeoutId);
       }
       if (activeController) {
         activeController.abort();
       }
       if (mapRef.current) {
-        mapRef.current.off('moveend', loadRoutesInView);
-        mapRef.current.off('zoomend', loadRoutesInView);
+        mapRef.current.off('moveend', debouncedLoadRoutes);
+        mapRef.current.off('zoomend', debouncedLoadRoutes);
       }
     };
   }, [mapReady]);
@@ -961,7 +1008,7 @@ export function MapView({
       };
 
       const linksController = new AbortController();
-      
+
       // Load links by bbox
       api.getLinksByBbox(bbox, 500, { signal: linksController.signal })
         .then((data: GeoJSON.FeatureCollection) => {
@@ -976,7 +1023,7 @@ export function MapView({
 
       // Note: Segments don't have a bbox endpoint yet, so we skip them when no route is selected
       setSegmentsData(null);
-      setAnchorNodes([]); // Clear anchor nodes when loading by bbox
+      // Don't clear anchor nodes here - they're loaded separately by bbox in inspection mode
 
       return () => {
         linksController.abort();
@@ -994,7 +1041,7 @@ export function MapView({
       };
 
       const anchorsController = new AbortController();
-      
+
       api.getAnchorsByBbox(bbox, 500, { signal: anchorsController.signal })
         .then((data: GeoJSON.FeatureCollection) => {
           const anchors: AnchorNodeInfo[] = (data.features || []).map((feature) => {
@@ -1027,8 +1074,9 @@ export function MapView({
       };
     }
 
-    // Clear anchors when not in anchor-naming mode or when route changes
-    if (activeMode !== 'anchor-naming' && !showLinks) {
+    // Don't clear anchors in inspection mode - they should always be loaded
+    // Only clear when switching away from inspection/anchor-naming modes
+    if (activeMode !== 'anchor-naming' && activeMode !== 'inspection') {
       setAnchorNodes([]);
     }
 
@@ -1125,8 +1173,8 @@ export function MapView({
         notificationManager.warning(`Kunne ikke laste lenker: ${appError.message}`);
       });
 
-    // Load anchor nodes for the route (for anchor naming and display)
-    if (activeMode === 'anchor-naming' || showLinks) {
+    // Load anchor nodes for the route (always in inspection and anchor-naming modes)
+    if (activeMode === 'anchor-naming' || activeMode === 'inspection') {
       api.getRouteAnchors(routeNumber, { signal: linksController.signal })
         .then((data) => {
           const anchors: AnchorNodeInfo[] = (data.anchors || []).map((anchor) => ({
@@ -1147,7 +1195,7 @@ export function MapView({
       segmentsController.abort();
       linksController.abort();
     };
-  }, [routeNumber, mapReady, activeMode, showLinks]);
+  }, [routeNumber, mapReady, activeMode]);
 
   // Reload links by bbox when map moves/zooms in inspection mode without route
   useEffect(() => {
@@ -1155,15 +1203,13 @@ export function MapView({
       return; // Only reload on map changes if in inspection mode without route
     }
 
-    let timeoutId: ReturnType<typeof setTimeout>;
+    let debounceTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    let initialLoadTimeoutId: ReturnType<typeof setTimeout> | null = null;
     let activeController: AbortController | null = null;
+    let lastBbox: string | null = null;
+    const DEBOUNCE_DELAY = 300; // ms
 
     const loadLinksInView = () => {
-      if (activeController) {
-        activeController.abort();
-      }
-      activeController = new AbortController();
-
       const bounds = mapRef.current?.getBounds();
       if (!bounds) return;
 
@@ -1173,6 +1219,21 @@ export function MapView({
         xmax: bounds.getEast(),
         ymax: bounds.getNorth(),
       };
+
+      // Request deduplication: skip if bbox hasn't changed
+      const bboxStr = `${bbox.xmin},${bbox.ymin},${bbox.xmax},${bbox.ymax}`;
+      if (bboxStr === lastBbox) {
+        debugLog('Skipping duplicate links bbox request:', bboxStr);
+        return;
+      }
+      lastBbox = bboxStr;
+
+      // Abort any pending request
+      if (activeController) {
+        activeController.abort();
+        activeController = null;
+      }
+      activeController = new AbortController();
 
       api.getLinksByBbox(bbox, 500, { signal: activeController.signal })
         .then((data: GeoJSON.FeatureCollection) => {
@@ -1184,46 +1245,71 @@ export function MapView({
           if (isAbortError(error)) return;
           const appError = handleApiError(error, 'Load Links');
           notificationManager.warning(`Kunne ikke laste linker: ${appError.message}`);
+        })
+        .finally(() => {
+          activeController = null;
         });
     };
 
-    mapRef.current.on('moveend', loadLinksInView);
-    mapRef.current.on('zoomend', loadLinksInView);
+    // Debounced version that waits for map movement to stop
+    const debouncedLoadLinks = () => {
+      // Clear any existing debounce timer
+      if (debounceTimeoutId) {
+        clearTimeout(debounceTimeoutId);
+        debounceTimeoutId = null;
+      }
+
+      // Abort any pending request when new movement starts
+      if (activeController) {
+        activeController.abort();
+        activeController = null;
+      }
+
+      // Set new debounce timer
+      debounceTimeoutId = setTimeout(() => {
+        debounceTimeoutId = null;
+        loadLinksInView();
+      }, DEBOUNCE_DELAY);
+    };
+
+    mapRef.current.on('moveend', debouncedLoadLinks);
+    mapRef.current.on('zoomend', debouncedLoadLinks);
 
     // Initial load with a small delay
-    timeoutId = setTimeout(() => {
+    initialLoadTimeoutId = setTimeout(() => {
       loadLinksInView();
     }, 300);
 
     return () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
+      if (debounceTimeoutId) {
+        clearTimeout(debounceTimeoutId);
+      }
+      if (initialLoadTimeoutId) {
+        clearTimeout(initialLoadTimeoutId);
       }
       if (activeController) {
         activeController.abort();
       }
       if (mapRef.current) {
-        mapRef.current.off('moveend', loadLinksInView);
-        mapRef.current.off('zoomend', loadLinksInView);
+        mapRef.current.off('moveend', debouncedLoadLinks);
+        mapRef.current.off('zoomend', debouncedLoadLinks);
       }
     };
-  }, [mapReady, activeMode, routeNumber, showLinks]);
+  }, [mapReady, activeMode, routeNumber]);
 
-  // Reload anchors by bbox when map moves/zooms in anchor-naming mode
+  // Reload anchors by bbox when map moves/zooms in inspection or anchor-naming mode
   useEffect(() => {
-    if (!mapReady || !mapRef.current || activeMode !== 'anchor-naming' || routeNumber) {
-      return; // Only reload on map changes if in anchor-naming mode without route
+    if (!mapReady || !mapRef.current || (activeMode !== 'anchor-naming' && activeMode !== 'inspection') || routeNumber) {
+      return; // Only reload on map changes if in inspection or anchor-naming mode without route
     }
 
-    let timeoutId: ReturnType<typeof setTimeout>;
+    let debounceTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    let initialLoadTimeoutId: ReturnType<typeof setTimeout> | null = null;
     let activeController: AbortController | null = null;
+    let lastBbox: string | null = null;
+    const DEBOUNCE_DELAY = 300; // ms
 
     const loadAnchorsInView = () => {
-      if (activeController) {
-        activeController.abort();
-      }
-      activeController = new AbortController();
-
       const bounds = mapRef.current?.getBounds();
       if (!bounds) return;
 
@@ -1233,6 +1319,21 @@ export function MapView({
         xmax: bounds.getEast(),
         ymax: bounds.getNorth(),
       };
+
+      // Request deduplication: skip if bbox hasn't changed
+      const bboxStr = `${bbox.xmin},${bbox.ymin},${bbox.xmax},${bbox.ymax}`;
+      if (bboxStr === lastBbox) {
+        debugLog('Skipping duplicate anchors bbox request:', bboxStr);
+        return;
+      }
+      lastBbox = bboxStr;
+
+      // Abort any pending request
+      if (activeController) {
+        activeController.abort();
+        activeController = null;
+      }
+      activeController = new AbortController();
 
       api.getAnchorsByBbox(bbox, 500, { signal: activeController.signal })
         .then((data: GeoJSON.FeatureCollection) => {
@@ -1259,35 +1360,66 @@ export function MapView({
         .catch((error) => {
           if (isAbortError(error)) return;
           // Silently fail
+        })
+        .finally(() => {
+          activeController = null;
         });
     };
 
-    mapRef.current.on('moveend', loadAnchorsInView);
-    mapRef.current.on('zoomend', loadAnchorsInView);
+    // Debounced version that waits for map movement to stop
+    const debouncedLoadAnchors = () => {
+      // Clear any existing debounce timer
+      if (debounceTimeoutId) {
+        clearTimeout(debounceTimeoutId);
+        debounceTimeoutId = null;
+      }
+
+      // Abort any pending request when new movement starts
+      if (activeController) {
+        activeController.abort();
+        activeController = null;
+      }
+
+      // Set new debounce timer
+      debounceTimeoutId = setTimeout(() => {
+        debounceTimeoutId = null;
+        loadAnchorsInView();
+      }, DEBOUNCE_DELAY);
+    };
+
+    mapRef.current.on('moveend', debouncedLoadAnchors);
+    mapRef.current.on('zoomend', debouncedLoadAnchors);
 
     // Initial load
-    timeoutId = setTimeout(() => {
+    initialLoadTimeoutId = setTimeout(() => {
       loadAnchorsInView();
     }, 300);
 
     return () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
+      if (debounceTimeoutId) {
+        clearTimeout(debounceTimeoutId);
+      }
+      if (initialLoadTimeoutId) {
+        clearTimeout(initialLoadTimeoutId);
       }
       if (activeController) {
         activeController.abort();
       }
       if (mapRef.current) {
-        mapRef.current.off('moveend', loadAnchorsInView);
-        mapRef.current.off('zoomend', loadAnchorsInView);
+        mapRef.current.off('moveend', debouncedLoadAnchors);
+        mapRef.current.off('zoomend', debouncedLoadAnchors);
       }
     };
   }, [mapReady, activeMode, routeNumber]);
 
   // Load anchor nodes for selected route
+  // Only load when route is selected - in inspection mode without route, anchors are loaded by bbox
   useEffect(() => {
     if (!routeNumber || !mapReady) {
-      setAnchorNodes([]);
+      // Only clear anchors if not in inspection mode (inspection mode loads by bbox)
+      if (activeMode !== 'inspection' && activeMode !== 'anchor-naming') {
+        setAnchorNodes([]);
+      }
       return;
     }
 
@@ -1305,7 +1437,7 @@ export function MapView({
     return () => {
       controller.abort();
     };
-  }, [routeNumber, mapReady]);
+  }, [routeNumber, mapReady, activeMode]);
 
   // Load signs data when layer is enabled - based on map viewport or route/prefix
   // In signs mode, always load by viewport
@@ -1316,11 +1448,11 @@ export function MapView({
     }
 
     const controller = new AbortController();
-    
+
     // Priority: route > prefix > bbox (map viewport)
     // In signs mode, prefer bbox unless route/prefix is explicitly provided
     let loadPromise: Promise<SignsReportResponse | null> = Promise.resolve(null);
-    
+
     if (routeNumber && activeMode !== 'signs') {
       // Load by route if available (unless in signs mode)
       loadPromise = api.getRouteSigns(routeNumber, { signal: controller.signal });
@@ -1361,7 +1493,7 @@ export function MapView({
     if (!showSigns || !mapReady || !mapRef.current) {
       return;
     }
-    
+
     // In signs mode, always use bbox. Otherwise, only if no route/prefix
     const shouldUseBbox = activeMode === 'signs' || (!routeNumber && (!signsPrefix || signsPrefix.trim().length < 2));
     if (!shouldUseBbox) {
@@ -1492,8 +1624,9 @@ export function MapView({
       return;
     }
 
-    // Don't show endpoints if neither segments nor links are shown
-    if (!showSegments && !showLinks) {
+    // Always show endpoints layer in inspection mode (for anchor markers)
+    // In other modes, only show if segments or links are shown
+    if (activeMode !== 'inspection' && !showSegments && !showLinks) {
       if (endpointsLayerRef.current) {
         mapRef.current.removeLayer(endpointsLayerRef.current);
         endpointsLayerRef.current = null;
@@ -1515,7 +1648,7 @@ export function MapView({
 
     // Create a map of anchor coordinates for quick lookup (key: "lon,lat", value: anchor)
     const anchorCoordMap = new Map<string, AnchorNodeInfo>();
-    if ((activeMode === 'anchor-naming' || showLinks) && anchorNodes.length > 0) {
+    if (anchorNodes.length > 0) {
       anchorNodes.forEach((anchor) => {
         const [lon, lat] = anchor.coordinates;
         const key = `${lon},${lat}`;
@@ -1595,7 +1728,7 @@ export function MapView({
           const startKey = `${startLon},${startLat}`;
           linkEndpointCounts.set(startKey, (linkEndpointCounts.get(startKey) ?? 0) + 1);
           linkEndpointCoords.set(startKey, coords[0]);
-          
+
           // Check if this coordinate is an anchor - if so, skip creating duplicate marker
           const startAnchor = findAnchorAtCoord(startLon, startLat);
           if (!linkEndpointSet.has(startKey) && !startAnchor) {
@@ -1621,7 +1754,7 @@ export function MapView({
           const endKey = `${endLon},${endLat}`;
           linkEndpointCounts.set(endKey, (linkEndpointCounts.get(endKey) ?? 0) + 1);
           linkEndpointCoords.set(endKey, coords[coords.length - 1]);
-          
+
           // Check if this coordinate is an anchor - if so, skip creating duplicate marker
           const endAnchor = findAnchorAtCoord(endLon, endLat);
           if (!linkEndpointSet.has(endKey) && !endAnchor) {
@@ -1672,24 +1805,35 @@ export function MapView({
       });
     }
 
-    // Add anchor node markers (clickable for naming)
-    // Show in anchor-naming mode OR when links are shown
-    if ((activeMode === 'anchor-naming' || showLinks) && anchorNodes.length > 0) {
+    // Add anchor node markers (always show in inspection and anchor-naming modes)
+    // Use smaller markers when links are not shown, larger when links are shown
+    if ((activeMode === 'anchor-naming' || activeMode === 'inspection') && anchorNodes.length > 0) {
       anchorNodes.forEach((anchor) => {
         const [lon, lat] = anchor.coordinates;
         const nameLabel = anchor.name?.name || `Anchor ${anchor.anchor_node_id}`;
         const hasName = !!anchor.name?.name;
+
+        // Determine marker size and style based on mode and link visibility
+        const isSmallMarker = activeMode === 'inspection' && !showLinks;
         const marker = L.circleMarker([lat, lon], {
-          radius: activeMode === 'anchor-naming' ? 10 : 9,
-          fillColor: activeMode === 'anchor-naming' 
-            ? (hasName ? '#16a085' : '#e74c3c') 
-            : '#2563eb',
+          radius: activeMode === 'anchor-naming'
+            ? 10
+            : isSmallMarker
+              ? 6  // Small marker when links are hidden
+              : 9, // Normal size when links are shown
+          fillColor: activeMode === 'anchor-naming'
+            ? (hasName ? '#16a085' : '#e74c3c')
+            : isSmallMarker
+              ? '#6b7280'  // Gray for small markers
+              : '#2563eb', // Blue for normal markers
           color: '#ffffff',
-          weight: activeMode === 'anchor-naming' ? 3 : 2,
+          weight: activeMode === 'anchor-naming' ? 3 : (isSmallMarker ? 1.5 : 2),
           opacity: 1,
-          fillOpacity: 0.9,
+          fillOpacity: isSmallMarker ? 0.8 : 0.9,
           pane: 'link-endpoints',
         }).addTo(endpointsGroup);
+
+        // Tooltip shows on hover (permanent: false) with anchor name
         marker.bindTooltip(
           activeMode === 'anchor-naming' && !hasName
             ? `${nameLabel} (mangler navn)`
@@ -1703,6 +1847,8 @@ export function MapView({
             sticky: true,
           }
         );
+
+        // Click handler for anchor naming dialog
         marker.on('click', () => openAnchorDialog(anchor));
       });
     }
@@ -1714,7 +1860,7 @@ export function MapView({
         const coord = linkEndpointCoords.get(key);
         if (!coord) return;
         const [lon, lat] = coord;
-        
+
         // Check if this coordinate is an anchor - if so, skip creating duplicate marker
         const anchor = findAnchorAtCoord(lon, lat);
         if (!anchor) {
@@ -1820,7 +1966,7 @@ export function MapView({
 
   const handleSaveAnchorName = async () => {
     if (!selectedAnchor) return;
-    
+
     // In anchor-naming mode, we don't require routeNumber
     // Use the first route from the anchor's links, or allow global naming
     const anchorRouteNumber = routeNumber || null;
@@ -2227,7 +2373,7 @@ export function MapView({
             />
           </LayersControl.BaseLayer>
           <LayersControl.Overlay checked={showSegments} name="Segmenter">
-            <SegmentsLayer 
+            <SegmentsLayer
               segmentsData={segmentsData}
               segmentsLayerRef={segmentsLayerRef}
               selectedFeatureId={selectedFeatureId}
@@ -2236,7 +2382,7 @@ export function MapView({
             />
           </LayersControl.Overlay>
           <LayersControl.Overlay checked={showLinks} name="Ankere">
-            <LinksLayer 
+            <LinksLayer
               linksData={linksData}
               linksLayerRef={linksLayerRef}
               selectedFeatureId={selectedFeatureId}
@@ -2248,7 +2394,7 @@ export function MapView({
             />
           </LayersControl.Overlay>
           <LayersControl.Overlay checked={showSigns} name="Skilt">
-            <SignsLayer 
+            <SignsLayer
               signsData={signsData}
               selectedSignDestinations={selectedSignDestinations}
               onSignDestinationSelect={onSignDestinationSelect}
@@ -2257,7 +2403,7 @@ export function MapView({
           </LayersControl.Overlay>
         </LayersControl>
 
-        <SegmentsLinksLayerControl 
+        <SegmentsLinksLayerControl
           onSegmentsToggle={setShowSegments}
           onLinksToggle={setShowLinks}
         />
@@ -2307,6 +2453,7 @@ export function MapView({
         {/* Routes in view - using React Leaflet GeoJSON for better integration */}
         {routesInView && (
           <ReactLeafletGeoJSON
+            key={`routes-${routesInView.features.length}-${routesInView.features[0]?.id || 'empty'}`}
             data={routesInView}
             style={(feature) => {
               const props = feature?.properties as { rutenummer?: string; [key: string]: unknown } | null;
@@ -2329,10 +2476,15 @@ export function MapView({
                 ${props?.vedlikeholdsansvarlig || ''}
               `);
 
-              // Make clickable
+              // Make clickable - toggle selection if already selected
               layer.on('click', () => {
                 if (onRouteSelect && rutenummer) {
-                  onRouteSelect(rutenummer);
+                  // If this route is already selected, deselect it; otherwise select it
+                  if (rutenummer === selectedRouteNumber) {
+                    onRouteSelect(null);
+                  } else {
+                    onRouteSelect(rutenummer);
+                  }
                 }
               });
 

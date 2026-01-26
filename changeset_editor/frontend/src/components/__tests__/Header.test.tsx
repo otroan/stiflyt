@@ -129,23 +129,4 @@ describe('Header component', () => {
 
     expect(screen.getByText(/publiser/i)).toBeInTheDocument();
   });
-
-  it('should trigger all routes listing from button', async () => {
-    vi.useFakeTimers();
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    (global.fetch as any).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ routes: [] }),
-    });
-
-    render(<Header {...defaultProps} />);
-    const button = screen.getByRole('button', { name: /alle ruter/i });
-
-    await act(async () => {
-      await user.click(button);
-      await vi.runAllTimersAsync();
-    });
-
-    expect(global.fetch).toHaveBeenCalled();
-  });
 });

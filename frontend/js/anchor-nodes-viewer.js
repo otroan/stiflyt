@@ -16,8 +16,10 @@ class AnchorNodesViewer {
         this._bboxQueryTimer = null;
         this._bboxQueryDelay = 300; // 300ms delay
 
-        // Track loading state
+        // Track loading state and abort controller
         this._isLoading = false;
+        this._activeController = null;
+        this._lastBbox = null;
     }
 
     /**
@@ -113,24 +115,43 @@ class AnchorNodesViewer {
             return;
         }
 
+        // Abort any pending request
+        if (this._activeController) {
+            this._activeController.abort();
+            this._activeController = null;
+        }
+
         if (this._isLoading) {
             return;
         }
 
+        // Get current map bounds
+        const bounds = this.map.getBounds();
+        const bbox = {
+            min_lat: bounds.getSouth(),
+            min_lng: bounds.getWest(),
+            max_lat: bounds.getNorth(),
+            max_lng: bounds.getEast()
+        };
+
+        // Request deduplication: skip if bbox hasn't changed
+        const bboxStr = `${bbox.min_lng},${bbox.min_lat},${bbox.max_lng},${bbox.max_lat}`;
+        if (bboxStr === this._lastBbox) {
+            console.log('Skipping duplicate anchor nodes bbox request:', bboxStr);
+            return;
+        }
+        this._lastBbox = bboxStr;
+
         this._isLoading = true;
+        this._activeController = new AbortController();
 
         try {
-            // Get current map bounds
-            const bounds = this.map.getBounds();
-            const bbox = {
-                min_lat: bounds.getSouth(),
-                min_lng: bounds.getWest(),
-                max_lat: bounds.getNorth(),
-                max_lng: bounds.getEast()
-            };
-
             // Load anchor nodes in bounding box
-            const data = await loadAnchorNodes({ bbox, limit: 1000 });
+            const data = await loadAnchorNodes({ 
+                bbox, 
+                limit: 1000,
+                signal: this._activeController.signal
+            });
 
             // Clear previous nodes
             this.clear();
@@ -225,11 +246,16 @@ class AnchorNodesViewer {
                 this.nodes.set(nodeId, marker);
             }
 
-            this._isLoading = false;
             console.log(`Loaded ${features.length} anchor nodes`);
         } catch (error) {
+            // Ignore abort errors
+            if (error.name === 'AbortError') {
+                return;
+            }
             console.error('Error loading anchor nodes:', error);
+        } finally {
             this._isLoading = false;
+            this._activeController = null;
         }
     }
 }

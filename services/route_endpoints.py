@@ -268,6 +268,19 @@ def list_stedsnavn_candidates(
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
     """List candidate names from stedsnavn near a point."""
+    # Validate coordinates before attempting query
+    if not (-180 <= point_lon <= 180) or not (-90 <= point_lat <= 90):
+        # Invalid coordinates, skip query
+        return []
+    
+    # Check if connection is closed
+    try:
+        if conn.closed:
+            return []
+    except (AttributeError, Exception):
+        # Connection might not have 'closed' attribute, continue
+        pass
+    
     try:
         with conn.cursor(row_factory=dict_row) as cur:
             query = """
@@ -321,11 +334,24 @@ def list_stedsnavn_candidates(
                 for row in results
                 if row.get("navn")
             ]
-    except Exception:
+    except Exception as e:
+        error_str = str(e).lower()
+        # Only log meaningful errors, not expected ones like invalid coordinates or closed connections
+        if "connection is closed" in error_str or "invalid coordinate" in error_str or "transform" in error_str:
+            # These are expected errors that can happen with invalid data, silently return empty list
+            return []
+        
+        # For other errors, try to rollback if connection is still open
         try:
-            conn.rollback()
-        except:
+            if not conn.closed:
+                conn.rollback()
+        except (AttributeError, Exception):
+            # Connection might not have 'closed' attribute or rollback might fail
             pass
+        
+        # Only print unexpected errors
+        if "does not exist" not in error_str and "relation" not in error_str:
+            print(f"Error querying stedsnavn: {e}")
         return []
 
 
@@ -357,6 +383,19 @@ def lookup_name_in_stedsnavn(conn, point_lon: float, point_lat: float, search_ra
     Returns:
         Dict with name, distance, and source, or None if not found
     """
+    # Validate coordinates before attempting query
+    if not (-180 <= point_lon <= 180) or not (-90 <= point_lat <= 90):
+        # Invalid coordinates, skip query
+        return None
+    
+    # Check if connection is closed
+    try:
+        if conn.closed:
+            return None
+    except (AttributeError, Exception):
+        # Connection might not have 'closed' attribute, continue
+        pass
+    
     try:
         with conn.cursor(row_factory=dict_row) as cur:
             # Use the same structure as search_places: public.stedsnavn with skrivemate
@@ -410,12 +449,23 @@ def lookup_name_in_stedsnavn(conn, point_lon: float, point_lat: float, search_ra
                     'source': 'stedsnavn'
                 }
     except Exception as e:
-        # If query fails, rollback and return None
+        error_str = str(e).lower()
+        # Only log meaningful errors, not expected ones like invalid coordinates or closed connections
+        if "connection is closed" in error_str or "invalid coordinate" in error_str or "transform" in error_str:
+            # These are expected errors that can happen with invalid data, silently return None
+            return None
+        
+        # For other errors, try to rollback if connection is still open
         try:
-            conn.rollback()
-        except:
+            if not conn.closed:
+                conn.rollback()
+        except (AttributeError, Exception):
+            # Connection might not have 'closed' attribute or rollback might fail
             pass
-        print(f"Error querying stedsnavn: {e}")
+        
+        # Only print unexpected errors
+        if "does not exist" not in error_str and "relation" not in error_str:
+            print(f"Error querying stedsnavn: {e}")
         return None
 
     return None

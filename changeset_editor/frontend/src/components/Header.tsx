@@ -13,7 +13,7 @@ interface Route {
 }
 
 interface HeaderProps {
-  onSelectRoute: (rutenummer: string) => void;
+  onSelectRoute: (rutenummer: string | null) => void;
   selectedRouteNumber?: string | null;
   loading?: boolean;
   changeset?: { id: string; status: string } | null;
@@ -37,8 +37,8 @@ export function Header({
   const [routes, setRoutes] = useState<Route[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
-  const [routesLimit, setRoutesLimit] = useState(200);
   const searchControllerRef = useRef<AbortController | null>(null);
+  const routesLimit = 200; // Default limit for route searches
 
   // Update search query when selected route changes
   useEffect(() => {
@@ -153,10 +153,10 @@ export function Header({
     onSelectRoute(rutenummer);
   };
 
-  const handleShowAllRoutes = () => {
+  const handleDeselectRoute = () => {
     setSearchQuery('');
-    setShowResults(true);
-    performRouteSearch('');
+    setShowResults(false);
+    onSelectRoute(null);
   };
 
   // Close results when clicking outside
@@ -267,28 +267,18 @@ export function Header({
             disabled={loading}
             aria-label="Søk etter rute"
           />
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{ marginLeft: '8px' }}
-            onClick={handleShowAllRoutes}
-            disabled={loading}
-            title="Vis alle ruter"
-          >
-            Alle ruter
-          </button>
-          <select
-            value={routesLimit}
-            onChange={(e) => setRoutesLimit(Number(e.target.value))}
-            disabled={loading}
-            aria-label="Antall ruter i liste"
-            style={{ marginLeft: '8px', padding: '6px', fontSize: '0.9rem' }}
-            title="Antall ruter i liste"
-          >
-            <option value={50}>50</option>
-            <option value={200}>200</option>
-            <option value={500}>500</option>
-          </select>
+          {selectedRouteNumber && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              style={{ marginLeft: '8px', padding: '6px 10px' }}
+              onClick={handleDeselectRoute}
+              disabled={loading}
+              title="Fjern valgt rute"
+            >
+              ✕
+            </button>
+          )}
           {isSearching && (
             <span className="header-search-spinner">⏳</span>
           )}

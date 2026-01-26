@@ -45,19 +45,25 @@ class NotificationManager {
   show(notification: Omit<Notification, 'id'>): string {
     const id = `notification-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const fullNotification: Notification = {
-      id,
-      duration: notification.duration ?? 5000, // Default 5 seconds
       ...notification,
+      id,
+      duration: notification.duration ?? 5000, // Default 5 seconds - set after spread to ensure it's not undefined
     };
+
+    console.log('[NotificationManager] show:', { id, message: fullNotification.message, duration: fullNotification.duration, listeners: this.listeners.size });
 
     this.notifications.set(id, fullNotification);
     this.notifyListeners(fullNotification);
 
     // Auto-dismiss if duration is set
     if (fullNotification.duration && fullNotification.duration > 0) {
+      console.log('[NotificationManager] Setting up auto-dismiss timeout for', id, 'in', fullNotification.duration, 'ms');
       setTimeout(() => {
+        console.log('[NotificationManager] Auto-dismiss timeout fired for', id);
         this.dismiss(id);
       }, fullNotification.duration);
+    } else {
+      console.log('[NotificationManager] No auto-dismiss (duration:', fullNotification.duration, ')');
     }
 
     return id;
@@ -67,13 +73,19 @@ class NotificationManager {
    * Dismiss a notification
    */
   dismiss(id: string): void {
-    if (this.notifications.has(id)) {
+    console.log('[NotificationManager] dismiss called for', id);
+    const existed = this.notifications.has(id);
+    console.log('[NotificationManager] Notification existed in Map:', existed);
+    if (existed) {
       this.notifications.delete(id);
-      // Notify listeners that notification was dismissed
-      this.listeners.forEach(listener => {
-        listener({ id, type: 'info', message: '' } as Notification);
-      });
     }
+    // Always notify listeners, even if notification was already removed
+    // This ensures React state is updated correctly
+    console.log('[NotificationManager] Notifying', this.listeners.size, 'listeners about dismiss');
+    this.listeners.forEach(listener => {
+      listener({ id: `dismiss-${id}`, type: 'info', message: '' } as Notification);
+    });
+    console.log('[NotificationManager] Dismiss complete for', id);
   }
 
   /**

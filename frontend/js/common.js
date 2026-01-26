@@ -48,13 +48,14 @@ function initMap(mapId, center = [61.5, 8.5], zoom = 7) {
 /**
  * Make an API request to the backend
  * @param {string} endpoint - API endpoint (e.g., '/api/v1/routes/bre10')
+ * @param {Object} options - Optional fetch options (e.g., { signal: AbortSignal })
  * @returns {Promise<Response>} Fetch response
  */
-async function apiRequest(endpoint) {
+async function apiRequest(endpoint, options = {}) {
     const backendUrl = CommonConfig.getBackendUrl();
     const url = backendUrl ? `${backendUrl}${endpoint}` : endpoint;
     console.log(`API request: ${url}`);
-    return fetch(url);
+    return fetch(url, options);
 }
 
 /**
@@ -103,14 +104,20 @@ async function searchPlaces(query, limit = 20) {
  * @param {Object} options - Options object
  * @param {Array<number>} options.nodeIds - Array of node IDs (optional)
  * @param {Object} options.bbox - Bounding box {min_lat, min_lng, max_lat, max_lng} (optional)
+ * @param {AbortSignal} options.signal - Abort signal for cancelling request (optional)
  * @returns {Promise<Object>} GeoJSON FeatureCollection with anchor nodes
  */
 async function loadAnchorNodes(options = {}) {
-    const { nodeIds, bbox } = options;
+    const { nodeIds, bbox, signal } = options;
+
+    const fetchOptions = {};
+    if (signal) {
+        fetchOptions.signal = signal;
+    }
 
     if (nodeIds && nodeIds.length > 0) {
         const nodeIdsStr = nodeIds.join(',');
-        const response = await apiRequest(`/api/v1/anchor-nodes?node_ids=${nodeIdsStr}`);
+        const response = await apiRequest(`/api/v1/anchor-nodes?node_ids=${nodeIdsStr}`, fetchOptions);
         if (!response.ok) {
             const errorText = await response.text();
             let errorMessage = `Failed to load anchor nodes: ${response.statusText}`;
@@ -126,7 +133,7 @@ async function loadAnchorNodes(options = {}) {
     } else if (bbox) {
         const { min_lat, min_lng, max_lat, max_lng } = bbox;
         const bboxStr = `${min_lng},${min_lat},${max_lng},${max_lat}`;
-        const response = await apiRequest(`/api/v1/anchor-nodes?bbox=${bboxStr}`);
+        const response = await apiRequest(`/api/v1/anchor-nodes?bbox=${bboxStr}`, fetchOptions);
         if (!response.ok) {
             const errorText = await response.text();
             let errorMessage = `Failed to load anchor nodes: ${response.statusText}`;
@@ -152,7 +159,7 @@ async function loadAnchorNodes(options = {}) {
  */
 async function loadLinksInBbox(bbox, options = {}) {
     const { min_lat, min_lng, max_lat, max_lng } = bbox;
-    const { limit = 500, offset = 0 } = options;
+    const { limit = 500, offset = 0, signal } = options;
 
     // Build bbox string as "xmin,ymin,xmax,ymax"
     // Note: Links endpoint expects bbox in same SRID as links.geom (default 25833)
@@ -168,7 +175,12 @@ async function loadLinksInBbox(bbox, options = {}) {
         offset: offset.toString()
     });
 
-    const response = await apiRequest(`/api/v1/links?${params.toString()}`);
+    const fetchOptions = {};
+    if (signal) {
+        fetchOptions.signal = signal;
+    }
+
+    const response = await apiRequest(`/api/v1/links?${params.toString()}`, fetchOptions);
     if (!response.ok) {
         const errorText = await response.text();
         let errorMessage = `Failed to load links: ${response.statusText}`;

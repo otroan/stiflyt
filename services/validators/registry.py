@@ -109,25 +109,102 @@ class ValidatorRegistry:
         # Resolve dependencies
         validators_to_run = self._resolve_dependencies(validators_to_run)
 
-        # Run validators
-        for validator in validators_to_run:
+        # Run validators with savepoints to isolate failures
+        for idx, validator in enumerate(validators_to_run):
+            # Use validator name and index for unique savepoint name
+            # Replace any non-alphanumeric chars with underscore for SQL safety
+            safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in validator.get_name())
+            savepoint_name = f"validator_{safe_name}_{idx}"
+            
+            # Check if transaction is in a bad state and rollback if needed
+            transaction_ok = False
             try:
-                validator_result = validator.validate(route_data, conn)
-                # Merge results
-                for issue in validator_result.errors:
-                    result.add_issue(issue)
-                for issue in validator_result.warnings:
-                    result.add_issue(issue)
-                for issue in validator_result.info:
-                    result.add_issue(issue)
-                # Merge metadata
-                result.metadata.update(validator_result.metadata)
-            except Exception as e:
-                # If a validator fails, add it as an error
+                with conn.cursor() as test_cur:
+                    test_cur.execute("SELECT 1")
+                    test_cur.fetchone()  # Consume result
+                    transaction_ok = True
+            except Exception:
+                # Transaction is aborted, rollback to start fresh
+                transaction_ok = False
+                try:
+                    conn.rollback()
+                    # Test again after rollback
+                    try:
+                        with conn.cursor() as test_cur2:
+                            test_cur2.execute("SELECT 1")
+                            test_cur2.fetchone()
+                            transaction_ok = True
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            
+            if not transaction_ok:
+                # Transaction is in a bad state, skip this validator
                 from .base import ValidationIssue, Severity
                 result.add_issue(ValidationIssue(
                     type='VALIDATOR_ERROR',
-                    message=f'Validator {validator.get_name()} failed: {str(e)}',
+                    message=f'Validator {validator.get_name()} skipped: transaction is in a bad state',
+                    severity=Severity.ERROR,
+                    metadata={'validator': validator.get_name()}
+                ))
+                continue
+            
+            try:
+                # Create a savepoint for this validator
+                with conn.cursor() as cur:
+                    cur.execute(f"SAVEPOINT {savepoint_name}")
+                
+                try:
+                    validator_result = validator.validate(route_data, conn)
+                    # Merge results
+                    for issue in validator_result.errors:
+                        result.add_issue(issue)
+                    for issue in validator_result.warnings:
+                        result.add_issue(issue)
+                    for issue in validator_result.info:
+                        result.add_issue(issue)
+                    # Merge metadata
+                    result.metadata.update(validator_result.metadata)
+                    
+                    # Release savepoint on success
+                    with conn.cursor() as cur:
+                        cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                except Exception as validator_error:
+                    # Rollback to savepoint to restore transaction state
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                            cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                    except Exception as rollback_error:
+                        # If rollback fails, the transaction is likely already aborted
+                        # Try to rollback the entire transaction
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                    
+                    # Add validator error to results
+                    from .base import ValidationIssue, Severity
+                    result.add_issue(ValidationIssue(
+                        type='VALIDATOR_ERROR',
+                        message=f'Validator {validator.get_name()} failed: {str(validator_error)}',
+                        severity=Severity.ERROR,
+                        metadata={'validator': validator.get_name()}
+                    ))
+            except Exception as e:
+                # If savepoint creation fails, the transaction might be aborted
+                # Try to rollback and continue
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                
+                # Add error to results
+                from .base import ValidationIssue, Severity
+                result.add_issue(ValidationIssue(
+                    type='VALIDATOR_ERROR',
+                    message=f'Validator {validator.get_name()} failed to start: {str(e)}',
                     severity=Severity.ERROR,
                     metadata={'validator': validator.get_name()}
                 ))

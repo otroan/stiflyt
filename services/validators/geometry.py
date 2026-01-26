@@ -293,6 +293,27 @@ class LinkConnectivityValidator(BaseValidator):
 
         schema_quoted = quote_identifier(ROUTE_SCHEMA)
 
+        # Check if navn column exists in anchor_nodes
+        has_navn_column = False
+        try:
+            with conn.cursor() as check_cur:
+                check_cur.execute("""
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = %s
+                          AND table_name = 'anchor_nodes'
+                          AND column_name = 'navn'
+                    )
+                """, (ROUTE_SCHEMA,))
+                has_navn_column = check_cur.fetchone()[0]
+        except Exception:
+            # If check fails, assume column doesn't exist
+            has_navn_column = False
+
+        # Build SELECT clause conditionally
+        navn_select = "an_a.navn as a_node_name, an_b.navn as b_node_name" if has_navn_column else "NULL as a_node_name, NULL as b_node_name"
+
         # Get links
         links_query = f"""
             SELECT
@@ -303,8 +324,7 @@ class LinkConnectivityValidator(BaseValidator):
                 l.segment_objids,
                 an_a.degree as a_node_degree,
                 an_b.degree as b_node_degree,
-                an_a.navn as a_node_name,
-                an_b.navn as b_node_name
+                {navn_select}
             FROM {schema_quoted}.links_with_routes l
             LEFT JOIN {schema_quoted}.anchor_nodes an_a ON an_a.node_id = l.a_node
             LEFT JOIN {schema_quoted}.anchor_nodes an_b ON an_b.node_id = l.b_node
