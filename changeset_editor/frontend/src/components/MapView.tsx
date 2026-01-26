@@ -943,12 +943,19 @@ export function MapView({
         // Convert routes to GeoJSON FeatureCollection
         const features: GeoJSON.Feature[] = (data.routes || [])
           .map((route) => {
-            // Type assertion: routes from API may have route_geometry
-            const routeWithGeometry = route as RouteInfo & { route_geometry?: GeoJSON.Geometry | null };
+            // Type assertion: routes from API may have route_geometry and total_length_m
+            const routeWithGeometry = route as RouteInfo & { 
+              route_geometry?: GeoJSON.Geometry | null;
+              total_length_m?: number;
+              total_length_km?: number;
+            };
             const geometry = routeWithGeometry.route_geometry;
             if (!geometry) {
               return null;
             }
+            // Calculate length in km if available
+            const lengthKm = routeWithGeometry.total_length_km 
+              ?? (routeWithGeometry.total_length_m ? routeWithGeometry.total_length_m / 1000 : null);
             return {
               type: 'Feature' as const,
               id: route.rutenummer,
@@ -957,6 +964,7 @@ export function MapView({
                 rutenummer: route.rutenummer,
                 rutenavn: route.rutenavn,
                 vedlikeholdsansvarlig: route.vedlikeholdsansvarlig,
+                total_length_km: lengthKm,
               },
             } as GeoJSON.Feature;
           })
@@ -2535,15 +2543,44 @@ export function MapView({
               };
             }}
             onEachFeature={(feature, layer) => {
-              const props = feature.properties as { rutenummer?: string; rutenavn?: string; [key: string]: unknown } | null;
+              const props = feature.properties as { 
+                rutenummer?: string; 
+                rutenavn?: string; 
+                vedlikeholdsansvarlig?: string;
+                total_length_km?: number | null;
+                [key: string]: unknown 
+              } | null;
               const rutenummer = props?.rutenummer;
+              const rutenavn = props?.rutenavn || 'Uten navn';
+              const vedlikeholdsansvarlig = props?.vedlikeholdsansvarlig || '';
+              const lengthKm = props?.total_length_km;
+
+              // Format length for display
+              const lengthDisplay = typeof lengthKm === 'number' 
+                ? `${lengthKm.toFixed(2)} km` 
+                : 'N/A';
 
               // Add popup
               layer.bindPopup(`
                 <strong>${rutenummer}</strong><br>
-                ${props?.rutenavn || 'Uten navn'}<br>
-                ${props?.vedlikeholdsansvarlig || ''}
+                ${rutenavn}<br>
+                ${vedlikeholdsansvarlig}
               `);
+
+              // Add tooltip for hover
+              layer.bindTooltip(`
+                <div style="font-size: 12px; line-height: 1.4;">
+                  <strong>${rutenummer}</strong><br>
+                  ${rutenavn}<br>
+                  ${lengthDisplay}<br>
+                  ${vedlikeholdsansvarlig ? `Vedlikeholdsansvarlig: ${vedlikeholdsansvarlig}` : ''}
+                </div>
+              `, {
+                permanent: false,
+                direction: 'top',
+                offset: [0, -10],
+                className: 'route-tooltip'
+              });
 
               // Make clickable - toggle selection if already selected
               layer.on('click', () => {
