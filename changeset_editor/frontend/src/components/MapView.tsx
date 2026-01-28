@@ -13,6 +13,7 @@ import { notificationManager } from '../utils/notifications';
 import { findClosestPointOnLine, splitLineStringAtPoint, isNewSegment } from '../utils/geometry';
 import { ConfirmDialog } from './ConfirmDialog';
 import { AnchorNameDialog } from './AnchorNameDialog';
+import { RouteSelectorPanel } from './RouteSelectorPanel';
 import 'leaflet/dist/leaflet.css';
 
 // Load Geoman dynamically to avoid Vite resolution issues
@@ -182,6 +183,7 @@ function LinksLayer({
   onOwnershipDataChange,
   selectedRouteNumber,
   onRouteSelect,
+  onCacheInvalidateRef,
 }: {
   linksData: GeoJSON.FeatureCollection | null;
   linksLayerRef: React.MutableRefObject<L.GeoJSON | null>;
@@ -193,17 +195,39 @@ function LinksLayer({
   onOwnershipDataChange?: (data: any) => void;
   selectedRouteNumber?: string | null;
   onRouteSelect?: (rutenummer: string | null) => void;
+  onCacheInvalidateRef?: React.MutableRefObject<(() => void) | null>;
 }) {
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
   const map = useMap();
 
   // Cache for route links and route info
   const routeLinksCacheRef = useRef<Map<string, GeoJSON.Feature[]>>(new Map());
-  const routeInfoCacheRef = useRef<Map<string, { rutenummer: string; rutenavn: string | null; total_length_m: number }>>(new Map());
+  const routeInfoCacheRef = useRef<Map<string, { rutenummer: string; rutenavn: string | null; total_length_m: number; from_name: string | null; to_name: string | null }>>(new Map());
+
+  // Expose cache invalidation function to parent
+  useEffect(() => {
+    if (onCacheInvalidateRef) {
+      onCacheInvalidateRef.current = () => {
+        routeInfoCacheRef.current.clear();
+      };
+    }
+    return () => {
+      if (onCacheInvalidateRef) {
+        onCacheInvalidateRef.current = null;
+      }
+    };
+  }, [onCacheInvalidateRef]);
   const highlightedRouteRef = useRef<string | null>(null);
   const originalStylesRef = useRef<Map<string, L.PathOptions>>(new Map());
   const linkLayersRef = useRef<Map<string, L.Path>>(new Map());
   const pendingBulkFetchRef = useRef<Promise<void> | null>(null);
+  const mouseoutTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // State for route selector panel
+  const [routeSelectorVisible, setRouteSelectorVisible] = useState(false);
+  const [routeSelectorRoutes, setRouteSelectorRoutes] = useState<Array<{ rutenummer: string; rutenavn: string | null; totalKm?: number }>>([]);
+  const [routeSelectorPosition, setRouteSelectorPosition] = useState({ x: 0, y: 0 });
+  const [routeSelectorCurrentIndex, setRouteSelectorCurrentIndex] = useState(0);
 
   // Initialize layer group
   useEffect(() => {
@@ -248,11 +272,21 @@ function LinksLayer({
           .then((bulkResponse) => {
             // Cache all route info
             bulkResponse.routes.forEach((route) => {
-              routeInfoCacheRef.current.set(route.rutenummer, {
+              const cachedInfo = {
                 rutenummer: route.rutenummer,
                 rutenavn: route.rutenavn || null,
                 total_length_m: (route as any).total_length_m || (route as any).total_length_meters || 0,
-              });
+                from_name: (route as any).from_name || null,
+                to_name: (route as any).to_name || null,
+              };
+              routeInfoCacheRef.current.set(route.rutenummer, cachedInfo);
+              // Debug: Log endpoint names for troubleshooting
+              if (cachedInfo.from_name || cachedInfo.to_name) {
+                console.log(`Cached endpoints for ${route.rutenummer}:`, {
+                  from_name: cachedInfo.from_name,
+                  to_name: cachedInfo.to_name,
+                });
+              }
             });
             pendingBulkFetchRef.current = null;
           })
@@ -320,23 +354,28 @@ function LinksLayer({
               highlightedCount++;
               const featureId = feature.id ? String(feature.id) : String((feature.properties as any)?.link_id || '');
 
+              // Get current style to preserve color
+              const currentOptions = layer.options as L.PathOptions;
+              const originalColor = currentOptions.color || '#16a085';
+              const originalWeight = currentOptions.weight || 4;
+              const originalOpacity = currentOptions.opacity || 0.85;
+
               // Save original style if not already saved
               const layerId = featureId;
               if (!originalStylesRef.current.has(layerId)) {
-                const currentOptions = layer.options as L.PathOptions;
                 originalStylesRef.current.set(layerId, {
-                  color: currentOptions.color || '#16a085',
-                  weight: currentOptions.weight || 4,
-                  opacity: currentOptions.opacity || 0.85,
+                  color: originalColor,
+                  weight: originalWeight,
+                  opacity: originalOpacity,
                   dashArray: currentOptions.dashArray || '5, 5',
                 });
               }
 
-              // Apply highlight style - thick dashed green line
+              // Apply highlight style - same color as route, but thicker and dashed
               layer.setStyle({
-                color: '#22c55e', // Green color
-                weight: 8, // Thicker line
-                opacity: 0.95,
+                color: originalColor, // Same color as underlying route
+                weight: originalWeight + 2, // Slightly thicker (add 2 to original weight)
+                opacity: Math.min(originalOpacity + 0.1, 1.0), // Slightly more opaque
                 dashArray: '10, 5', // Dashed pattern
               });
               layer.bringToFront();
@@ -382,19 +421,8 @@ function LinksLayer({
           (selectedFeatureIds?.has(featureId) ||
             (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
 
-        const isRouteHighlighted =
-          !!selectedRouteNumber &&
-          !!props?.routes &&
-          props.routes.some((r) => r.rutenummer && r.rutenummer === selectedRouteNumber);
-
-        if (isRouteHighlighted) {
-          return {
-            color: '#22c55e', // Green color
-            weight: 8, // Thicker line
-            opacity: 0.95,
-            dashArray: '10, 5', // Dashed pattern
-          };
-        }
+        // Note: Route highlighting is handled dynamically in highlightRouteLinks
+        // This style function is for initial rendering only
 
         return {
           color: isSelected ? '#2196f3' : '#16a085',
@@ -440,14 +468,26 @@ function LinksLayer({
           if (routes.length === 0) {
             routesHtml = '<div style="opacity:0.8;">Ingen ruter registrert</div>';
           } else if (routes.length === 1) {
-            // Single route - show basic info, will be updated with total km on hover
+            // Single route - show basic info with endpoints, will be updated with total km on hover
             const r = routes[0];
             const rn = r.rutenummer || 'Ukjent rute';
-            const navn = r.rutenavn || 'Uten navn';
+            const routeInfo = routeInfoCacheRef.current.get(rn);
+            // Show endpoints if available, otherwise fallback to route name
+            const fromName = routeInfo?.from_name || null;
+            const toName = routeInfo?.to_name || null;
+            let endpointDisplay = '';
+            if (fromName && toName) {
+              endpointDisplay = `${fromName} → ${toName}`;
+            } else if (fromName || toName) {
+              endpointDisplay = fromName || toName || '';
+            } else {
+              // Fallback to route name if endpoints not available
+              endpointDisplay = r.rutenavn || 'Uten navn';
+            }
             routesHtml = `
               <div style="margin-top:4px;">
                 <div><strong>${rn}</strong></div>
-                <div style="opacity:0.9;">${navn}</div>
+                <div style="opacity:0.9;">${endpointDisplay}</div>
               </div>
             `;
           } else {
@@ -456,11 +496,22 @@ function LinksLayer({
             routesHtml = routes
               .map((r) => {
                 const rn = r.rutenummer || 'Ukjent rute';
-                const navn = r.rutenavn || 'Uten navn';
                 const routeInfo = routeInfoCacheRef.current.get(rn);
                 const totalKm = routeInfo?.total_length_m
                   ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
                   : '';
+                // Show endpoints if available, otherwise fallback to route name
+                const fromName = routeInfo?.from_name || null;
+                const toName = routeInfo?.to_name || null;
+                let endpointDisplay = '';
+                if (fromName && toName) {
+                  endpointDisplay = `${fromName} → ${toName}`;
+                } else if (fromName || toName) {
+                  endpointDisplay = fromName || toName || '';
+                } else {
+                  // Fallback to route name if endpoints not available
+                  endpointDisplay = r.rutenavn || 'Uten navn';
+                }
                 return `
                   <div
                     class="route-tooltip-item"
@@ -477,7 +528,7 @@ function LinksLayer({
                     onmouseout="this.style.background='#f5f5f5'"
                   >
                     <div><strong>${rn}</strong></div>
-                    <div style="opacity:0.9;">${navn}</div>
+                    <div style="opacity:0.9;">${endpointDisplay}</div>
                     ${totalKm ? `<div style="opacity:0.85; font-size:11px;">${totalKm}</div>` : ''}
                   </div>
                 `;
@@ -499,11 +550,22 @@ function LinksLayer({
                   const updatedRoutesHtml = routes
                     .map((r) => {
                       const rn = r.rutenummer || 'Ukjent rute';
-                      const navn = r.rutenavn || 'Uten navn';
                       const routeInfo = routeInfoCacheRef.current.get(rn);
                       const totalKm = routeInfo?.total_length_m
                         ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
                         : '';
+                      // Show endpoints if available, otherwise fallback to route name
+                      const fromName = routeInfo?.from_name || null;
+                      const toName = routeInfo?.to_name || null;
+                      let endpointDisplay = '';
+                      if (fromName && toName) {
+                        endpointDisplay = `${fromName} → ${toName}`;
+                      } else if (fromName || toName) {
+                        endpointDisplay = fromName || toName || '';
+                      } else {
+                        // Fallback to route name if endpoints not available
+                        endpointDisplay = r.rutenavn || 'Uten navn';
+                      }
                       return `
                         <div
                           class="route-tooltip-item"
@@ -520,7 +582,7 @@ function LinksLayer({
                           onmouseout="this.style.background='#f5f5f5'"
                         >
                           <div><strong>${rn}</strong></div>
-                          <div style="opacity:0.9;">${navn}</div>
+                          <div style="opacity:0.9;">${endpointDisplay}</div>
                           ${totalKm ? `<div style="opacity:0.85; font-size:11px;">${totalKm}</div>` : ''}
                         </div>
                       `;
@@ -593,10 +655,22 @@ function LinksLayer({
                               const totalKm = routeInfo?.total_length_m
                                 ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
                                 : '';
+                              // Show endpoints if available, otherwise fallback to route name
+                              const fromName = routeInfo?.from_name || null;
+                              const toName = routeInfo?.to_name || null;
+                              let endpointDisplay = '';
+                              if (fromName && toName) {
+                                endpointDisplay = `${fromName} → ${toName}`;
+                              } else if (fromName || toName) {
+                                endpointDisplay = fromName || toName || '';
+                              } else {
+                                // Fallback to route name if endpoints not available
+                                endpointDisplay = route.rutenavn || 'Uten navn';
+                              }
                               const selectedContent = `
                                 <div style="font-size:12px; line-height:1.35;">
                                   <div><strong>${rutenummer}</strong></div>
-                                  <div style="opacity:0.9;">${route.rutenavn || 'Uten navn'}</div>
+                                  <div style="opacity:0.9;">${endpointDisplay}</div>
                                   ${totalKm ? `<div style="opacity:0.85;">${totalKm}</div>` : ''}
                                 </div>
                               `;
@@ -638,46 +712,96 @@ function LinksLayer({
               </div>
             `;
           } else if (routes.length === 1) {
-            // Single route - show route info
+            // Single route - show route info with endpoints
             const r = routes[0];
             const rn = r.rutenummer || 'Ukjent rute';
-            const navn = r.rutenavn || 'Uten navn';
             const routeInfo = routeInfoCacheRef.current.get(rn);
             const totalKm = routeInfo?.total_length_m
               ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
               : '';
+            // Show endpoints if available, otherwise fallback to route name
+            const fromName = routeInfo?.from_name || null;
+            const toName = routeInfo?.to_name || null;
+            // Debug: Log what we're using for tooltip
+            if (routeInfo) {
+              console.log(`Tooltip for route ${rn}:`, {
+                from_name: fromName,
+                to_name: toName,
+                has_from: !!fromName,
+                has_to: !!toName,
+                cached: true,
+              });
+            } else {
+              console.log(`Tooltip for route ${rn}:`, {
+                cached: false,
+                will_fallback_to: r.rutenavn || 'Uten navn',
+              });
+            }
+            let endpointDisplay = '';
+            if (fromName && toName) {
+              endpointDisplay = `<div style="opacity:0.9;">${fromName} → ${toName}</div>`;
+            } else if (fromName || toName) {
+              endpointDisplay = `<div style="opacity:0.9;">${fromName || toName}</div>`;
+            } else {
+              // Fallback to route name if endpoints not available
+              const navn = r.rutenavn || 'Uten navn';
+              endpointDisplay = `<div style="opacity:0.9;">${navn}</div>`;
+            }
             initialTooltipContent = `
               <div style="font-size:12px; line-height:1.35;">
                 <div><strong>${rn}</strong></div>
-                <div style="opacity:0.9;">${navn}</div>
+                ${endpointDisplay}
                 ${totalKm ? `<div style="opacity:0.85;">${totalKm}</div>` : ''}
               </div>
             `;
+
+            // If route info is not cached yet, update tooltip when cache is ready
+            if (!routeInfo || (!routeInfo.from_name && !routeInfo.to_name)) {
+              const missingRoutes = [rn].filter((rn): rn is string => !!rn && !routeInfoCacheRef.current.has(rn));
+              if (missingRoutes.length > 0) {
+                // Wait for bulk fetch to complete, then update tooltip
+                const updateTooltipWhenReady = () => {
+                  const cachedRouteInfo = routeInfoCacheRef.current.get(rn);
+                  if (cachedRouteInfo && (cachedRouteInfo.from_name || cachedRouteInfo.to_name)) {
+                    // Cache is ready with endpoint names, update tooltip
+                    const cachedTotalKm = cachedRouteInfo.total_length_m
+                      ? `${(cachedRouteInfo.total_length_m / 1000).toFixed(1)} km`
+                      : '';
+                    const cachedFromName = cachedRouteInfo.from_name || null;
+                    const cachedToName = cachedRouteInfo.to_name || null;
+                    let cachedEndpointDisplay = '';
+                    if (cachedFromName && cachedToName) {
+                      cachedEndpointDisplay = `<div style="opacity:0.9;">${cachedFromName} → ${cachedToName}</div>`;
+                    } else if (cachedFromName || cachedToName) {
+                      cachedEndpointDisplay = `<div style="opacity:0.9;">${cachedFromName || cachedToName}</div>`;
+                    } else {
+                      cachedEndpointDisplay = `<div style="opacity:0.9;">${r.rutenavn || 'Uten navn'}</div>`;
+                    }
+                    const updatedContent = `
+                      <div style="font-size:12px; line-height:1.35;">
+                        <div><strong>${rn}</strong></div>
+                        ${cachedEndpointDisplay}
+                        ${cachedTotalKm ? `<div style="opacity:0.85;">${cachedTotalKm}</div>` : ''}
+                      </div>
+                    `;
+                    layer.setTooltipContent(updatedContent);
+                  } else if (routeInfoCacheRef.current.has(rn)) {
+                    // Cache is ready but no endpoints, stop checking
+                    return;
+                  } else {
+                    // Cache not ready yet, check again
+                    setTimeout(updateTooltipWhenReady, 100);
+                  }
+                };
+                // Start checking after a short delay to allow bulk fetch to start
+                setTimeout(updateTooltipWhenReady, 200);
+              }
+            }
           } else {
-            // Multiple routes - show clickable list with close button
+            // Multiple routes - show simple tooltip, panel will be shown on hover
             initialTooltipContent = `
               <div style="font-size:12px; line-height:1.35;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                  <div style="opacity:0.8;">Velg rute:</div>
-                  <button
-                    class="tooltip-close-btn"
-                    style="
-                      background:none;
-                      border:none;
-                      color:#666;
-                      cursor:pointer;
-                      font-size:16px;
-                      line-height:1;
-                      padding:0;
-                      margin-left:8px;
-                      opacity:0.7;
-                    "
-                    onmouseover="this.style.opacity='1'"
-                    onmouseout="this.style.opacity='0.7'"
-                    title="Lukk"
-                  >×</button>
-                </div>
-                ${routesHtml}
+                <div style="opacity:0.8;">${routes.length} ruter - velg fra panel</div>
               </div>
             `;
           }
@@ -692,259 +816,31 @@ function LinksLayer({
             contentPreview: initialTooltipContent.substring(0, 150)
           });
 
-          // Bind tooltip - start as non-permanent, will be made permanent on open if multiple routes
+          // Bind tooltip - simple tooltip for all routes
           layer.bindTooltip(initialTooltipContent, {
-            permanent: false, // Start as non-permanent, will be made permanent on open if multiple routes
+            permanent: false,
             direction: 'top',
             offset: [0, -8],
             className: tooltipClassName,
             sticky: true,
-            interactive: routes.length > 1, // Make tooltip interactive when multiple routes
+            interactive: false, // Panel handles interaction, not tooltip
           });
 
-          // Log when tooltip opens
-          layer.on('tooltipopen', () => {
-            const tooltip = layer.getTooltip();
-            const tooltipEl = tooltip?.getElement();
-            console.log(`Tooltip opened for link ${props.link_id || featureId || 'N/A'}:`, {
-              routesCount: routes.length,
-              routeNumbers: routes.map(r => r.rutenummer || 'N/A'),
-              tooltipElement: tooltipEl ? 'exists' : 'missing',
-              className: tooltipEl?.className,
-              content: tooltipEl?.innerHTML?.substring(0, 200)
-            });
-          });
-
-          // Add click handlers for multiple routes
-          if (routes.length > 1) {
-            // Store reference to layer and routes for click handler
-            const layerRef = layer;
-            const routesRef = routes;
-
-            // Use event delegation on tooltip container - more reliable than individual handlers
-            const setupTooltipClickHandlers = () => {
-              // Wait for tooltip to be created and opened
-              const checkTooltip = () => {
-                const tooltip = layerRef.getTooltip();
-                const tooltipElement = tooltip?.getElement();
-
-                if (tooltipElement) {
-                  // Use mousedown instead of click for better reliability
-                  const handleTooltipClick = async (e: MouseEvent) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-
-                    const target = e.target as HTMLElement;
-
-                    // Check if close button was clicked
-                    const closeBtn = target.closest('.tooltip-close-btn');
-                    if (closeBtn) {
-                      const tooltip = layerRef.getTooltip();
-                      if (tooltip) {
-                        tooltip.close();
-                        clearRouteHighlight();
-                      }
-                      return;
-                    }
-
-                    const routeItem = target.closest('.route-tooltip-item') as HTMLElement;
-
-                    if (routeItem) {
-                      const rutenummer = routeItem.getAttribute('data-rutenummer');
-                      if (rutenummer) {
-                        console.log('Route selected from tooltip:', rutenummer);
-
-                        // Highlight route
-                        await highlightRouteLinks(rutenummer);
-
-                        // Update tooltip to show selected route with full info
-                        const route = routesRef.find((r) => r.rutenummer === rutenummer);
-                        if (route) {
-                          const routeInfo = routeInfoCacheRef.current.get(rutenummer);
-                          const totalKm = routeInfo?.total_length_m
-                            ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
-                            : '';
-
-                          const updatedContent = `
-                            <div style="font-size:12px; line-height:1.35;">
-                              <div><strong>${rutenummer}</strong></div>
-                              <div style="opacity:0.9;">${route.rutenavn || 'Uten navn'}</div>
-                              ${totalKm ? `<div style="opacity:0.85;">${totalKm}</div>` : ''}
-                            </div>
-                          `;
-
-                          // Update tooltip content to show selected route (no longer interactive)
-                          layerRef.setTooltipContent(updatedContent);
-                          const updatedTooltip = layerRef.getTooltip();
-                          if (updatedTooltip) {
-                            const tooltipEl = updatedTooltip.getElement();
-                            if (tooltipEl) {
-                              tooltipEl.className = 'leaflet-tooltip route-tooltip';
-                            }
-                            // Make tooltip non-permanent after selection (can be closed)
-                            updatedTooltip.options.permanent = false;
-                          }
-                        }
-                      }
-                    }
-                  };
-
-                  // Remove any existing listeners
-                  tooltipElement.removeEventListener('mousedown', handleTooltipClick);
-                  // Add new listener
-                  tooltipElement.addEventListener('mousedown', handleTooltipClick, true); // Use capture phase
-
-                  return true; // Success
-                }
-                return false; // Not ready yet
-              };
-
-              // Try multiple times to catch tooltip when it opens
-              let attempts = 0;
-              const maxAttempts = 20;
-              const trySetup = () => {
-                if (checkTooltip()) {
-                  return; // Success
-                }
-                attempts++;
-                if (attempts < maxAttempts) {
-                  setTimeout(trySetup, 100);
-                }
-              };
-
-              // Start trying immediately and on delays
-              trySetup();
-              setTimeout(trySetup, 200);
-              setTimeout(trySetup, 500);
-            };
-
-            // Setup handlers when tooltip opens
-            // Store reference for mouseout handler
-            let tooltipCloseTimeout: ReturnType<typeof setTimeout> | null = null;
-            let mapClickHandlerRef: ((e: L.LeafletMouseEvent) => void) | null = null;
-
-            layer.on('tooltipopen', () => {
-              setupTooltipClickHandlers();
-
-              // For multiple routes, prevent tooltip from closing on mouseout
-              if (routesRef.length > 1) {
-                // Clear any pending close timeout
-                if (tooltipCloseTimeout) {
-                  clearTimeout(tooltipCloseTimeout);
-                  tooltipCloseTimeout = null;
-                }
-
-                // Prevent default mouseout behavior by intercepting close
-                const tooltip = layerRef.getTooltip();
-                if (tooltip) {
-                  const originalClose = tooltip.close.bind(tooltip);
-                  (tooltip as any)._originalClose = originalClose;
-
-                  // Override close to check if mouse is over tooltip
-                  tooltip.close = function() {
-                    const tooltipEl = this.getElement();
-                    // Don't close if mouse is over tooltip element
-                    if (tooltipEl && (tooltipEl.matches(':hover') || tooltipEl.querySelector(':hover'))) {
-                      return;
-                    }
-                    // Restore original close and call it
-                    this.close = originalClose;
-                    originalClose();
-                  };
-                }
-              }
-
-              // Close tooltip when clicking on map (outside tooltip)
-              const map = layerRef._map;
-              if (map && routesRef.length > 1) {
-                // Remove existing handler if any
-                if (mapClickHandlerRef) {
-                  try {
-                    map.off('click', mapClickHandlerRef);
-                  } catch (e) {
-                    // Ignore errors
-                  }
-                  mapClickHandlerRef = null;
-                }
-
-                // Create handler function - must be a proper function, not arrow function stored in variable
-                function mapClickHandler(e: L.LeafletMouseEvent) {
-                  const tooltip = layerRef.getTooltip();
-                  const tooltipEl = tooltip?.getElement();
-                  // Don't close if clicking inside tooltip
-                  if (tooltipEl && !tooltipEl.contains(e.originalEvent.target as Node)) {
-                    if (tooltip) {
-                      // Restore original close method
-                      if ((tooltip as any)._originalClose) {
-                        tooltip.close = (tooltip as any)._originalClose;
-                      }
-                      tooltip.close();
-                    }
-                    clearRouteHighlight();
-                    map.off('click', mapClickHandler);
-                    mapClickHandlerRef = null;
-                  }
-                }
-
-                mapClickHandlerRef = mapClickHandler;
-                // Use setTimeout to avoid immediate trigger
-                setTimeout(() => {
-                  map.on('click', mapClickHandler);
-                }, 100);
-              }
-            });
-
-            // Handle mouseout - delay closing for multiple routes
-            layer.on('mouseout', () => {
-              if (routes.length > 1) {
-                // For multiple routes, delay closing to allow moving to tooltip
-                tooltipCloseTimeout = setTimeout(() => {
-                  const tooltip = layerRef.getTooltip();
-                  const tooltipEl = tooltip?.getElement();
-                  // Only close if mouse is not over tooltip
-                  if (tooltipEl && !tooltipEl.matches(':hover') && !tooltipEl.querySelector(':hover')) {
-                    if (tooltip && (tooltip as any)._originalClose) {
-                      tooltip.close = (tooltip as any)._originalClose;
-                    }
-                    tooltip?.close();
-                    clearRouteHighlight();
-                  }
-                  tooltipCloseTimeout = null;
-                }, 300); // Longer delay to allow moving to tooltip
-              }
-            });
-
-            // Reset when tooltip closes
-            layer.on('tooltipclose', () => {
-              if (tooltipCloseTimeout) {
-                clearTimeout(tooltipCloseTimeout);
-                tooltipCloseTimeout = null;
-              }
-              const tooltip = layerRef.getTooltip();
-              if (tooltip && (tooltip as any)._originalClose) {
-                tooltip.close = (tooltip as any)._originalClose;
-              }
-              // Clean up map click handler
-              const map = layerRef._map;
-              if (map && mapClickHandlerRef) {
-                try {
-                  map.off('click', mapClickHandlerRef);
-                } catch (e) {
-                  // Ignore errors when removing handler
-                }
-                mapClickHandlerRef = null;
-              }
-            });
-
-            // Also try to setup immediately
-            setupTooltipClickHandlers();
-          }
+          // For multiple routes, panel is shown on mouseover (handled below)
+          // No need for complex tooltip click handlers
         }
 
-        // Mouseover handler - highlight route and load route info
+        // Mouseover handler - highlight route and show route selector panel
         let hoverTimeout: ReturnType<typeof setTimeout> | null = null;
-        layer.on('mouseover', async () => {
-          console.log(`Mouseover on link ${props.link_id || featureId || 'N/A'}, routes:`, routes.map(r => r.rutenummer || 'N/A'));
+
+        layer.on('mouseover', async (e: L.LeafletMouseEvent) => {
+          console.log(`Mouseover on link ${props?.link_id || featureId || 'N/A'}, routes:`, routes.map(r => r.rutenummer || 'N/A'));
+
+          // Clear any pending mouseout timeout
+          if (mouseoutTimeoutRef.current) {
+            clearTimeout(mouseoutTimeoutRef.current);
+            mouseoutTimeoutRef.current = null;
+          }
 
           // Clear any pending timeout
           if (hoverTimeout) {
@@ -962,16 +858,28 @@ function LinksLayer({
 
               // Load route info for tooltip (should already be cached from bulk fetch)
               const routeInfo = routeInfoCacheRef.current.get(rutenummer);
-              if (routeInfo && props) {
+              if (routeInfo) {
                 // Update tooltip with total km
                 const totalKm = routeInfo.total_length_m
                   ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
                   : '';
+                // Show endpoints if available, otherwise fallback to route name
+                const fromName = routeInfo.from_name || null;
+                const toName = routeInfo.to_name || null;
+                let endpointDisplay = '';
+                if (fromName && toName) {
+                  endpointDisplay = `${fromName} → ${toName}`;
+                } else if (fromName || toName) {
+                  endpointDisplay = fromName || toName || '';
+                } else {
+                  // Fallback to route name if endpoints not available
+                  endpointDisplay = routeInfo.rutenavn || 'Uten navn';
+                }
 
                 const updatedContent = `
                   <div style="font-size:12px; line-height:1.35;">
                     <div><strong>${rutenummer}</strong></div>
-                    <div style="opacity:0.9;">${routeInfo.rutenavn || 'Uten navn'}</div>
+                    <div style="opacity:0.9;">${endpointDisplay}</div>
                     ${totalKm ? `<div style="opacity:0.85;">${totalKm}</div>` : ''}
                   </div>
                 `;
@@ -980,25 +888,82 @@ function LinksLayer({
                 layer.setTooltipContent(updatedContent);
               }
             } else if (routes.length > 1) {
-              // Multiple routes - DO NOT highlight automatically
-              // Tooltip already shows list of routes, user must click to select
-              console.log(`Multiple routes detected (${routes.length}), showing tooltip with route list (no auto-highlight)`);
-              // Don't highlight anything - let user choose from tooltip
+              // Multiple routes - show route selector panel
+              console.log(`Multiple routes detected (${routes.length}), showing route selector panel`);
+
+              // Convert routes to panel format with total km and endpoints
+              const panelRoutes = routes.map(r => {
+                const rn = r.rutenummer || '';
+                const routeInfo = routeInfoCacheRef.current.get(rn);
+                // Use endpoints if available, otherwise fallback to route name
+                const fromName = routeInfo?.from_name || null;
+                const toName = routeInfo?.to_name || null;
+                let endpointDisplay = '';
+                if (fromName && toName) {
+                  endpointDisplay = `${fromName} → ${toName}`;
+                } else if (fromName || toName) {
+                  endpointDisplay = fromName || toName || '';
+                } else {
+                  endpointDisplay = r.rutenavn || 'Uten navn';
+                }
+                return {
+                  rutenummer: rn,
+                  rutenavn: endpointDisplay, // Use endpoints instead of route name
+                  totalKm: routeInfo?.total_length_m ? routeInfo.total_length_m / 1000 : undefined,
+                };
+              });
+
+              // Get mouse position in container coordinates
+              const containerPoint = map.latLngToContainerPoint(e.latlng);
+              const container = map.getContainer();
+              const containerRect = container.getBoundingClientRect();
+
+              // Calculate position relative to viewport (for fixed positioning)
+              setRouteSelectorRoutes(panelRoutes);
+              setRouteSelectorPosition({
+                x: containerRect.left + containerPoint.x,
+                y: containerRect.top + containerPoint.y - 20
+              });
+              setRouteSelectorCurrentIndex(0);
+              setRouteSelectorVisible(true);
             }
-            // For multiple routes, user clicks in tooltip to select
           }, 100);
         });
 
-        // Mouseout handler - clear highlight after delay
-        layer.on('mouseout', (e: L.LeafletMouseEvent) => {
+        // Mouseout handler - close panel after delay (if not hovering over panel)
+        layer.on('mouseout', () => {
           if (hoverTimeout) {
             clearTimeout(hoverTimeout);
             hoverTimeout = null;
           }
 
-          // For multiple routes, tooltip is permanent - don't clear highlight on mouseout
           if (routes.length > 1) {
-            // Tooltip stays open, user can click on it
+            // For multiple routes, close panel after delay (allows moving mouse to panel)
+            // Clear any existing timeout
+            if (mouseoutTimeoutRef.current) {
+              clearTimeout(mouseoutTimeoutRef.current);
+            }
+
+            mouseoutTimeoutRef.current = setTimeout(() => {
+              // Check if mouse is over panel before closing
+              const panelElement = document.querySelector('.route-selector-panel');
+              if (panelElement && (panelElement.matches(':hover') || panelElement.querySelector(':hover'))) {
+                // Mouse is over panel, don't close - check again later
+                mouseoutTimeoutRef.current = setTimeout(() => {
+                  const stillOverPanel = document.querySelector('.route-selector-panel');
+                  if (!stillOverPanel || (!stillOverPanel.matches(':hover') && !stillOverPanel.querySelector(':hover'))) {
+                    setRouteSelectorVisible(false);
+                    clearRouteHighlight();
+                  }
+                  mouseoutTimeoutRef.current = null;
+                }, 200);
+                return;
+              }
+              // Mouse is not over panel, close it
+              setRouteSelectorVisible(false);
+              clearRouteHighlight();
+              mouseoutTimeoutRef.current = null;
+            }, 300); // Delay to allow moving mouse to panel
             return;
           }
 
@@ -1059,10 +1024,79 @@ function LinksLayer({
     // Cleanup on unmount or data change
     return () => {
       clearRouteHighlight();
+      setRouteSelectorVisible(false);
+      // Clear any pending timeouts
+      if (mouseoutTimeoutRef.current) {
+        clearTimeout(mouseoutTimeoutRef.current);
+        mouseoutTimeoutRef.current = null;
+      }
     };
-  }, [linksData, selectedFeatureId, selectedFeatureIds, onFeatureSelect, linksLayerRef, activeMode, onGeometrySelectForOwnership, onOwnershipDataChange, clearRouteHighlight, highlightRouteLinks]);
+  }, [linksData, selectedFeatureId, selectedFeatureIds, onFeatureSelect, linksLayerRef, activeMode, onGeometrySelectForOwnership, onOwnershipDataChange, clearRouteHighlight, highlightRouteLinks, map]);
 
-  return <LayerGroup ref={layerGroupRef} />;
+  // Handler for route selection from panel
+  const handleRouteSelect = useCallback(async (rutenummer: string) => {
+    await highlightRouteLinks(rutenummer);
+    // Close panel after selection
+    setRouteSelectorVisible(false);
+  }, [highlightRouteLinks]);
+
+  // Handler for closing panel
+  const handleClosePanel = useCallback(() => {
+    setRouteSelectorVisible(false);
+    clearRouteHighlight();
+  }, [clearRouteHighlight]);
+
+  // Handler for navigation
+  const handleNavigate = useCallback((direction: 'prev' | 'next') => {
+    setRouteSelectorCurrentIndex((current) => {
+      if (direction === 'prev') {
+        return Math.max(0, current - 1);
+      } else {
+        return Math.min(routeSelectorRoutes.length - 1, current + 1);
+      }
+    });
+  }, [routeSelectorRoutes.length]);
+
+  // Close panel when clicking on map (outside panel)
+  useEffect(() => {
+    if (!routeSelectorVisible) return;
+
+    const handleMapClick = (e: L.LeafletMouseEvent) => {
+      // Check if click is inside panel
+      const panelElement = document.querySelector('.route-selector-panel');
+      if (panelElement && panelElement.contains(e.originalEvent.target as Node)) {
+        return; // Click is inside panel, don't close
+      }
+      // Click is outside panel, close it
+      setRouteSelectorVisible(false);
+      clearRouteHighlight();
+    };
+
+    map.on('click', handleMapClick);
+    return () => {
+      map.off('click', handleMapClick);
+    };
+  }, [map, routeSelectorVisible, clearRouteHighlight]);
+
+  // Get map container for portal
+  const mapContainer = map.getContainer();
+
+  return (
+    <>
+      <LayerGroup ref={layerGroupRef} />
+      {routeSelectorVisible && routeSelectorRoutes.length > 0 && mapContainer && createPortal(
+        <RouteSelectorPanel
+          routes={routeSelectorRoutes}
+          position={routeSelectorPosition}
+          onRouteSelect={handleRouteSelect}
+          onClose={handleClosePanel}
+          currentIndex={routeSelectorCurrentIndex}
+          onNavigate={handleNavigate}
+        />,
+        mapContainer
+      )}
+    </>
+  );
 }
 
 // Component to render the signs layer for LayersControl
@@ -1593,6 +1627,8 @@ export function MapView({
   const segmentRoutesCacheRef = useRef<Map<string, SegmentRoutesItem[]>>(new Map());
   const routeGeometryCacheRef = useRef<Map<string, GeoJSON.Geometry>>(new Map());
   const routeLengthKmCacheRef = useRef<Map<string, number | null>>(new Map());
+  const routeEndpointsCacheRef = useRef<Map<string, { from_name: string | null; to_name: string | null }>>(new Map());
+  const linksLayerCacheInvalidateRef = useRef<(() => void) | null>(null);
   const hoveredSegmentLayerRef = useRef<L.Layer | null>(null);
   const [hoveredSegmentId, setHoveredSegmentId] = useState<string | null>(null);
   const [hoverRoutes, setHoverRoutes] = useState<SegmentRoutesItem[]>([]);
@@ -1642,7 +1678,24 @@ export function MapView({
   const getRouteGeometryCached = useCallback(
     async (rutenummer: string): Promise<GeoJSON.Geometry | null> => {
       const cached = routeGeometryCacheRef.current.get(rutenummer);
-      if (cached) return cached;
+      if (cached) {
+        // If geometry is cached but endpoints are not, fetch them
+        if (!routeEndpointsCacheRef.current.has(rutenummer)) {
+          try {
+            const routeData = await api.getRoute(rutenummer, false);
+            if (routeData.from_name !== undefined || routeData.to_name !== undefined) {
+              routeEndpointsCacheRef.current.set(rutenummer, {
+                from_name: routeData.from_name || null,
+                to_name: routeData.to_name || null,
+              });
+            }
+          } catch (error) {
+            // Silent failure - endpoints are optional
+            debugLog('Failed to fetch endpoint names for', rutenummer, error);
+          }
+        }
+        return cached;
+      }
 
       const match = routesInView?.features?.find((f) => {
         const props = f.properties as { rutenummer?: string } | null;
@@ -1650,6 +1703,21 @@ export function MapView({
       });
       if (match?.geometry) {
         routeGeometryCacheRef.current.set(rutenummer, match.geometry as GeoJSON.Geometry);
+        // Try to fetch endpoint names if not cached
+        if (!routeEndpointsCacheRef.current.has(rutenummer)) {
+          try {
+            const routeData = await api.getRoute(rutenummer, false);
+            if (routeData.from_name !== undefined || routeData.to_name !== undefined) {
+              routeEndpointsCacheRef.current.set(rutenummer, {
+                from_name: routeData.from_name || null,
+                to_name: routeData.to_name || null,
+              });
+            }
+          } catch (error) {
+            // Silent failure - endpoints are optional
+            debugLog('Failed to fetch endpoint names for', rutenummer, error);
+          }
+        }
         return match.geometry as GeoJSON.Geometry;
       }
 
@@ -1660,6 +1728,13 @@ export function MapView({
         routeLengthKmCacheRef.current.set(rutenummer, routeData.total_length_km);
       } else if (typeof routeData.total_length_m === 'number') {
         routeLengthKmCacheRef.current.set(rutenummer, routeData.total_length_m / 1000);
+      }
+      // Cache endpoint names
+      if (routeData.from_name !== undefined || routeData.to_name !== undefined) {
+        routeEndpointsCacheRef.current.set(rutenummer, {
+          from_name: routeData.from_name || null,
+          to_name: routeData.to_name || null,
+        });
       }
       return geom;
     },
@@ -1719,12 +1794,24 @@ export function MapView({
           const isActive = i === safeIndex;
           const km = r?.rutenummer ? getRouteLengthKm(r.rutenummer) : null;
           const kmStr = typeof km === 'number' ? `${km.toFixed(2)} km` : 'N/A';
-          const navn = r.rutenavn || 'Uten navn';
           const vha = r.vedlikeholdsansvarlig || '';
+          // Get endpoint names from cache
+          const endpoints = r.rutenummer ? routeEndpointsCacheRef.current.get(r.rutenummer) : null;
+          const fromName = endpoints?.from_name || null;
+          const toName = endpoints?.to_name || null;
+          let endpointDisplay = '';
+          if (fromName && toName) {
+            endpointDisplay = `${fromName} → ${toName}`;
+          } else if (fromName || toName) {
+            endpointDisplay = fromName || toName || '';
+          } else {
+            // Fallback to route name if endpoints not available
+            endpointDisplay = r.rutenavn || 'Uten navn';
+          }
           return `
             <div style="margin-top:${i === 0 ? 0 : 6}px;">
               <div><strong>${isActive ? '▶ ' : ''}${r.rutenummer}</strong>${isActive ? ` <span style="opacity:0.75">(${safeIndex + 1}/${routes.length})</span>` : ''}</div>
-              <div style="opacity:0.9">${navn}</div>
+              <div style="opacity:0.9">${endpointDisplay}</div>
               <div style="opacity:0.85">${kmStr}${vha ? ` • ${vha}` : ''}</div>
             </div>
           `;
@@ -2977,6 +3064,16 @@ export function MapView({
             : anchor
         )
       );
+
+      // Invalidate route endpoint caches so tooltips will update with new anchor name
+      // This affects both LinksLayer cache (routeInfoCacheRef) and MapView cache (routeEndpointsCacheRef)
+      routeEndpointsCacheRef.current.clear();
+
+      // Also invalidate route info cache in LinksLayer
+      if (linksLayerCacheInvalidateRef.current) {
+        linksLayerCacheInvalidateRef.current();
+      }
+
       notificationManager.success('Ankernavn oppdatert');
       closeAnchorDialog();
     } catch (error: unknown) {
@@ -3367,6 +3464,7 @@ export function MapView({
             onOwnershipDataChange={onOwnershipDataChange}
             selectedRouteNumber={selectedRouteNumber}
             onRouteSelect={onRouteSelect}
+            onCacheInvalidateRef={linksLayerCacheInvalidateRef}
           />
         )}
 

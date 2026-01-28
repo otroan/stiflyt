@@ -52,10 +52,11 @@ from services.route_service import (
     get_segment_by_lokalid,
     get_route_anchor_nodes,
     get_anchor_node_coords,
+    get_anchor_node_geometry,
 )
 from services.route_endpoints import list_placename_candidates, list_ruteinfopunkt_facilities, lookup_name_in_stedsnavn_cached, lookup_named_anchor_within_radius, CLUSTER_RADIUS_METERS
 from services.operational_database import op_db_connection
-from services.operational_store import upsert_endpoint_name, get_endpoint_names_for_anchors
+from services.operational_store import upsert_endpoint_name, get_endpoint_names_for_anchors, get_endpoint_names_for_anchor_routes
 from services.signs import get_signs_for_route, get_signs_for_prefix, get_signs_for_bbox, build_sign_production_rows
 from services.validators import get_validator_registry
 from collections import defaultdict
@@ -854,15 +855,25 @@ async def upsert_anchor_name(
     """Upsert a validated name for an anchor node."""
     validated_by = x_user or "anonymous"
     anchor_coords = None
+    anchor_geom = None
     with db_connection() as conn:
         anchor_coords = get_anchor_node_coords(conn, anchor_id)
+        anchor_geom = get_anchor_node_geometry(conn, anchor_id)
+
+    if not anchor_geom:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Anchor node {anchor_id} not found or has no geometry. Geometry is required for synchronization."
+        )
+
     with op_db_connection() as conn:
         row = upsert_endpoint_name(
             conn,
             anchor_node_id=anchor_id,
-            rutenummer=request.rutenummer,
             name=request.name,
             source_type=request.source_type,
+            geom=anchor_geom,
+            rutenummer=request.rutenummer,
             source_id=request.source_id,
             distance_meters=request.distance_meters,
             validated_by=validated_by,
@@ -1344,58 +1355,48 @@ async def get_routes_bulk(
 
                 routes.append(route)
 
-            # Get endpoint names for routes (similar to get_routes_from_view)
+            # Get endpoint names for routes using link topology (more reliable than geometry)
             if routes:
                 rutenummer_list_for_endpoints = [r['rutenummer'] for r in routes]
                 endpoint_placeholders = ','.join(['%s'] * len(rutenummer_list_for_endpoints))
-
-                # Check if navn column exists
-                has_navn_column = False
-                try:
-                    with conn.cursor() as check_cur:
-                        check_cur.execute("""
-                            SELECT EXISTS (
-                                SELECT 1
-                                FROM information_schema.columns
-                                WHERE table_schema = %s
-                                  AND table_name = 'anchor_nodes'
-                                  AND column_name = 'navn'
-                            )
-                        """, (route_schema,))
-                        has_navn_column = check_cur.fetchone()[0]
-                except Exception:
-                    has_navn_column = False
-
-                navn_select = "an_a.navn as from_name, an_b.navn as to_name" if has_navn_column else "NULL as from_name, NULL as to_name"
 
                 endpoint_query = f"""
                     WITH route_links_expanded AS (
                         SELECT
                             UNNEST(lwr.rutenummer_list) as rutenummer,
-                            lwr.link_id,
                             lwr.a_node,
                             lwr.b_node
                         FROM {schema_quoted}.links_with_routes lwr
                         WHERE lwr.rutenummer_list && ARRAY[{endpoint_placeholders}]
                     ),
-                    first_last_nodes AS (
+                    route_nodes AS (
                         SELECT
                             rutenummer,
-                            (SELECT a_node FROM route_links_expanded rle2
-                             WHERE rle2.rutenummer = rle.rutenummer
-                             ORDER BY link_id ASC LIMIT 1) as first_a_node,
-                            (SELECT b_node FROM route_links_expanded rle3
-                             WHERE rle3.rutenummer = rle.rutenummer
-                             ORDER BY link_id DESC LIMIT 1) as last_b_node
-                        FROM route_links_expanded rle
+                            node_id,
+                            COUNT(*) as occurrence_count
+                        FROM (
+                            SELECT rutenummer, a_node as node_id FROM route_links_expanded WHERE a_node IS NOT NULL
+                            UNION ALL
+                            SELECT rutenummer, b_node as node_id FROM route_links_expanded WHERE b_node IS NOT NULL
+                        ) all_nodes
+                        GROUP BY rutenummer, node_id
+                    ),
+                    route_endpoints AS (
+                        SELECT
+                            rutenummer,
+                            array_agg(node_id ORDER BY node_id) FILTER (WHERE occurrence_count = 1) as endpoint_nodes
+                        FROM route_nodes
                         GROUP BY rutenummer
                     )
                     SELECT
-                        fln.rutenummer,
-                        {navn_select}
-                    FROM first_last_nodes fln
-                    LEFT JOIN {schema_quoted}.anchor_nodes an_a ON an_a.anchor_node_id = fln.first_a_node
-                    LEFT JOIN {schema_quoted}.anchor_nodes an_b ON an_b.anchor_node_id = fln.last_b_node
+                        re.rutenummer,
+                        re.endpoint_nodes[1] as first_node,
+                        CASE
+                            WHEN array_length(re.endpoint_nodes, 1) >= 2 THEN re.endpoint_nodes[array_length(re.endpoint_nodes, 1)]
+                            ELSE re.endpoint_nodes[1]
+                        END as last_node
+                    FROM route_endpoints re
+                    WHERE array_length(re.endpoint_nodes, 1) > 0
                 """
 
                 try:
@@ -1403,16 +1404,54 @@ async def get_routes_bulk(
                         cur.execute(endpoint_query, rutenummer_list_for_endpoints)
                         endpoint_rows = cur.fetchall()
 
-                    # Map endpoint names to routes
+                    # Map endpoint nodes to routes
                     endpoint_map = {row['rutenummer']: row for row in endpoint_rows}
+                    anchor_ids = []
+                    for row in endpoint_rows:
+                        if row.get("first_node") is not None:
+                            anchor_ids.append(int(row["first_node"]))
+                        if row.get("last_node") is not None:
+                            anchor_ids.append(int(row["last_node"]))
+
+                    # Get endpoint names from operational database (validated anchor names)
+                    endpoint_overrides = {}
+                    if anchor_ids:
+                        with op_db_connection() as op_conn:
+                            endpoint_overrides = get_endpoint_names_for_anchor_routes(
+                                op_conn,
+                                anchor_ids,
+                                rutenummer_list_for_endpoints,
+                            )
+
+                    # Apply endpoint names to routes
                     for route in routes:
                         endpoint_info = endpoint_map.get(route['rutenummer'])
                         if endpoint_info:
-                            route['from_name'] = endpoint_info.get('from_name')
-                            route['to_name'] = endpoint_info.get('to_name')
-                except Exception:
+                            override_map = endpoint_overrides.get(route["rutenummer"], {}) if endpoint_overrides else {}
+
+                            # Get from name
+                            first_node = endpoint_info.get("first_node")
+                            last_node = endpoint_info.get("last_node")
+
+                            # Only set names if we have different nodes (not a loop)
+                            if first_node and last_node and first_node != last_node:
+                                from_override = override_map.get(first_node)
+                                to_override = override_map.get(last_node)
+
+                                if from_override and from_override.get("name"):
+                                    route["from_name"] = from_override.get("name")
+                                if to_override and to_override.get("name"):
+                                    route["to_name"] = to_override.get("name")
+                            elif first_node:
+                                # Single endpoint (loop route) - only set from_name
+                                from_override = override_map.get(first_node)
+                                if from_override and from_override.get("name"):
+                                    route["from_name"] = from_override.get("name")
+                except Exception as e:
                     # Endpoint lookup is optional, continue without it
-                    pass
+                    print(f"Warning: Could not fetch endpoint names for bulk routes: {e}")
+                    import traceback
+                    traceback.print_exc()
 
             # Convert to Pydantic models
             route_models = []

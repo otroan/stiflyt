@@ -334,6 +334,39 @@ def get_anchor_node_coords(conn, anchor_node_id: int) -> Optional[Dict[str, floa
         return {"lon": float(row["lon"]), "lat": float(row["lat"])}
 
 
+def get_anchor_node_geometry(conn, anchor_node_id: int) -> Optional[str]:
+    """Get anchor node geometry as WKT for a node ID."""
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = 'anchor_nodes'
+            ) as table_exists
+            """,
+            (ROUTE_SCHEMA,),
+        )
+        exists_row = cur.fetchone()
+        if not exists_row or not exists_row.get("table_exists"):
+            return None
+
+        query = f"""
+            SELECT
+                ST_AsText(ST_Transform(geom, 4326)) as geom_wkt
+            FROM {ROUTE_SCHEMA}.anchor_nodes
+            WHERE node_id = %s
+            LIMIT 1
+        """
+        cur.execute(query, (anchor_node_id,))
+        row = cur.fetchone()
+        if not row or row.get("geom_wkt") is None:
+            return None
+        return row["geom_wkt"]
+
+
 def get_route_anchor_nodes(conn, rutenummer: str) -> List[Dict[str, Optional[float]]]:
     """List anchor nodes for a route with coordinates and link counts."""
     if not validate_schema_name(ROUTE_SCHEMA):
@@ -1587,26 +1620,34 @@ def get_routes_from_view(
                 FROM {ROUTE_SCHEMA}.links_with_routes lwr
                 WHERE lwr.rutenummer_list && ARRAY[{placeholders}]
             ),
-            first_last_links AS (
+            route_nodes AS (
                 SELECT
                     rutenummer,
-                    (SELECT a_node FROM route_links_expanded rle2
-                     WHERE rle2.rutenummer = rle.rutenummer
-                     ORDER BY link_id ASC LIMIT 1) as first_a_node,
-                    (SELECT b_node FROM route_links_expanded rle2
-                     WHERE rle2.rutenummer = rle.rutenummer
-                     ORDER BY link_id DESC LIMIT 1) as last_b_node
-                FROM route_links_expanded rle
+                    node_id,
+                    COUNT(*) as occurrence_count
+                FROM (
+                    SELECT rutenummer, a_node as node_id FROM route_links_expanded
+                    UNION ALL
+                    SELECT rutenummer, b_node as node_id FROM route_links_expanded
+                ) all_nodes
+                GROUP BY rutenummer, node_id
+            ),
+            route_endpoints AS (
+                SELECT
+                    rutenummer,
+                    MIN(node_id) FILTER (WHERE occurrence_count = 1) as first_node,
+                    MAX(node_id) FILTER (WHERE occurrence_count = 1) as last_node
+                FROM route_nodes
                 GROUP BY rutenummer
             )
             SELECT
-                fll.rutenummer,
-                fll.first_a_node,
-                fll.last_b_node,
+                re.rutenummer,
+                re.first_node as first_a_node,
+                re.last_node as last_b_node,
                 {navn_select}
-            FROM first_last_links fll
-            LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_a ON an_a.node_id = fll.first_a_node
-            LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_b ON an_b.node_id = fll.last_b_node
+            FROM route_endpoints re
+            LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_a ON an_a.node_id = re.first_node
+            LEFT JOIN {ROUTE_SCHEMA}.anchor_nodes an_b ON an_b.node_id = re.last_node
         """
 
         try:
@@ -1795,7 +1836,7 @@ def get_route_links(conn, rutenummer: str, include_geometry: bool = False):
         LEFT JOIN {schema_quoted}.anchor_nodes an_a ON an_a.node_id = l.a_node
         LEFT JOIN {schema_quoted}.anchor_nodes an_b ON an_b.node_id = l.b_node
         """
-    
+
     query = f"""
         SELECT
             {', '.join(select_parts)}

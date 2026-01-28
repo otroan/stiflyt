@@ -58,8 +58,22 @@ def ensure_operational_schema(conn) -> None:
 
         cur.execute(
             f"""
+            ALTER TABLE {schema_quoted}.endpoint_names
+            ADD COLUMN IF NOT EXISTS geom GEOMETRY(Point, 4326);
+            """
+        )
+
+        cur.execute(
+            f"""
             CREATE INDEX IF NOT EXISTS endpoint_names_anchor_idx
             ON {schema_quoted}.endpoint_names (anchor_node_id);
+            """
+        )
+
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS endpoint_names_geom_idx
+            ON {schema_quoted}.endpoint_names USING GIST (geom);
             """
         )
 
@@ -113,6 +127,7 @@ def upsert_endpoint_name(
     anchor_node_id: int,
     name: str,
     source_type: str,
+    geom: str,
     rutenummer: Optional[str] = None,
     source_id: Optional[str] = None,
     distance_meters: Optional[float] = None,
@@ -120,7 +135,7 @@ def upsert_endpoint_name(
     anchor_lon: Optional[float] = None,
     anchor_lat: Optional[float] = None,
 ) -> Dict:
-    """Upsert validated endpoint name."""
+    """Upsert validated endpoint name. Geometry is required for synchronization after database refresh."""
     ensure_operational_schema(conn)
 
     if not validate_schema_name(OP_SCHEMA):
@@ -141,10 +156,15 @@ def upsert_endpoint_name(
                 distance_meters,
                 anchor_lon,
                 anchor_lat,
+                geom,
                 validated_by,
                 validated_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                ST_SetSRID(ST_GeomFromText(%s), 4326),
+                %s, %s
+            )
             ON CONFLICT (anchor_node_id, rutenummer_key)
             DO UPDATE SET
                 name = EXCLUDED.name,
@@ -153,6 +173,7 @@ def upsert_endpoint_name(
                 distance_meters = EXCLUDED.distance_meters,
                 anchor_lon = EXCLUDED.anchor_lon,
                 anchor_lat = EXCLUDED.anchor_lat,
+                geom = EXCLUDED.geom,
                 validated_by = EXCLUDED.validated_by,
                 validated_at = EXCLUDED.validated_at,
                 updated_at = NOW()
@@ -179,6 +200,7 @@ def upsert_endpoint_name(
                 distance_meters,
                 anchor_lon,
                 anchor_lat,
+                geom,
                 validated_by,
                 now,
             ),
