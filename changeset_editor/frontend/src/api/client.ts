@@ -214,6 +214,18 @@ export const api = {
       options
     ),
 
+  getRoutesBulk: (
+    rutenummer: string[],
+    includeGeometry = false,
+    options: RequestOptions = {}
+  ): Promise<RoutesResponse> => {
+    const rutenummerParam = rutenummer.join(',');
+    return requestWithAbort<RoutesResponse>(
+      `/v1/routes/bulk?rutenummer=${encodeURIComponent(rutenummerParam)}&include_geometry=${includeGeometry ? 'true' : 'false'}`,
+      options
+    );
+  },
+
   listRoutes: (
     params: { limit?: number; prefix?: string; include_geometry?: boolean } = {},
     options: RequestOptions = {}

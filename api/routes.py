@@ -367,10 +367,26 @@ def build_routes_info_from_arrays(rutenummer_list, rutenavn_list, rutetype_list,
     Returns:
         List of route info dicts, deduplicated by rutenummer
     """
+    # Ensure all lists are the same length (pad with None if needed)
+    max_len = max(
+        len(rutenummer_list) if rutenummer_list else 0,
+        len(rutenavn_list) if rutenavn_list else 0,
+        len(rutetype_list) if rutetype_list else 0,
+        len(vedlikeholdsansvarlig_list) if vedlikeholdsansvarlig_list else 0
+    )
+
+    # Pad shorter lists with None
+    if rutenavn_list and len(rutenavn_list) < max_len:
+        rutenavn_list = list(rutenavn_list) + [None] * (max_len - len(rutenavn_list))
+    if rutetype_list and len(rutetype_list) < max_len:
+        rutetype_list = list(rutetype_list) + [None] * (max_len - len(rutetype_list))
+    if vedlikeholdsansvarlig_list and len(vedlikeholdsansvarlig_list) < max_len:
+        vedlikeholdsansvarlig_list = list(vedlikeholdsansvarlig_list) + [None] * (max_len - len(vedlikeholdsansvarlig_list))
+
     seen_rutenummer = set()
     routes_info = []
     for rutenummer, rutenavn, rutetype, vedlikeholdsansvarlig in zip(
-        rutenummer_list, rutenavn_list, rutetype_list, vedlikeholdsansvarlig_list
+        rutenummer_list, rutenavn_list or [], rutetype_list or [], vedlikeholdsansvarlig_list or []
     ):
         if rutenummer and rutenummer not in seen_rutenummer:
             seen_rutenummer.add(rutenummer)
@@ -532,10 +548,22 @@ async def get_links(
         rutetype_list = row.get("rutetype_list") or []
         vedlikeholdsansvarlig_list = row.get("vedlikeholdsansvarlig_list") or []
 
+        # Debug logging for route arrays
+        link_id = row.get("link_id")
+        if link_id:
+            print(f"[DEBUG] Link {link_id}: rutenummer_list={rutenummer_list}, length={len(rutenummer_list)}")
+            print(f"[DEBUG] Link {link_id}: rutenavn_list length={len(rutenavn_list) if rutenavn_list else 0}")
+            print(f"[DEBUG] Link {link_id}: rutetype_list length={len(rutetype_list) if rutetype_list else 0}")
+            print(f"[DEBUG] Link {link_id}: vedlikeholdsansvarlig_list length={len(vedlikeholdsansvarlig_list) if vedlikeholdsansvarlig_list else 0}")
+
         # Build route information from parallel arrays
         routes_info = build_routes_info_from_arrays(
             rutenummer_list, rutenavn_list, rutetype_list, vedlikeholdsansvarlig_list
         )
+
+        # Debug logging for built routes info
+        if link_id:
+            print(f"[DEBUG] Link {link_id}: Built {len(routes_info)} route(s): {[r.get('rutenummer') for r in routes_info]}")
 
         feature = {
             "type": "Feature",
@@ -1234,6 +1262,179 @@ async def get_route_areas(
             detail=f"Error querying route areas: {str(e)}"
         )
 
+
+
+@router.get("/routes/bulk", response_model=RoutesResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_routes_bulk(
+    rutenummer: Annotated[str, Query(description="Comma-separated list of route numbers (e.g., 'bre10,bre11,jot5')")],
+    include_geometry: Annotated[bool, Query(description="Include GeoJSON geometry in response")] = False
+) -> RoutesResponse:
+    """
+    Get multiple routes by their route numbers in a single request (bulk fetch).
+
+    This is more efficient than making individual requests for each route.
+
+    Example:
+    - /api/v1/routes/bulk?rutenummer=bre10,bre11,jot5
+    - /api/v1/routes/bulk?rutenummer=bre10,bre11&include_geometry=true
+    """
+    try:
+        # Parse comma-separated route numbers
+        rutenummer_list = [rn.strip() for rn in rutenummer.split(',') if rn.strip()]
+
+        if not rutenummer_list:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one route number must be provided"
+            )
+
+        if len(rutenummer_list) > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="Maximum 100 route numbers allowed per request"
+            )
+
+        with db_connection() as conn:
+            route_schema = get_route_schema(conn)
+            schema_quoted = quote_identifier(route_schema)
+
+            # Build query with IN clause for multiple route numbers
+            placeholders = ','.join(['%s'] * len(rutenummer_list))
+
+            select_parts = [
+                "rutenummer",
+                "rutenavn",
+                "vedlikeholdsansvarlig",
+                "rutetype",
+                "total_length_m",
+                "segment_count",
+                "segment_objids"
+            ]
+
+            if include_geometry:
+                select_parts.append("ST_AsGeoJSON(ST_Transform(route_geometry, 4326))::json as route_geometry")
+
+            query = f"""
+                SELECT
+                    {', '.join(select_parts)}
+                FROM {schema_quoted}.routes
+                WHERE rutenummer IN ({placeholders})
+                ORDER BY rutenummer
+            """
+
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(query, rutenummer_list)
+                rows = cur.fetchall()
+
+            # Build results
+            routes = []
+            for row in rows:
+                route = {
+                    'rutenummer': row['rutenummer'],
+                    'rutenavn': row.get('rutenavn'),
+                    'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
+                    'rutetype': row.get('rutetype'),
+                    'total_length_m': float(row['total_length_m']) if row.get('total_length_m') is not None else 0.0,
+                    'segment_count': int(row['segment_count']) if row.get('segment_count') is not None else 0,
+                    'segment_objids': row.get('segment_objids')
+                }
+
+                if include_geometry and row.get('route_geometry'):
+                    route['route_geometry'] = parse_geometry(row['route_geometry'])
+
+                routes.append(route)
+
+            # Get endpoint names for routes (similar to get_routes_from_view)
+            if routes:
+                rutenummer_list_for_endpoints = [r['rutenummer'] for r in routes]
+                endpoint_placeholders = ','.join(['%s'] * len(rutenummer_list_for_endpoints))
+
+                # Check if navn column exists
+                has_navn_column = False
+                try:
+                    with conn.cursor() as check_cur:
+                        check_cur.execute("""
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM information_schema.columns
+                                WHERE table_schema = %s
+                                  AND table_name = 'anchor_nodes'
+                                  AND column_name = 'navn'
+                            )
+                        """, (route_schema,))
+                        has_navn_column = check_cur.fetchone()[0]
+                except Exception:
+                    has_navn_column = False
+
+                navn_select = "an_a.navn as from_name, an_b.navn as to_name" if has_navn_column else "NULL as from_name, NULL as to_name"
+
+                endpoint_query = f"""
+                    WITH route_links_expanded AS (
+                        SELECT
+                            UNNEST(lwr.rutenummer_list) as rutenummer,
+                            lwr.link_id,
+                            lwr.a_node,
+                            lwr.b_node
+                        FROM {schema_quoted}.links_with_routes lwr
+                        WHERE lwr.rutenummer_list && ARRAY[{endpoint_placeholders}]
+                    ),
+                    first_last_nodes AS (
+                        SELECT
+                            rutenummer,
+                            (SELECT a_node FROM route_links_expanded rle2
+                             WHERE rle2.rutenummer = rle.rutenummer
+                             ORDER BY link_id ASC LIMIT 1) as first_a_node,
+                            (SELECT b_node FROM route_links_expanded rle3
+                             WHERE rle3.rutenummer = rle.rutenummer
+                             ORDER BY link_id DESC LIMIT 1) as last_b_node
+                        FROM route_links_expanded rle
+                        GROUP BY rutenummer
+                    )
+                    SELECT
+                        fln.rutenummer,
+                        {navn_select}
+                    FROM first_last_nodes fln
+                    LEFT JOIN {schema_quoted}.anchor_nodes an_a ON an_a.anchor_node_id = fln.first_a_node
+                    LEFT JOIN {schema_quoted}.anchor_nodes an_b ON an_b.anchor_node_id = fln.last_b_node
+                """
+
+                try:
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(endpoint_query, rutenummer_list_for_endpoints)
+                        endpoint_rows = cur.fetchall()
+
+                    # Map endpoint names to routes
+                    endpoint_map = {row['rutenummer']: row for row in endpoint_rows}
+                    for route in routes:
+                        endpoint_info = endpoint_map.get(route['rutenummer'])
+                        if endpoint_info:
+                            route['from_name'] = endpoint_info.get('from_name')
+                            route['to_name'] = endpoint_info.get('to_name')
+                except Exception:
+                    # Endpoint lookup is optional, continue without it
+                    pass
+
+            # Convert to Pydantic models
+            route_models = []
+            for route in routes:
+                route_models.append(Route(**route))
+
+            return RoutesResponse(
+                routes=route_models,
+                total=len(route_models),
+                limit=len(route_models),
+                offset=0
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error querying routes bulk: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error querying routes bulk: {str(e)}"
+        )
 
 
 @router.get("/routes/{rutenummer}", response_model=Route, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})

@@ -49,6 +49,24 @@ body {
   border-top-color: #3498db !important;
 }
 
+/* Interactive route tooltip (for multiple routes) - must allow pointer events */
+.route-tooltip-interactive {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border: 1px solid #3498db !important;
+  border-radius: 4px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+  padding: 6px 8px !important;
+  font-size: 12px !important;
+  color: #2c3e50 !important;
+  white-space: normal !important;
+  pointer-events: auto !important; /* Allow clicks */
+  max-width: 300px !important;
+}
+
+.route-tooltip-interactive::before {
+  border-top-color: #3498db !important;
+}
+
 /* Match routes.html styling */
 .main-container {
   display: flex;

@@ -197,12 +197,160 @@ function LinksLayer({
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
   const map = useMap();
 
+  // Cache for route links and route info
+  const routeLinksCacheRef = useRef<Map<string, GeoJSON.Feature[]>>(new Map());
+  const routeInfoCacheRef = useRef<Map<string, { rutenummer: string; rutenavn: string | null; total_length_m: number }>>(new Map());
+  const highlightedRouteRef = useRef<string | null>(null);
+  const originalStylesRef = useRef<Map<string, L.PathOptions>>(new Map());
+  const linkLayersRef = useRef<Map<string, L.Path>>(new Map());
+  const pendingBulkFetchRef = useRef<Promise<void> | null>(null);
+
   // Initialize layer group
   useEffect(() => {
     if (!layerGroupRef.current) {
       layerGroupRef.current = L.layerGroup();
     }
   }, []);
+
+  // Pre-fetch route info for all unique routes in links (bulk fetch)
+  useEffect(() => {
+    if (!linksData || !linksData.features || linksData.features.length === 0) {
+      return;
+    }
+
+    // Collect all unique route numbers from links
+    const uniqueRouteNumbers = new Set<string>();
+    linksData.features.forEach((feature) => {
+      const props = feature.properties as {
+        routes?: { rutenummer?: string }[];
+        [key: string]: unknown;
+      } | null;
+      if (props?.routes) {
+        props.routes.forEach((r) => {
+          if (r.rutenummer) {
+            uniqueRouteNumbers.add(r.rutenummer);
+          }
+        });
+      }
+    });
+
+    // Check which routes are missing from cache
+    const missingRoutes = Array.from(uniqueRouteNumbers).filter(
+      (rn) => !routeInfoCacheRef.current.has(rn)
+    );
+
+    // Bulk fetch missing routes (max 100 at a time)
+    if (missingRoutes.length > 0 && missingRoutes.length <= 100) {
+      // Prevent multiple simultaneous bulk fetches
+      if (!pendingBulkFetchRef.current) {
+        pendingBulkFetchRef.current = api
+          .getRoutesBulk(missingRoutes, false)
+          .then((bulkResponse) => {
+            // Cache all route info
+            bulkResponse.routes.forEach((route) => {
+              routeInfoCacheRef.current.set(route.rutenummer, {
+                rutenummer: route.rutenummer,
+                rutenavn: route.rutenavn || null,
+                total_length_m: (route as any).total_length_m || (route as any).total_length_meters || 0,
+              });
+            });
+            pendingBulkFetchRef.current = null;
+          })
+          .catch((error) => {
+            if (!isAbortError(error)) {
+              debugLog('Bulk route fetch failed (optional):', error);
+            }
+            pendingBulkFetchRef.current = null;
+          });
+      }
+    }
+  }, [linksData]);
+
+  // Function to clear route highlight
+  const clearRouteHighlight = useCallback(() => {
+    if (!highlightedRouteRef.current) return;
+
+    // Restore original styles
+    linkLayersRef.current.forEach((layer, layerId) => {
+      const originalStyle = originalStylesRef.current.get(layerId);
+      if (originalStyle) {
+        layer.setStyle(originalStyle);
+      }
+    });
+
+    linkLayersRef.current.clear();
+    originalStylesRef.current.clear();
+    highlightedRouteRef.current = null;
+  }, []);
+
+  // Function to highlight all links for a route
+  const highlightRouteLinks = useCallback(async (rutenummer: string) => {
+    console.log('highlightRouteLinks called for:', rutenummer);
+
+    if (highlightedRouteRef.current === rutenummer) {
+      console.log('Already highlighted, skipping');
+      return; // Already highlighted
+    }
+
+    // Clear previous highlight
+    if (highlightedRouteRef.current) {
+      clearRouteHighlight();
+    }
+
+    highlightedRouteRef.current = rutenummer;
+
+    // Highlight all VISIBLE links on the map that belong to this route
+    if (linksLayerRef.current) {
+      let highlightedCount = 0;
+      linksLayerRef.current.eachLayer((layer) => {
+        if (layer instanceof L.Path) {
+          const feature = (layer as any).feature as GeoJSON.Feature | undefined;
+          if (feature) {
+            const props = feature.properties as {
+              routes?: { rutenummer?: string }[];
+              [key: string]: unknown;
+            } | null;
+
+            // Check if this link belongs to the selected route
+            const belongsToRoute = props?.routes?.some(
+              (r) => r.rutenummer === rutenummer
+            );
+
+            if (belongsToRoute) {
+              highlightedCount++;
+              const featureId = feature.id ? String(feature.id) : String((feature.properties as any)?.link_id || '');
+
+              // Save original style if not already saved
+              const layerId = featureId;
+              if (!originalStylesRef.current.has(layerId)) {
+                const currentOptions = layer.options as L.PathOptions;
+                originalStylesRef.current.set(layerId, {
+                  color: currentOptions.color || '#16a085',
+                  weight: currentOptions.weight || 4,
+                  opacity: currentOptions.opacity || 0.85,
+                  dashArray: currentOptions.dashArray || '5, 5',
+                });
+              }
+
+              // Apply highlight style - thick dashed green line
+              layer.setStyle({
+                color: '#22c55e', // Green color
+                weight: 8, // Thicker line
+                opacity: 0.95,
+                dashArray: '10, 5', // Dashed pattern
+              });
+              layer.bringToFront();
+
+              linkLayersRef.current.set(layerId, layer);
+            }
+          }
+        }
+      });
+      console.log(`Highlighted ${highlightedCount} links for route ${rutenummer}`);
+    } else {
+      console.log('linksLayerRef.current is null');
+    }
+  }, [clearRouteHighlight]);
 
   // Update links when data or selection changes
   useEffect(() => {
@@ -241,9 +389,10 @@ function LinksLayer({
 
         if (isRouteHighlighted) {
           return {
-            color: '#f1c40f',
-            weight: 7,
+            color: '#22c55e', // Green color
+            weight: 8, // Thicker line
             opacity: 0.95,
+            dashArray: '10, 5', // Dashed pattern
           };
         }
 
@@ -255,6 +404,9 @@ function LinksLayer({
         };
       },
       onEachFeature: (feature, layer) => {
+        // Store feature reference on layer for later use
+        (layer as any).feature = feature;
+
         const props = feature.properties as {
           link_id?: number;
           a_node?: number | null;
@@ -270,46 +422,409 @@ function LinksLayer({
             : null;
         const routes = props?.routes || [];
 
+        // Debug: Log routes for this link
+        if (routes.length > 0) {
+          const routeNumbers = routes.map(r => r.rutenummer || 'N/A').join(', ');
+          console.log(`Link ${props?.link_id || featureId || 'N/A'} belongs to routes: [${routeNumbers}] (total: ${routes.length})`);
+        } else {
+          console.log(`Link ${props?.link_id || featureId || 'N/A'} has NO routes`);
+        }
+
         if (props) {
           const lengthStr =
             typeof props.length_m === 'number' ? `${props.length_m.toFixed(1)} m` : 'N/A';
 
-          const routesHtml =
-            routes.length === 0
-              ? '<div style="opacity:0.8;">Ingen ruter registrert</div>'
-              : routes
-                  .map((r) => {
-                    const rn = r.rutenummer || 'Ukjent rute';
-                    const navn = r.rutenavn || 'Uten navn';
-                    const vha = r.vedlikeholdsansvarlig || '';
-                    return `
-                      <div style="margin-top:4px;">
-                        <div><strong>${rn}</strong></div>
-                        <div style="opacity:0.9;">${navn}</div>
-                        <div style="opacity:0.85;">${vha}</div>
-                      </div>
-                    `;
-                  })
-                  .join('');
+          // Create initial tooltip content
+          let routesHtml = '';
 
-          layer.bindTooltip(
-            `
+          if (routes.length === 0) {
+            routesHtml = '<div style="opacity:0.8;">Ingen ruter registrert</div>';
+          } else if (routes.length === 1) {
+            // Single route - show basic info, will be updated with total km on hover
+            const r = routes[0];
+            const rn = r.rutenummer || 'Ukjent rute';
+            const navn = r.rutenavn || 'Uten navn';
+            routesHtml = `
+              <div style="margin-top:4px;">
+                <div><strong>${rn}</strong></div>
+                <div style="opacity:0.9;">${navn}</div>
+              </div>
+            `;
+          } else {
+            // Multiple routes - make clickable
+            // Build routes HTML - bulk fetch happens in separate useEffect
+            routesHtml = routes
+              .map((r) => {
+                const rn = r.rutenummer || 'Ukjent rute';
+                const navn = r.rutenavn || 'Uten navn';
+                const routeInfo = routeInfoCacheRef.current.get(rn);
+                const totalKm = routeInfo?.total_length_m
+                  ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
+                  : '';
+                return `
+                  <div
+                    class="route-tooltip-item"
+                    data-rutenummer="${rn}"
+                    style="
+                      margin-top:4px;
+                      padding:4px 8px;
+                      cursor:pointer;
+                      border-radius:4px;
+                      background:#f5f5f5;
+                      border:1px solid #ddd;
+                    "
+                    onmouseover="this.style.background='#e0e0e0'"
+                    onmouseout="this.style.background='#f5f5f5'"
+                  >
+                    <div><strong>${rn}</strong></div>
+                    <div style="opacity:0.9;">${navn}</div>
+                    ${totalKm ? `<div style="opacity:0.85; font-size:11px;">${totalKm}</div>` : ''}
+                  </div>
+                `;
+              })
+              .join('');
+
+            // Update tooltip when bulk fetch completes (if routes were missing)
+            const missingRoutes = routes.map((r) => r.rutenummer).filter((rn): rn is string => !!rn && !routeInfoCacheRef.current.has(rn));
+            if (missingRoutes.length > 0) {
+              // Wait for bulk fetch to complete, then update tooltip
+              const updateTooltipWhenReady = () => {
+                const allCached = routes.every((r) => {
+                  const rn = r.rutenummer;
+                  return !rn || routeInfoCacheRef.current.has(rn);
+                });
+
+                if (allCached) {
+                  // All routes are now cached, update tooltip
+                  const updatedRoutesHtml = routes
+                    .map((r) => {
+                      const rn = r.rutenummer || 'Ukjent rute';
+                      const navn = r.rutenavn || 'Uten navn';
+                      const routeInfo = routeInfoCacheRef.current.get(rn);
+                      const totalKm = routeInfo?.total_length_m
+                        ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
+                        : '';
+                      return `
+                        <div
+                          class="route-tooltip-item"
+                          data-rutenummer="${rn}"
+                          style="
+                            margin-top:4px;
+                            padding:4px 8px;
+                            cursor:pointer;
+                            border-radius:4px;
+                            background:#f5f5f5;
+                            border:1px solid #ddd;
+                          "
+                          onmouseover="this.style.background='#e0e0e0'"
+                          onmouseout="this.style.background='#f5f5f5'"
+                        >
+                          <div><strong>${rn}</strong></div>
+                          <div style="opacity:0.9;">${navn}</div>
+                          ${totalKm ? `<div style="opacity:0.85; font-size:11px;">${totalKm}</div>` : ''}
+                        </div>
+                      `;
+                    })
+                    .join('');
+
+                  const updatedContent = `
+                    <div style="font-size:12px; line-height:1.35;">
+                      <div style="opacity:0.8; margin-bottom:4px;">Velg rute:</div>
+                      ${updatedRoutesHtml}
+                    </div>
+                  `;
+
+                  layer.setTooltipContent(updatedContent);
+                  // Ensure tooltip is still interactive - update className via DOM
+                  const tooltip = layer.getTooltip();
+                  if (tooltip) {
+                    const tooltipEl = tooltip.getElement();
+                    if (tooltipEl) {
+                      tooltipEl.className = 'leaflet-tooltip route-tooltip-interactive';
+                    }
+                  }
+                  // Re-attach click handlers after content update
+                  setTimeout(() => {
+                    const tooltipEl = tooltip?.getElement();
+                    if (tooltipEl) {
+                      const handleClick = async (e: MouseEvent) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        const target = e.target as HTMLElement;
+                        const routeItem = target.closest('.route-tooltip-item') as HTMLElement;
+                        if (routeItem) {
+                          const rutenummer = routeItem.getAttribute('data-rutenummer');
+                          if (rutenummer) {
+                            await highlightRouteLinks(rutenummer);
+                            const route = routes.find((r) => r.rutenummer === rutenummer);
+                            if (route) {
+                              const routeInfo = routeInfoCacheRef.current.get(rutenummer);
+                              const totalKm = routeInfo?.total_length_m
+                                ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
+                                : '';
+                              const selectedContent = `
+                                <div style="font-size:12px; line-height:1.35;">
+                                  <div><strong>${rutenummer}</strong></div>
+                                  <div style="opacity:0.9;">${route.rutenavn || 'Uten navn'}</div>
+                                  ${totalKm ? `<div style="opacity:0.85;">${totalKm}</div>` : ''}
+                                </div>
+                              `;
+                              layer.setTooltipContent(selectedContent);
+                              const updatedTooltip = layer.getTooltip();
+                              if (updatedTooltip) {
+                                const tooltipEl = updatedTooltip.getElement();
+                                if (tooltipEl) {
+                                  tooltipEl.className = 'leaflet-tooltip route-tooltip';
+                                }
+                              }
+                            }
+                          }
+                        }
+                      };
+                      tooltipEl.removeEventListener('mousedown', handleClick);
+                      tooltipEl.addEventListener('mousedown', handleClick, true);
+                    }
+                  }, 50);
+                } else {
+                  // Check again after a short delay
+                  setTimeout(updateTooltipWhenReady, 100);
+                }
+              };
+
+              // Start checking after a short delay to allow bulk fetch to start
+              setTimeout(updateTooltipWhenReady, 200);
+            }
+          }
+
+          // Build initial tooltip content - show route info, not link info
+          let initialTooltipContent = '';
+          if (routes.length === 0) {
+            initialTooltipContent = `
               <div style="font-size:12px; line-height:1.35;">
-                <div style="opacity:0.8; margin-bottom:4px;">
-                  Link ${props.link_id ?? 'N/A'} • Lengde ${lengthStr}
-                </div>
+                <div style="opacity:0.8;">Ingen ruter registrert</div>
+              </div>
+            `;
+          } else if (routes.length === 1) {
+            // Single route - show route info
+            const r = routes[0];
+            const rn = r.rutenummer || 'Ukjent rute';
+            const navn = r.rutenavn || 'Uten navn';
+            const routeInfo = routeInfoCacheRef.current.get(rn);
+            const totalKm = routeInfo?.total_length_m
+              ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
+              : '';
+            initialTooltipContent = `
+              <div style="font-size:12px; line-height:1.35;">
+                <div><strong>${rn}</strong></div>
+                <div style="opacity:0.9;">${navn}</div>
+                ${totalKm ? `<div style="opacity:0.85;">${totalKm}</div>` : ''}
+              </div>
+            `;
+          } else {
+            // Multiple routes - show clickable list
+            initialTooltipContent = `
+              <div style="font-size:12px; line-height:1.35;">
+                <div style="opacity:0.8; margin-bottom:4px;">Velg rute:</div>
                 ${routesHtml}
               </div>
-            `,
-            {
-              permanent: false,
-              direction: 'top',
-              offset: [0, -8],
-              className: 'route-tooltip',
-              sticky: true,
-            }
-          );
+            `;
+          }
+
+          // Bind tooltip with different className for interactive tooltips
+          const tooltipClassName = routes.length > 1 ? 'route-tooltip-interactive' : 'route-tooltip';
+          console.log(`Binding tooltip for link ${props.link_id || featureId || 'N/A'}:`, {
+            routesCount: routes.length,
+            routeNumbers: routes.map(r => r.rutenummer || 'N/A'),
+            tooltipClassName,
+            interactive: routes.length > 1,
+            contentPreview: initialTooltipContent.substring(0, 150)
+          });
+
+          layer.bindTooltip(initialTooltipContent, {
+            permanent: false,
+            direction: 'top',
+            offset: [0, -8],
+            className: tooltipClassName,
+            sticky: true,
+            interactive: routes.length > 1, // Make tooltip interactive when multiple routes
+          });
+
+          // Log when tooltip opens
+          layer.on('tooltipopen', () => {
+            const tooltip = layer.getTooltip();
+            const tooltipEl = tooltip?.getElement();
+            console.log(`Tooltip opened for link ${props.link_id || featureId || 'N/A'}:`, {
+              routesCount: routes.length,
+              routeNumbers: routes.map(r => r.rutenummer || 'N/A'),
+              tooltipElement: tooltipEl ? 'exists' : 'missing',
+              className: tooltipEl?.className,
+              content: tooltipEl?.innerHTML?.substring(0, 200)
+            });
+          });
+
+          // Add click handlers for multiple routes
+          if (routes.length > 1) {
+            // Store reference to layer and routes for click handler
+            const layerRef = layer;
+            const routesRef = routes;
+
+            // Use event delegation on tooltip container - more reliable than individual handlers
+            const setupTooltipClickHandlers = () => {
+              // Wait for tooltip to be created and opened
+              const checkTooltip = () => {
+                const tooltip = layerRef.getTooltip();
+                const tooltipElement = tooltip?.getElement();
+
+                if (tooltipElement) {
+                  // Use mousedown instead of click for better reliability
+                  const handleTooltipClick = async (e: MouseEvent) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+
+                    const target = e.target as HTMLElement;
+                    const routeItem = target.closest('.route-tooltip-item') as HTMLElement;
+
+                    if (routeItem) {
+                      const rutenummer = routeItem.getAttribute('data-rutenummer');
+                      if (rutenummer) {
+                        console.log('Route selected from tooltip:', rutenummer);
+
+                        // Highlight route
+                        await highlightRouteLinks(rutenummer);
+
+                        // Update tooltip to show selected route with full info
+                        const route = routesRef.find((r) => r.rutenummer === rutenummer);
+                        if (route) {
+                          const routeInfo = routeInfoCacheRef.current.get(rutenummer);
+                          const totalKm = routeInfo?.total_length_m
+                            ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
+                            : '';
+
+                          const updatedContent = `
+                            <div style="font-size:12px; line-height:1.35;">
+                              <div><strong>${rutenummer}</strong></div>
+                              <div style="opacity:0.9;">${route.rutenavn || 'Uten navn'}</div>
+                              ${totalKm ? `<div style="opacity:0.85;">${totalKm}</div>` : ''}
+                            </div>
+                          `;
+
+                          // Update tooltip content to show selected route (no longer interactive)
+                          layerRef.setTooltipContent(updatedContent);
+                          const updatedTooltip = layerRef.getTooltip();
+                          if (updatedTooltip) {
+                            const tooltipEl = updatedTooltip.getElement();
+                            if (tooltipEl) {
+                              tooltipEl.className = 'leaflet-tooltip route-tooltip';
+                            }
+                          }
+                        }
+                      }
+                    }
+                  };
+
+                  // Remove any existing listeners
+                  tooltipElement.removeEventListener('mousedown', handleTooltipClick);
+                  // Add new listener
+                  tooltipElement.addEventListener('mousedown', handleTooltipClick, true); // Use capture phase
+
+                  return true; // Success
+                }
+                return false; // Not ready yet
+              };
+
+              // Try multiple times to catch tooltip when it opens
+              let attempts = 0;
+              const maxAttempts = 20;
+              const trySetup = () => {
+                if (checkTooltip()) {
+                  return; // Success
+                }
+                attempts++;
+                if (attempts < maxAttempts) {
+                  setTimeout(trySetup, 100);
+                }
+              };
+
+              // Start trying immediately and on delays
+              trySetup();
+              setTimeout(trySetup, 200);
+              setTimeout(trySetup, 500);
+            };
+
+            // Setup handlers when tooltip opens
+            layer.on('tooltipopen', () => {
+              setupTooltipClickHandlers();
+            });
+
+            // Also try to setup immediately
+            setupTooltipClickHandlers();
+          }
         }
+
+        // Mouseover handler - highlight route and load route info
+        let hoverTimeout: ReturnType<typeof setTimeout> | null = null;
+        layer.on('mouseover', async () => {
+          console.log(`Mouseover on link ${props.link_id || featureId || 'N/A'}, routes:`, routes.map(r => r.rutenummer || 'N/A'));
+
+          // Clear any pending timeout
+          if (hoverTimeout) {
+            clearTimeout(hoverTimeout);
+            hoverTimeout = null;
+          }
+
+          // Small delay to prevent flickering
+          hoverTimeout = setTimeout(async () => {
+            if (routes.length === 1 && routes[0]?.rutenummer) {
+              // Single route - highlight immediately and update tooltip with total km
+              const rutenummer = routes[0].rutenummer;
+              console.log(`Highlighting single route ${rutenummer} on mouseover`);
+              await highlightRouteLinks(rutenummer);
+
+              // Load route info for tooltip (should already be cached from bulk fetch)
+              const routeInfo = routeInfoCacheRef.current.get(rutenummer);
+              if (routeInfo && props) {
+                // Update tooltip with total km
+                const totalKm = routeInfo.total_length_m
+                  ? `${(routeInfo.total_length_m / 1000).toFixed(1)} km`
+                  : '';
+
+                const updatedContent = `
+                  <div style="font-size:12px; line-height:1.35;">
+                    <div><strong>${rutenummer}</strong></div>
+                    <div style="opacity:0.9;">${routeInfo.rutenavn || 'Uten navn'}</div>
+                    ${totalKm ? `<div style="opacity:0.85;">${totalKm}</div>` : ''}
+                  </div>
+                `;
+
+                console.log(`Updating tooltip content for single route:`, updatedContent.substring(0, 100));
+                layer.setTooltipContent(updatedContent);
+              }
+            } else if (routes.length > 1) {
+              // Multiple routes - DO NOT highlight automatically
+              // Tooltip already shows list of routes, user must click to select
+              console.log(`Multiple routes detected (${routes.length}), showing tooltip with route list (no auto-highlight)`);
+              // Don't highlight anything - let user choose from tooltip
+            }
+            // For multiple routes, user clicks in tooltip to select
+          }, 100);
+        });
+
+        // Mouseout handler - clear highlight after delay
+        layer.on('mouseout', () => {
+          if (hoverTimeout) {
+            clearTimeout(hoverTimeout);
+            hoverTimeout = null;
+          }
+
+          // Clear highlight after delay (allows moving to tooltip)
+          setTimeout(() => {
+            // Only clear if mouse is not over tooltip
+            const tooltip = layer.getTooltip();
+            if (!tooltip || !tooltip.getElement()?.matches(':hover')) {
+              clearRouteHighlight();
+            }
+          }, 200);
+        });
 
         layer.on('click', (e: L.LeafletMouseEvent) => {
           // Property ownership mode: fetch ownership for link geometry
@@ -354,7 +869,12 @@ function LinksLayer({
     // Add to layer group (not directly to map - LayersControl handles that)
     layerGroupRef.current.addLayer(linksLayer);
     linksLayerRef.current = linksLayer;
-  }, [linksData, selectedFeatureId, selectedFeatureIds, onFeatureSelect, linksLayerRef, activeMode, onGeometrySelectForOwnership, onOwnershipDataChange]);
+
+    // Cleanup on unmount or data change
+    return () => {
+      clearRouteHighlight();
+    };
+  }, [linksData, selectedFeatureId, selectedFeatureIds, onFeatureSelect, linksLayerRef, activeMode, onGeometrySelectForOwnership, onOwnershipDataChange, clearRouteHighlight, highlightRouteLinks]);
 
   return <LayerGroup ref={layerGroupRef} />;
 }
@@ -1366,9 +1886,29 @@ export function MapView({
 
       // Load links by bbox with optional area prefix filter
       api.getLinksByBbox(bbox, 500, selectedArea || null, { signal: linksController.signal })
-        .then((data: GeoJSON.FeatureCollection) => {
+        .then(async (data: GeoJSON.FeatureCollection) => {
           debugLog('Links by bbox API response:', data);
           setLinksData(data);
+
+          // Pre-fetch route info for all unique routes in links (bulk fetch)
+          if (data.features && data.features.length > 0) {
+            const uniqueRouteNumbers = new Set<string>();
+            data.features.forEach((feature) => {
+              const props = feature.properties as {
+                routes?: { rutenummer?: string }[];
+                [key: string]: unknown;
+              } | null;
+              if (props?.routes) {
+                props.routes.forEach((r) => {
+                  if (r.rutenummer) {
+                    uniqueRouteNumbers.add(r.rutenummer);
+                  }
+                });
+              }
+            });
+
+            // Bulk fetch is now handled in LinksLayer component when linksData changes
+          }
         })
         .catch((error) => {
           if (isAbortError(error)) return;
