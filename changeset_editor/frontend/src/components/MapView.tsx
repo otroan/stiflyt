@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest, FacilityCandidate, SignsReportResponse } from '../types';
+import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentRoutesItem, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest, FacilityCandidate, SignsReportResponse } from '../types';
 import type { GeoJSON } from 'geojson';
 import { SnapManager } from '../utils/snap';
 import { api, isAbortError } from '../api/client';
@@ -67,13 +67,19 @@ function SegmentsLayer({
   segmentsLayerRef,
   selectedFeatureId,
   selectedFeatureIds,
-  onFeatureSelect
+  onFeatureSelect,
+  onSegmentHoverStart,
+  onSegmentHoverMove,
+  onSegmentHoverEnd,
 }: {
   segmentsData: GeoJSON.FeatureCollection | null;
   segmentsLayerRef: React.MutableRefObject<L.GeoJSON | null>;
   selectedFeatureId?: string;
   selectedFeatureIds?: Set<string>;
   onFeatureSelect?: (id: string, properties?: Record<string, unknown>, isMultiSelect?: boolean) => void;
+  onSegmentHoverStart?: (segmentId: string, layer: L.Layer, latlng: L.LatLng) => void;
+  onSegmentHoverMove?: (segmentId: string, layer: L.Layer, latlng: L.LatLng) => void;
+  onSegmentHoverEnd?: (segmentId: string, layer: L.Layer) => void;
 }) {
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
   const map = useMap();
@@ -141,6 +147,18 @@ function SegmentsLayer({
             onFeatureSelect(featureId, featureProps || undefined, isMultiSelect);
           }
         });
+
+        if (featureId) {
+          layer.on('mouseover', (e: L.LeafletMouseEvent) => {
+            onSegmentHoverStart?.(featureId, layer, e.latlng);
+          });
+          layer.on('mousemove', (e: L.LeafletMouseEvent) => {
+            onSegmentHoverMove?.(featureId, layer, e.latlng);
+          });
+          layer.on('mouseout', () => {
+            onSegmentHoverEnd?.(featureId, layer);
+          });
+        }
       },
     });
 
@@ -161,7 +179,9 @@ function LinksLayer({
   onFeatureSelect,
   activeMode,
   onGeometrySelectForOwnership,
-  onOwnershipDataChange
+  onOwnershipDataChange,
+  selectedRouteNumber,
+  onRouteSelect,
 }: {
   linksData: GeoJSON.FeatureCollection | null;
   linksLayerRef: React.MutableRefObject<L.GeoJSON | null>;
@@ -171,6 +191,8 @@ function LinksLayer({
   activeMode?: AppMode;
   onGeometrySelectForOwnership?: (geometry: GeoJSON.Geometry | null) => void;
   onOwnershipDataChange?: (data: any) => void;
+  selectedRouteNumber?: string | null;
+  onRouteSelect?: (rutenummer: string | null) => void;
 }) {
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
   const map = useMap();
@@ -197,13 +219,34 @@ function LinksLayer({
 
     const linksLayer = L.geoJSON(linksData, {
       style: (feature) => {
-        const props = feature?.properties as { link_id?: number; [key: string]: unknown } | null;
+        const props = feature?.properties as {
+          link_id?: number;
+          routes?: { rutenummer?: string; [key: string]: unknown }[];
+          [key: string]: unknown;
+        } | null;
         const featureId = feature?.id
           ? String(feature.id)
           : props?.link_id
             ? String(props.link_id)
             : null;
-        const isSelected = featureId && (selectedFeatureIds?.has(featureId) || (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
+        const isSelected =
+          featureId &&
+          (selectedFeatureIds?.has(featureId) ||
+            (selectedFeatureId && String(featureId) === String(selectedFeatureId)));
+
+        const isRouteHighlighted =
+          !!selectedRouteNumber &&
+          !!props?.routes &&
+          props.routes.some((r) => r.rutenummer && r.rutenummer === selectedRouteNumber);
+
+        if (isRouteHighlighted) {
+          return {
+            color: '#f1c40f',
+            weight: 7,
+            opacity: 0.95,
+          };
+        }
+
         return {
           color: isSelected ? '#2196f3' : '#16a085',
           weight: isSelected ? 5 : 4,
@@ -212,20 +255,60 @@ function LinksLayer({
         };
       },
       onEachFeature: (feature, layer) => {
-        const props = feature.properties as { link_id?: number; a_node?: number | null; b_node?: number | null; length_m?: number | null; [key: string]: unknown } | null;
+        const props = feature.properties as {
+          link_id?: number;
+          a_node?: number | null;
+          b_node?: number | null;
+          length_m?: number | null;
+          routes?: { rutenummer?: string; rutenavn?: string | null; vedlikeholdsansvarlig?: string | null }[];
+          [key: string]: unknown;
+        } | null;
         const featureId = feature.id
           ? String(feature.id)
           : props?.link_id
             ? String(props.link_id)
             : null;
+        const routes = props?.routes || [];
 
         if (props) {
-          layer.bindPopup(`
-            <strong>Link ${props.link_id ?? 'N/A'}</strong><br>
-            A-node: ${props.a_node ?? 'N/A'}<br>
-            B-node: ${props.b_node ?? 'N/A'}<br>
-            Lengde: ${typeof props.length_m === 'number' ? props.length_m.toFixed(2) : 'N/A'} m
-          `);
+          const lengthStr =
+            typeof props.length_m === 'number' ? `${props.length_m.toFixed(1)} m` : 'N/A';
+
+          const routesHtml =
+            routes.length === 0
+              ? '<div style="opacity:0.8;">Ingen ruter registrert</div>'
+              : routes
+                  .map((r) => {
+                    const rn = r.rutenummer || 'Ukjent rute';
+                    const navn = r.rutenavn || 'Uten navn';
+                    const vha = r.vedlikeholdsansvarlig || '';
+                    return `
+                      <div style="margin-top:4px;">
+                        <div><strong>${rn}</strong></div>
+                        <div style="opacity:0.9;">${navn}</div>
+                        <div style="opacity:0.85;">${vha}</div>
+                      </div>
+                    `;
+                  })
+                  .join('');
+
+          layer.bindTooltip(
+            `
+              <div style="font-size:12px; line-height:1.35;">
+                <div style="opacity:0.8; margin-bottom:4px;">
+                  Link ${props.link_id ?? 'N/A'} • Lengde ${lengthStr}
+                </div>
+                ${routesHtml}
+              </div>
+            `,
+            {
+              permanent: false,
+              direction: 'top',
+              offset: [0, -8],
+              className: 'route-tooltip',
+              sticky: true,
+            }
+          );
         }
 
         layer.on('click', (e: L.LeafletMouseEvent) => {
@@ -249,6 +332,14 @@ function LinksLayer({
               }
             }
             return;
+          }
+
+          // Route selection via link click (pick first route if any)
+          if (onRouteSelect && routes.length > 0) {
+            const route = routes[0];
+            if (route?.rutenummer) {
+              onRouteSelect(route.rutenummer);
+            }
           }
 
           if (onFeatureSelect && featureId) {
@@ -427,18 +518,12 @@ function SegmentsLinksLayerControl({
         onSegmentsToggle(true);
         // Deactivate links when segments are activated
         onLinksToggle(false);
-      } else if (e.name === 'Ankere') {
-        onLinksToggle(true);
-        // Deactivate segments when links are activated
-        onSegmentsToggle(false);
       }
     };
 
     const handleOverlayRemove = (e: L.LayersControlEvent) => {
       if (e.name === 'Segmenter') {
         onSegmentsToggle(false);
-      } else if (e.name === 'Ankere') {
-        onLinksToggle(false);
       }
     };
 
@@ -778,8 +863,8 @@ export function MapView({
   const [mapReady, setMapReady] = useState(false);
   const [routesInView, setRoutesInView] = useState<GeoJSON.FeatureCollection | null>(null);
   const [activeTool, setActiveTool] = useState<string | null>(null);
-  const [showSegments, setShowSegments] = useState(true); // Default: segments selected
-  const [showLinks, setShowLinks] = useState(false); // Default: links not selected (mutually exclusive with segments)
+  const [showSegments, setShowSegments] = useState(false); // Default: segments hidden
+  const [showLinks, setShowLinks] = useState(true); // Links always visible by default
   const [showSigns, setShowSigns] = useState(false);
   const [editMode, setEditMode] = useState(false); // Separate edit mode toggle
   const [segmentsData, setSegmentsData] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -798,6 +883,18 @@ export function MapView({
   const [anchorManualName, setAnchorManualName] = useState('');
   const [anchorSearchRadius] = useState(1500);
 
+  // Segment hover -> route highlight (architecture A)
+  const segmentRoutesCacheRef = useRef<Map<string, SegmentRoutesItem[]>>(new Map());
+  const routeGeometryCacheRef = useRef<Map<string, GeoJSON.Geometry>>(new Map());
+  const routeLengthKmCacheRef = useRef<Map<string, number | null>>(new Map());
+  const hoveredSegmentLayerRef = useRef<L.Layer | null>(null);
+  const [hoveredSegmentId, setHoveredSegmentId] = useState<string | null>(null);
+  const [hoverRoutes, setHoverRoutes] = useState<SegmentRoutesItem[]>([]);
+  const hoverRoutesRef = useRef<SegmentRoutesItem[]>([]);
+  const [hoverRouteIndex, setHoverRouteIndex] = useState(0);
+  const hoverRouteIndexRef = useRef(0);
+  const [hoverRouteGeometry, setHoverRouteGeometry] = useState<GeoJSON.Geometry | null>(null);
+
   // Confirmation dialog state
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
@@ -808,6 +905,187 @@ export function MapView({
     variant?: 'danger' | 'warning' | 'info';
     onConfirm: () => void;
   } | null>(null);
+
+  // Keep hover refs in sync for stable event handlers
+  useEffect(() => {
+    hoverRoutesRef.current = hoverRoutes;
+  }, [hoverRoutes]);
+  useEffect(() => {
+    hoverRouteIndexRef.current = hoverRouteIndex;
+  }, [hoverRouteIndex]);
+
+  const getRouteLengthKm = useCallback(
+    (rutenummer: string): number | null => {
+      if (routeLengthKmCacheRef.current.has(rutenummer)) {
+        return routeLengthKmCacheRef.current.get(rutenummer) ?? null;
+      }
+      const match = routesInView?.features?.find((f) => {
+        const props = f.properties as { rutenummer?: string; total_length_km?: number | null } | null;
+        return props?.rutenummer === rutenummer;
+      });
+      const km =
+        match && typeof (match.properties as any)?.total_length_km === 'number'
+          ? ((match.properties as any).total_length_km as number)
+          : null;
+      routeLengthKmCacheRef.current.set(rutenummer, km);
+      return km;
+    },
+    [routesInView]
+  );
+
+  const getRouteGeometryCached = useCallback(
+    async (rutenummer: string): Promise<GeoJSON.Geometry | null> => {
+      const cached = routeGeometryCacheRef.current.get(rutenummer);
+      if (cached) return cached;
+
+      const match = routesInView?.features?.find((f) => {
+        const props = f.properties as { rutenummer?: string } | null;
+        return props?.rutenummer === rutenummer;
+      });
+      if (match?.geometry) {
+        routeGeometryCacheRef.current.set(rutenummer, match.geometry as GeoJSON.Geometry);
+        return match.geometry as GeoJSON.Geometry;
+      }
+
+      const routeData = await api.getRoute(rutenummer, true);
+      const geom = routeData.route_geometry || null;
+      if (geom) routeGeometryCacheRef.current.set(rutenummer, geom);
+      if (typeof routeData.total_length_km === 'number') {
+        routeLengthKmCacheRef.current.set(rutenummer, routeData.total_length_km);
+      } else if (typeof routeData.total_length_m === 'number') {
+        routeLengthKmCacheRef.current.set(rutenummer, routeData.total_length_m / 1000);
+      }
+      return geom;
+    },
+    [routesInView]
+  );
+
+  const ensureHoverTooltip = useCallback((layer: L.Layer) => {
+    const anyLayer = layer as any;
+    if (!anyLayer.getTooltip || !anyLayer.bindTooltip) return;
+    if (!anyLayer.getTooltip()) {
+      anyLayer.bindTooltip('', {
+        permanent: false,
+        sticky: true,
+        direction: 'top',
+        offset: [0, -10],
+        className: 'route-tooltip',
+        opacity: 0.95,
+      });
+    }
+  }, []);
+
+  const setHoverTooltip = useCallback((layer: L.Layer, latlng: L.LatLng, html: string) => {
+    const anyLayer = layer as any;
+    ensureHoverTooltip(layer);
+    if (anyLayer.setTooltipContent) {
+      anyLayer.setTooltipContent(html);
+    }
+    if (anyLayer.openTooltip) {
+      anyLayer.openTooltip(latlng);
+    }
+  }, [ensureHoverTooltip]);
+
+  const activateHoverRoute = useCallback(
+    async (index: number) => {
+      const routes = hoverRoutesRef.current;
+      if (!hoveredSegmentId || routes.length === 0) return;
+
+      const safeIndex = ((index % routes.length) + routes.length) % routes.length;
+      setHoverRouteIndex(safeIndex);
+
+      const route = routes[safeIndex];
+      if (!route?.rutenummer) return;
+
+      try {
+        const geom = await getRouteGeometryCached(route.rutenummer);
+        setHoverRouteGeometry(geom);
+      } catch (error) {
+        // Silent failure on hover
+        setHoverRouteGeometry(null);
+      }
+
+      const layer = hoveredSegmentLayerRef.current;
+      if (!layer) return;
+
+      const rowsHtml = routes
+        .map((r, i) => {
+          const isActive = i === safeIndex;
+          const km = r?.rutenummer ? getRouteLengthKm(r.rutenummer) : null;
+          const kmStr = typeof km === 'number' ? `${km.toFixed(2)} km` : 'N/A';
+          const navn = r.rutenavn || 'Uten navn';
+          const vha = r.vedlikeholdsansvarlig || '';
+          return `
+            <div style="margin-top:${i === 0 ? 0 : 6}px;">
+              <div><strong>${isActive ? '▶ ' : ''}${r.rutenummer}</strong>${isActive ? ` <span style="opacity:0.75">(${safeIndex + 1}/${routes.length})</span>` : ''}</div>
+              <div style="opacity:0.9">${navn}</div>
+              <div style="opacity:0.85">${kmStr}${vha ? ` • ${vha}` : ''}</div>
+            </div>
+          `;
+        })
+        .join('');
+
+      // LatLng is updated on mousemove; openTooltip uses last mousemove latlng if possible
+      const anyLayer = layer as any;
+      const lastLatLng: L.LatLng | null = anyLayer?._tooltip?._latlng ?? null;
+      const latlng = lastLatLng ?? (mapRef.current ? mapRef.current.getCenter() : new L.LatLng(0, 0));
+      setHoverTooltip(
+        layer,
+        latlng,
+        `
+          <div style="font-size:12px; line-height:1.35;">
+            <div style="opacity:0.8; margin-bottom:6px;">Segment ${hoveredSegmentId} • Bytt rute med ← / →</div>
+            ${rowsHtml}
+          </div>
+        `
+      );
+    },
+    [getRouteGeometryCached, getRouteLengthKm, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, hoveredSegmentId, setHoverTooltip]
+  );
+
+  const handleSegmentHoverStart = useCallback(
+    (_segmentId: string, _layer: L.Layer, _latlng: L.LatLng) => {
+      // Segment hover highlighting is now handled via links/rutes, so this is a no-op.
+    },
+    []
+  );
+
+  const handleSegmentHoverMove = useCallback((segmentId: string, layer: L.Layer, latlng: L.LatLng) => {
+    if (!hoveredSegmentId || hoveredSegmentId !== segmentId) return;
+    const anyLayer = layer as any;
+    if (anyLayer.openTooltip) {
+      anyLayer.openTooltip(latlng);
+    }
+  }, [hoveredSegmentId]);
+
+  const handleSegmentHoverEnd = useCallback((segmentId: string, layer: L.Layer) => {
+    if (hoveredSegmentId !== segmentId) return;
+    const anyLayer = layer as any;
+    if (anyLayer.closeTooltip) anyLayer.closeTooltip();
+    hoveredSegmentLayerRef.current = null;
+    setHoveredSegmentId(null);
+    setHoverRoutes([]);
+    setHoverRouteIndex(0);
+    setHoverRouteGeometry(null);
+  }, [hoveredSegmentId]);
+
+  // Keyboard cycling while hovering a segment
+  useEffect(() => {
+    if (!hoveredSegmentId) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const routes = hoverRoutesRef.current;
+      if (!routes || routes.length <= 1) return;
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        activateHoverRoute(hoverRouteIndexRef.current + 1);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        activateHoverRoute(hoverRouteIndexRef.current - 1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activateHoverRoute, hoveredSegmentId]);
 
   // Load routes - either by area prefix or by bounding box
   useEffect(() => {
@@ -893,7 +1171,7 @@ export function MapView({
 
       requestId += 1;
       const currentRequestId = requestId;
-      
+
       // Abort any pending request
       if (activeController) {
         activeController.abort();
@@ -944,7 +1222,7 @@ export function MapView({
         const features: GeoJSON.Feature[] = (data.routes || [])
           .map((route) => {
             // Type assertion: routes from API may have route_geometry and total_length_m
-            const routeWithGeometry = route as RouteInfo & { 
+            const routeWithGeometry = route as RouteInfo & {
               route_geometry?: GeoJSON.Geometry | null;
               total_length_m?: number;
               total_length_km?: number;
@@ -954,7 +1232,7 @@ export function MapView({
               return null;
             }
             // Calculate length in km if available
-            const lengthKm = routeWithGeometry.total_length_km 
+            const lengthKm = routeWithGeometry.total_length_km
               ?? (routeWithGeometry.total_length_m ? routeWithGeometry.total_length_m / 1000 : null);
             return {
               type: 'Feature' as const,
@@ -1074,8 +1352,8 @@ export function MapView({
       return;
     }
 
-    // In inspection mode, load by bbox if no route selected
-    if (activeMode === 'inspection' && !routeNumber && mapRef.current) {
+    // In inspection mode, always load links by bbox (routes are logical layer on top)
+    if (activeMode === 'inspection' && mapRef.current) {
       const bounds = mapRef.current.getBounds();
       const bbox = {
         xmin: bounds.getWest(),
@@ -1086,8 +1364,8 @@ export function MapView({
 
       const linksController = new AbortController();
 
-      // Load links by bbox
-      api.getLinksByBbox(bbox, 500, { signal: linksController.signal })
+      // Load links by bbox with optional area prefix filter
+      api.getLinksByBbox(bbox, 500, selectedArea || null, { signal: linksController.signal })
         .then((data: GeoJSON.FeatureCollection) => {
           debugLog('Links by bbox API response:', data);
           setLinksData(data);
@@ -1312,7 +1590,7 @@ export function MapView({
       }
       activeController = new AbortController();
 
-      api.getLinksByBbox(bbox, 500, { signal: activeController.signal })
+      api.getLinksByBbox(bbox, 500, selectedArea || null, { signal: activeController.signal })
         .then((data: GeoJSON.FeatureCollection) => {
           if (data) {
             setLinksData(data);
@@ -1372,7 +1650,7 @@ export function MapView({
         mapRef.current.off('zoomend', debouncedLoadLinks);
       }
     };
-  }, [mapReady, activeMode, routeNumber]);
+  }, [mapReady, activeMode, routeNumber, selectedArea]);
 
   // Reload anchors by bbox when map moves/zooms in inspection or anchor-naming mode
   useEffect(() => {
@@ -1898,11 +2176,7 @@ export function MapView({
             : isSmallMarker
               ? 6  // Small marker when links are hidden
               : 9, // Normal size when links are shown
-          fillColor: activeMode === 'anchor-naming'
-            ? (hasName ? '#16a085' : '#e74c3c')
-            : isSmallMarker
-              ? '#6b7280'  // Gray for small markers
-              : '#2563eb', // Blue for normal markers
+          fillColor: '#6b7280', // Always gray
           color: '#ffffff',
           weight: activeMode === 'anchor-naming' ? 3 : (isSmallMarker ? 1.5 : 2),
           opacity: 1,
@@ -2456,18 +2730,9 @@ export function MapView({
               selectedFeatureId={selectedFeatureId}
               selectedFeatureIds={selectedFeatureIds}
               onFeatureSelect={onFeatureSelect}
-            />
-          </LayersControl.Overlay>
-          <LayersControl.Overlay checked={showLinks} name="Ankere">
-            <LinksLayer
-              linksData={linksData}
-              linksLayerRef={linksLayerRef}
-              selectedFeatureId={selectedFeatureId}
-              selectedFeatureIds={selectedFeatureIds}
-              onFeatureSelect={onFeatureSelect}
-              activeMode={activeMode}
-              onGeometrySelectForOwnership={onGeometrySelectForOwnership}
-              onOwnershipDataChange={onOwnershipDataChange}
+              onSegmentHoverStart={handleSegmentHoverStart}
+              onSegmentHoverMove={handleSegmentHoverMove}
+              onSegmentHoverEnd={handleSegmentHoverEnd}
             />
           </LayersControl.Overlay>
           <LayersControl.Overlay checked={showSigns} name="Skilt">
@@ -2479,6 +2744,22 @@ export function MapView({
             />
           </LayersControl.Overlay>
         </LayersControl>
+
+        {/* Links layer - always visible when showLinks is true, not in LayersControl */}
+        {showLinks && (
+          <LinksLayer
+            linksData={linksData}
+            linksLayerRef={linksLayerRef}
+            selectedFeatureId={selectedFeatureId}
+            selectedFeatureIds={selectedFeatureIds}
+            onFeatureSelect={onFeatureSelect}
+            activeMode={activeMode}
+            onGeometrySelectForOwnership={onGeometrySelectForOwnership}
+            onOwnershipDataChange={onOwnershipDataChange}
+            selectedRouteNumber={selectedRouteNumber}
+            onRouteSelect={onRouteSelect}
+          />
+        )}
 
         <SegmentsLinksLayerControl
           onSegmentsToggle={setShowSegments}
@@ -2527,87 +2808,6 @@ export function MapView({
           />
         )}
 
-        {/* Routes in view - using React Leaflet GeoJSON for better integration */}
-        {routesInView && (
-          <ReactLeafletGeoJSON
-            key={`routes-${routesInView.features.length}-${routesInView.features[0]?.id || 'empty'}`}
-            data={routesInView}
-            style={(feature) => {
-              const props = feature?.properties as { rutenummer?: string; [key: string]: unknown } | null;
-              const rutenummer = props?.rutenummer;
-              const isSelected = rutenummer === selectedRouteNumber;
-              return {
-                color: isSelected ? '#e74c3c' : '#3498db',
-                weight: isSelected ? 6 : 3,
-                opacity: isSelected ? 1.0 : 0.6,
-              };
-            }}
-            onEachFeature={(feature, layer) => {
-              const props = feature.properties as { 
-                rutenummer?: string; 
-                rutenavn?: string; 
-                vedlikeholdsansvarlig?: string;
-                total_length_km?: number | null;
-                [key: string]: unknown 
-              } | null;
-              const rutenummer = props?.rutenummer;
-              const rutenavn = props?.rutenavn || 'Uten navn';
-              const vedlikeholdsansvarlig = props?.vedlikeholdsansvarlig || '';
-              const lengthKm = props?.total_length_km;
-
-              // Format length for display
-              const lengthDisplay = typeof lengthKm === 'number' 
-                ? `${lengthKm.toFixed(2)} km` 
-                : 'N/A';
-
-              // Add popup
-              layer.bindPopup(`
-                <strong>${rutenummer}</strong><br>
-                ${rutenavn}<br>
-                ${vedlikeholdsansvarlig}
-              `);
-
-              // Add tooltip for hover
-              layer.bindTooltip(`
-                <div style="font-size: 12px; line-height: 1.4;">
-                  <strong>${rutenummer}</strong><br>
-                  ${rutenavn}<br>
-                  ${lengthDisplay}<br>
-                  ${vedlikeholdsansvarlig ? `Vedlikeholdsansvarlig: ${vedlikeholdsansvarlig}` : ''}
-                </div>
-              `, {
-                permanent: false,
-                direction: 'top',
-                offset: [0, -10],
-                className: 'route-tooltip'
-              });
-
-              // Make clickable - toggle selection if already selected
-              layer.on('click', () => {
-                if (onRouteSelect && rutenummer) {
-                  // If this route is already selected, deselect it; otherwise select it
-                  if (rutenummer === selectedRouteNumber) {
-                    onRouteSelect(null);
-                  } else {
-                    onRouteSelect(rutenummer);
-                  }
-                }
-              });
-
-              // Change cursor on hover
-              layer.on('mouseover', () => {
-                layer.setStyle({ weight: 5 });
-              });
-              layer.on('mouseout', () => {
-                const isSelected = rutenummer === selectedRouteNumber;
-                layer.setStyle({
-                  weight: isSelected ? 6 : 3,
-                  color: isSelected ? '#e74c3c' : '#3498db',
-                });
-              });
-            }}
-          />
-        )}
       </MapContainer>
 
       {/* Layer toggle - only show when changeset exists */}

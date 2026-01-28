@@ -129,6 +129,17 @@ export interface RouteInfo {
   rutetype?: string | null;
 }
 
+export interface SegmentRoutesItem extends RouteInfo {
+  gradering?: string | null;
+  fotruteinfo_objid?: number;
+}
+
+export interface SegmentRoutesResponse {
+  segment_objid: number;
+  routes: SegmentRoutesItem[];
+  total: number;
+}
+
 export interface RouteResponse {
   rutenummer: string;
   rutenavn: string | null;

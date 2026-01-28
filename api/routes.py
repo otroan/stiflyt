@@ -400,15 +400,17 @@ def create_feature_collection_response(features: list) -> JSONResponse:
 async def get_links(
     bbox: Annotated[str, Query(description="Bounding box as 'xmin,ymin,xmax,ymax'")],
     limit: Annotated[int, Query(ge=1, le=5000, description="Maximum number of results")] = 500,
-    offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0
+    offset: Annotated[int, Query(ge=0, description="Offset for pagination")] = 0,
+    rutenummer_prefix: Annotated[Optional[str], Query(description="Filter by route number prefix (e.g., 'bre')")] = None
 ) -> JSONResponse:
     """
-    Get links filtered by bounding box.
+    Get links filtered by bounding box and optionally by route number prefix.
 
     Returns GeoJSON FeatureCollection with link geometries and properties.
 
     Example:
     - /api/v1/links?bbox=10.0,59.0,11.0,60.0&limit=100
+    - /api/v1/links?bbox=10.0,59.0,11.0,60.0&rutenummer_prefix=bre
     """
     # Parse and validate bbox
     try:
@@ -480,19 +482,41 @@ async def get_links(
 
             select_parts.append("ST_AsGeoJSON(ST_Transform(l.geom, 4326))::json as geometry")
 
+            # Build WHERE clause with optional route prefix filter
+            where_conditions = [
+                "l.geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)",
+                "l.geom IS NOT NULL"
+            ]
+            params = [xmin, ymin, xmax, ymax, LINKS_SRID]
+
+            # Filter by route number prefix if provided
+            if rutenummer_prefix:
+                if 'rutenummer_list' in existing_columns:
+                    # Filter links where any route number in the list starts with the prefix
+                    where_conditions.append(
+                        "EXISTS (SELECT 1 FROM unnest(l.rutenummer_list) AS rn WHERE rn LIKE %s)"
+                    )
+                    params.append(f"{rutenummer_prefix}%")
+                else:
+                    # If rutenummer_list column doesn't exist, we can't filter
+                    # Return empty result set
+                    return create_feature_collection_response([])
+
+            where_clause = "WHERE " + " AND ".join(where_conditions)
+            params.extend([limit, offset])
+
             query = f"""
                 SELECT
                     {', '.join(select_parts)}
                 FROM {full_routes_view_name} l
-                WHERE l.geom && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s)
-                    AND l.geom IS NOT NULL
+                {where_clause}
                 ORDER BY l.link_id
                 LIMIT %s
                 OFFSET %s
             """
 
             # bbox is in WGS84 (4326), transform to LINKS_SRID for spatial index
-            cur.execute(query, (xmin, ymin, xmax, ymax, LINKS_SRID, limit, offset))
+            cur.execute(query, tuple(params))
             rows = cur.fetchall()
 
     # Build GeoJSON FeatureCollection
@@ -608,7 +632,7 @@ async def get_anchor_nodes(
 
         # Get anchor node IDs to fetch names from operational database
         anchor_ids = [row["node_id"] for row in rows if row.get("node_id") is not None]
-        
+
         # Fetch names from operational database (ops.endpoint_names)
         endpoint_names = {}
         if anchor_ids:
@@ -636,7 +660,7 @@ async def get_anchor_nodes(
             properties = {
                 "node_id": node_id
             }
-            
+
             # Add name from operational database if available
             name_info = endpoint_names.get(node_id)
             if name_info:
@@ -1242,7 +1266,7 @@ async def get_route_by_number(
                 )
 
             route_data = routes[0]
-            
+
             # Enrich with dynamic endpoint names if missing (use separate connection to avoid transaction issues)
             try:
                 from services.route_endpoints import lookup_endpoint_name
@@ -1265,15 +1289,15 @@ async def get_route_by_number(
                                     )
                                 """, (ROUTE_SCHEMA,))
                                 table_exists = check_cur.fetchone()[0]
-                        
+
                             if table_exists:
                                 anchor_query = f"""
                                     SELECT
-                                        (SELECT a_node FROM {ROUTE_SCHEMA}.links_with_routes 
-                                         WHERE %s = ANY(rutenummer_list) 
+                                        (SELECT a_node FROM {ROUTE_SCHEMA}.links_with_routes
+                                         WHERE %s = ANY(rutenummer_list)
                                          ORDER BY link_id ASC LIMIT 1) as first_a_node,
-                                        (SELECT b_node FROM {ROUTE_SCHEMA}.links_with_routes 
-                                         WHERE %s = ANY(rutenummer_list) 
+                                        (SELECT b_node FROM {ROUTE_SCHEMA}.links_with_routes
+                                         WHERE %s = ANY(rutenummer_list)
                                          ORDER BY link_id DESC LIMIT 1) as last_b_node
                                 """
                                 with enrich_conn.cursor(row_factory=dict_row) as cur:
@@ -1288,7 +1312,7 @@ async def get_route_by_number(
                             # If query fails, skip enrichment but continue
                             print(f"Warning: Could not get anchor nodes for route {rutenummer}: {e}")
                             anchor_ids = {}
-                        
+
                         # Try validated names first
                         overrides = {}
                         if anchor_ids:
@@ -1301,7 +1325,7 @@ async def get_route_by_number(
                                     )
                             except Exception as e:
                                 print(f"Warning: Could not get validated names for route {rutenummer}: {e}")
-                        
+
                         # Fill from name
                         if needs_from:
                             if anchor_ids.get("from"):
@@ -1331,7 +1355,7 @@ async def get_route_by_number(
                                                 route_data["from_name"] = name_info.get('name')
                                 except Exception as e:
                                     print(f"Warning: Could not lookup from name via geometry for route {rutenummer}: {e}")
-                        
+
                         # Fill to name
                         if needs_to:
                             if anchor_ids.get("to"):
@@ -1399,7 +1423,7 @@ async def get_route_segments_detail(
                     status_code=404,
                     detail=f"Route with rutenummer '{rutenummer}' not found"
                 )
-        
+
         # Use separate connection for segments lookup to avoid transaction issues
         with db_connection() as conn:
             segments = get_route_segments_from_view(conn, rutenummer, include_geometry=include_geometry)
@@ -1491,7 +1515,7 @@ async def get_route_signs_endpoint(
                     status_code=404,
                     detail=f"Route with rutenummer '{rutenummer}' not found"
                 )
-        
+
         # Use separate connection for signs lookup to avoid transaction issues
         with db_connection() as conn:
             report = get_signs_for_route(conn, rutenummer)
@@ -1510,7 +1534,7 @@ async def get_signs_by_prefix(
 ) -> SignsReportResponse:
     """
     Get computed signs report for an area prefix or bounding box.
-    
+
     Either prefix or bbox must be provided.
     """
     try:
@@ -1519,7 +1543,7 @@ async def get_signs_by_prefix(
                 status_code=400,
                 detail="Either 'prefix' or 'bbox' parameter must be provided"
             )
-        
+
         with db_connection() as conn:
             if bbox:
                 # Parse bbox
@@ -1527,7 +1551,7 @@ async def get_signs_by_prefix(
                     bbox_tuple = parse_bbox(bbox)
                 except ValueError as e:
                     raise HTTPException(status_code=400, detail=f"Invalid bbox format: {e}")
-                
+
                 report = get_signs_for_bbox(conn, bbox_tuple)
             else:
                 report = get_signs_for_prefix(conn, prefix)
@@ -1582,7 +1606,7 @@ async def get_route_signs_production(
                     status_code=404,
                     detail=f"Route with rutenummer '{rutenummer}' not found"
                 )
-        
+
         # Use separate connection for signs lookup to avoid transaction issues
         with db_connection() as conn:
             report = get_signs_for_route(conn, rutenummer)

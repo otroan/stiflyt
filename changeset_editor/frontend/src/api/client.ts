@@ -11,6 +11,7 @@ import type {
   RouteLinksResponse,
   RouteValidationResponse,
   RouteInfo,
+  SegmentRoutesResponse,
   RouteAnchorsResponse,
   PlacenameCandidatesResponse,
   AnchorNameUpsertRequest,
@@ -254,15 +255,24 @@ export const api = {
       options
     ),
 
+  getSegmentRoutes: (
+    segmentObjid: number | string,
+    options: RequestOptions = {}
+  ): Promise<SegmentRoutesResponse> =>
+    requestWithAbort<SegmentRoutesResponse>(`/v1/segments/${segmentObjid}/routes`, options),
+
   getLinksByBbox: (
     bbox: { xmin: number; ymin: number; xmax: number; ymax: number },
     limit = 500,
+    prefix?: string | null,
     options: RequestOptions = {}
-  ): Promise<GeoJSON.FeatureCollection> =>
-    requestWithAbort<GeoJSON.FeatureCollection>(
-      `/v1/links?bbox=${bbox.xmin},${bbox.ymin},${bbox.xmax},${bbox.ymax}&limit=${limit}`,
+  ): Promise<GeoJSON.FeatureCollection> => {
+    const prefixParam = prefix ? `&rutenummer_prefix=${encodeURIComponent(prefix)}` : '';
+    return requestWithAbort<GeoJSON.FeatureCollection>(
+      `/v1/links?bbox=${bbox.xmin},${bbox.ymin},${bbox.xmax},${bbox.ymax}&limit=${limit}${prefixParam}`,
       options
-    ),
+    );
+  },
 
   getRouteSigns: (
     rutenummer: string,
