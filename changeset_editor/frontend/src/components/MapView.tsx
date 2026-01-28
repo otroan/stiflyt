@@ -2071,116 +2071,23 @@ export function MapView({
       });
     }
 
-    // Add endpoints and midpoints from links
-    if (showLinks && linksData) {
-      linksData.features.forEach((feature) => {
-        const addLinkMarkers = (coords: number[][]) => {
-          if (coords.length === 0) return;
-
-          // Start point
-          const startLon = coords[0][0];
-          const startLat = coords[0][1];
-          const startKey = `${startLon},${startLat}`;
-          linkEndpointCounts.set(startKey, (linkEndpointCounts.get(startKey) ?? 0) + 1);
-          linkEndpointCoords.set(startKey, coords[0]);
-
-          // Check if this coordinate is an anchor - if so, skip creating duplicate marker
-          const startAnchor = findAnchorAtCoord(startLon, startLat);
-          if (!linkEndpointSet.has(startKey) && !startAnchor) {
-            linkEndpointSet.add(startKey);
-            const marker = L.circleMarker([startLat, startLon], {
-              radius: 8,
-              fillColor: '#f39c12',
-              color: '#2c3e50',
-              weight: 2,
-              opacity: 1,
-              fillOpacity: 0.95,
-              pane: 'link-endpoints',
-            }).addTo(endpointsGroup);
-            // Add click handler if this is an anchor (shouldn't happen due to check above, but just in case)
-            if (startAnchor) {
-              marker.on('click', () => openAnchorDialog(startAnchor));
-            }
-          }
-
-          // End point
-          const endLon = coords[coords.length - 1][0];
-          const endLat = coords[coords.length - 1][1];
-          const endKey = `${endLon},${endLat}`;
-          linkEndpointCounts.set(endKey, (linkEndpointCounts.get(endKey) ?? 0) + 1);
-          linkEndpointCoords.set(endKey, coords[coords.length - 1]);
-
-          // Check if this coordinate is an anchor - if so, skip creating duplicate marker
-          const endAnchor = findAnchorAtCoord(endLon, endLat);
-          if (!linkEndpointSet.has(endKey) && !endAnchor) {
-            linkEndpointSet.add(endKey);
-            const marker = L.circleMarker([endLat, endLon], {
-              radius: 8,
-              fillColor: '#f39c12',
-              color: '#2c3e50',
-              weight: 2,
-              opacity: 1,
-              fillOpacity: 0.95,
-              pane: 'link-endpoints',
-            }).addTo(endpointsGroup);
-            // Add click handler if this is an anchor (shouldn't happen due to check above, but just in case)
-            if (endAnchor) {
-              marker.on('click', () => openAnchorDialog(endAnchor));
-            }
-          }
-
-          const midIndex = Math.floor(coords.length / 2);
-          const midCoord = coords[midIndex];
-          if (midCoord) {
-            const midpointMarker = L.circleMarker([midCoord[1], midCoord[0]], {
-              radius: 5,
-              fillColor: '#ffffff',
-              color: '#16a085',
-              weight: 2,
-              opacity: 1,
-              fillOpacity: 0.9,
-              pane: 'link-endpoints',
-            }).addTo(endpointsGroup);
-            const props = feature.properties as { link_id?: number | string; length_m?: number | null } | null;
-            const lengthStr = typeof props?.length_m === 'number' ? `${props.length_m.toFixed(1)} m` : 'N/A';
-            midpointMarker.bindTooltip(`Link ${props?.link_id ?? ''} • ${lengthStr}`, {
-              permanent: true,
-              direction: 'top',
-              className: 'link-midpoint-label',
-              opacity: 0.9,
-            });
-          }
-        };
-
-        if (feature.geometry.type === 'LineString') {
-          addLinkMarkers(feature.geometry.coordinates);
-        } else if (feature.geometry.type === 'MultiLineString') {
-          feature.geometry.coordinates.forEach((line) => addLinkMarkers(line));
-        }
-      });
-    }
 
     // Add anchor node markers (always show in inspection and anchor-naming modes)
-    // Use smaller markers when links are not shown, larger when links are shown
+    // Always use small markers in inspection mode, larger in anchor-naming mode
     if ((activeMode === 'anchor-naming' || activeMode === 'inspection') && anchorNodes.length > 0) {
       anchorNodes.forEach((anchor) => {
         const [lon, lat] = anchor.coordinates;
         const nameLabel = anchor.name?.name || `Anchor ${anchor.anchor_node_id}`;
         const hasName = !!anchor.name?.name;
 
-        // Determine marker size and style based on mode and link visibility
-        const isSmallMarker = activeMode === 'inspection' && !showLinks;
+        // Always use small markers in inspection mode, larger in anchor-naming mode
         const marker = L.circleMarker([lat, lon], {
-          radius: activeMode === 'anchor-naming'
-            ? 10
-            : isSmallMarker
-              ? 6  // Small marker when links are hidden
-              : 9, // Normal size when links are shown
+          radius: activeMode === 'anchor-naming' ? 10 : 6, // Small (6) in inspection, larger (10) in anchor-naming
           fillColor: '#6b7280', // Always gray
           color: '#ffffff',
-          weight: activeMode === 'anchor-naming' ? 3 : (isSmallMarker ? 1.5 : 2),
+          weight: activeMode === 'anchor-naming' ? 3 : 1.5,
           opacity: 1,
-          fillOpacity: isSmallMarker ? 0.8 : 0.9,
+          fillOpacity: 0.8,
           pane: 'link-endpoints',
         }).addTo(endpointsGroup);
 
@@ -2204,30 +2111,6 @@ export function MapView({
       });
     }
 
-    // Highlight junctions where multiple links meet
-    // Skip creating junction markers if there's already an anchor marker at that location
-    linkEndpointCounts.forEach((count, key) => {
-      if (count > 1) {
-        const coord = linkEndpointCoords.get(key);
-        if (!coord) return;
-        const [lon, lat] = coord;
-
-        // Check if this coordinate is an anchor - if so, skip creating duplicate marker
-        const anchor = findAnchorAtCoord(lon, lat);
-        if (!anchor) {
-          // Only create junction marker if there's no anchor at this location
-          L.circleMarker([lat, lon], {
-            radius: 10,
-            fillColor: '#e74c3c',
-            color: '#ffffff',
-            weight: 3,
-            opacity: 1,
-            fillOpacity: 0.95,
-            pane: 'link-endpoints',
-          }).addTo(endpointsGroup);
-        }
-      }
-    });
 
     endpointsLayerRef.current = endpointsGroup;
     // Note: openAnchorDialog is intentionally not in dependencies as it's stable (uses stable state setters and constant anchorSearchRadius)
