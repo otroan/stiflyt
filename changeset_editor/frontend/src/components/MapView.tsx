@@ -529,7 +529,26 @@ function LinksLayer({
 
                   const updatedContent = `
                     <div style="font-size:12px; line-height:1.35;">
-                      <div style="opacity:0.8; margin-bottom:4px;">Velg rute:</div>
+                      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                        <div style="opacity:0.8;">Velg rute:</div>
+                        <button
+                          class="tooltip-close-btn"
+                          style="
+                            background:none;
+                            border:none;
+                            color:#666;
+                            cursor:pointer;
+                            font-size:16px;
+                            line-height:1;
+                            padding:0;
+                            margin-left:8px;
+                            opacity:0.7;
+                          "
+                          onmouseover="this.style.opacity='1'"
+                          onmouseout="this.style.opacity='0.7'"
+                          title="Lukk"
+                        >×</button>
+                      </div>
                       ${updatedRoutesHtml}
                     </div>
                   `;
@@ -551,6 +570,18 @@ function LinksLayer({
                         e.stopPropagation();
                         e.preventDefault();
                         const target = e.target as HTMLElement;
+
+                        // Check if close button was clicked
+                        const closeBtn = target.closest('.tooltip-close-btn');
+                        if (closeBtn) {
+                          const tooltip = layer.getTooltip();
+                          if (tooltip) {
+                            tooltip.close();
+                            clearRouteHighlight();
+                          }
+                          return;
+                        }
+
                         const routeItem = target.closest('.route-tooltip-item') as HTMLElement;
                         if (routeItem) {
                           const rutenummer = routeItem.getAttribute('data-rutenummer');
@@ -576,6 +607,8 @@ function LinksLayer({
                                 if (tooltipEl) {
                                   tooltipEl.className = 'leaflet-tooltip route-tooltip';
                                 }
+                                // Make tooltip non-permanent after selection
+                                updatedTooltip.options.permanent = false;
                               }
                             }
                           }
@@ -621,10 +654,29 @@ function LinksLayer({
               </div>
             `;
           } else {
-            // Multiple routes - show clickable list
+            // Multiple routes - show clickable list with close button
             initialTooltipContent = `
               <div style="font-size:12px; line-height:1.35;">
-                <div style="opacity:0.8; margin-bottom:4px;">Velg rute:</div>
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                  <div style="opacity:0.8;">Velg rute:</div>
+                  <button
+                    class="tooltip-close-btn"
+                    style="
+                      background:none;
+                      border:none;
+                      color:#666;
+                      cursor:pointer;
+                      font-size:16px;
+                      line-height:1;
+                      padding:0;
+                      margin-left:8px;
+                      opacity:0.7;
+                    "
+                    onmouseover="this.style.opacity='1'"
+                    onmouseout="this.style.opacity='0.7'"
+                    title="Lukk"
+                  >×</button>
+                </div>
                 ${routesHtml}
               </div>
             `;
@@ -640,8 +692,9 @@ function LinksLayer({
             contentPreview: initialTooltipContent.substring(0, 150)
           });
 
+          // Bind tooltip - start as non-permanent, will be made permanent on open if multiple routes
           layer.bindTooltip(initialTooltipContent, {
-            permanent: false,
+            permanent: false, // Start as non-permanent, will be made permanent on open if multiple routes
             direction: 'top',
             offset: [0, -8],
             className: tooltipClassName,
@@ -682,6 +735,18 @@ function LinksLayer({
                     e.preventDefault();
 
                     const target = e.target as HTMLElement;
+
+                    // Check if close button was clicked
+                    const closeBtn = target.closest('.tooltip-close-btn');
+                    if (closeBtn) {
+                      const tooltip = layerRef.getTooltip();
+                      if (tooltip) {
+                        tooltip.close();
+                        clearRouteHighlight();
+                      }
+                      return;
+                    }
+
                     const routeItem = target.closest('.route-tooltip-item') as HTMLElement;
 
                     if (routeItem) {
@@ -716,6 +781,8 @@ function LinksLayer({
                             if (tooltipEl) {
                               tooltipEl.className = 'leaflet-tooltip route-tooltip';
                             }
+                            // Make tooltip non-permanent after selection (can be closed)
+                            updatedTooltip.options.permanent = false;
                           }
                         }
                       }
@@ -752,8 +819,121 @@ function LinksLayer({
             };
 
             // Setup handlers when tooltip opens
+            // Store reference for mouseout handler
+            let tooltipCloseTimeout: ReturnType<typeof setTimeout> | null = null;
+            let mapClickHandlerRef: ((e: L.LeafletMouseEvent) => void) | null = null;
+
             layer.on('tooltipopen', () => {
               setupTooltipClickHandlers();
+
+              // For multiple routes, prevent tooltip from closing on mouseout
+              if (routesRef.length > 1) {
+                // Clear any pending close timeout
+                if (tooltipCloseTimeout) {
+                  clearTimeout(tooltipCloseTimeout);
+                  tooltipCloseTimeout = null;
+                }
+
+                // Prevent default mouseout behavior by intercepting close
+                const tooltip = layerRef.getTooltip();
+                if (tooltip) {
+                  const originalClose = tooltip.close.bind(tooltip);
+                  (tooltip as any)._originalClose = originalClose;
+
+                  // Override close to check if mouse is over tooltip
+                  tooltip.close = function() {
+                    const tooltipEl = this.getElement();
+                    // Don't close if mouse is over tooltip element
+                    if (tooltipEl && (tooltipEl.matches(':hover') || tooltipEl.querySelector(':hover'))) {
+                      return;
+                    }
+                    // Restore original close and call it
+                    this.close = originalClose;
+                    originalClose();
+                  };
+                }
+              }
+
+              // Close tooltip when clicking on map (outside tooltip)
+              const map = layerRef._map;
+              if (map && routesRef.length > 1) {
+                // Remove existing handler if any
+                if (mapClickHandlerRef) {
+                  try {
+                    map.off('click', mapClickHandlerRef);
+                  } catch (e) {
+                    // Ignore errors
+                  }
+                  mapClickHandlerRef = null;
+                }
+
+                // Create handler function - must be a proper function, not arrow function stored in variable
+                function mapClickHandler(e: L.LeafletMouseEvent) {
+                  const tooltip = layerRef.getTooltip();
+                  const tooltipEl = tooltip?.getElement();
+                  // Don't close if clicking inside tooltip
+                  if (tooltipEl && !tooltipEl.contains(e.originalEvent.target as Node)) {
+                    if (tooltip) {
+                      // Restore original close method
+                      if ((tooltip as any)._originalClose) {
+                        tooltip.close = (tooltip as any)._originalClose;
+                      }
+                      tooltip.close();
+                    }
+                    clearRouteHighlight();
+                    map.off('click', mapClickHandler);
+                    mapClickHandlerRef = null;
+                  }
+                }
+
+                mapClickHandlerRef = mapClickHandler;
+                // Use setTimeout to avoid immediate trigger
+                setTimeout(() => {
+                  map.on('click', mapClickHandler);
+                }, 100);
+              }
+            });
+
+            // Handle mouseout - delay closing for multiple routes
+            layer.on('mouseout', () => {
+              if (routes.length > 1) {
+                // For multiple routes, delay closing to allow moving to tooltip
+                tooltipCloseTimeout = setTimeout(() => {
+                  const tooltip = layerRef.getTooltip();
+                  const tooltipEl = tooltip?.getElement();
+                  // Only close if mouse is not over tooltip
+                  if (tooltipEl && !tooltipEl.matches(':hover') && !tooltipEl.querySelector(':hover')) {
+                    if (tooltip && (tooltip as any)._originalClose) {
+                      tooltip.close = (tooltip as any)._originalClose;
+                    }
+                    tooltip?.close();
+                    clearRouteHighlight();
+                  }
+                  tooltipCloseTimeout = null;
+                }, 300); // Longer delay to allow moving to tooltip
+              }
+            });
+
+            // Reset when tooltip closes
+            layer.on('tooltipclose', () => {
+              if (tooltipCloseTimeout) {
+                clearTimeout(tooltipCloseTimeout);
+                tooltipCloseTimeout = null;
+              }
+              const tooltip = layerRef.getTooltip();
+              if (tooltip && (tooltip as any)._originalClose) {
+                tooltip.close = (tooltip as any)._originalClose;
+              }
+              // Clean up map click handler
+              const map = layerRef._map;
+              if (map && mapClickHandlerRef) {
+                try {
+                  map.off('click', mapClickHandlerRef);
+                } catch (e) {
+                  // Ignore errors when removing handler
+                }
+                mapClickHandlerRef = null;
+              }
             });
 
             // Also try to setup immediately
@@ -810,13 +990,19 @@ function LinksLayer({
         });
 
         // Mouseout handler - clear highlight after delay
-        layer.on('mouseout', () => {
+        layer.on('mouseout', (e: L.LeafletMouseEvent) => {
           if (hoverTimeout) {
             clearTimeout(hoverTimeout);
             hoverTimeout = null;
           }
 
-          // Clear highlight after delay (allows moving to tooltip)
+          // For multiple routes, tooltip is permanent - don't clear highlight on mouseout
+          if (routes.length > 1) {
+            // Tooltip stays open, user can click on it
+            return;
+          }
+
+          // For single route, clear highlight after delay (allows moving to tooltip)
           setTimeout(() => {
             // Only clear if mouse is not over tooltip
             const tooltip = layer.getTooltip();
