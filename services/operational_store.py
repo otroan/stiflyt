@@ -59,7 +59,15 @@ def ensure_operational_schema(conn) -> None:
         cur.execute(
             f"""
             ALTER TABLE {schema_quoted}.endpoint_names
-            ADD COLUMN IF NOT EXISTS geom GEOMETRY(Point, 4326);
+            ADD COLUMN IF NOT EXISTS geom GEOMETRY(Point, 25833);
+            """
+        )
+        # Migrate existing geom from 4326 to 25833 so all turrutebasen geometry uses same SRID
+        cur.execute(
+            f"""
+            ALTER TABLE {schema_quoted}.endpoint_names
+            ALTER COLUMN geom TYPE GEOMETRY(Point, 25833)
+            USING ST_Transform(geom, 25833);
             """
         )
 
@@ -162,7 +170,7 @@ def upsert_endpoint_name(
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s,
-                ST_SetSRID(ST_GeomFromText(%s), 4326),
+                ST_SetSRID(ST_GeomFromText(%s), 25833),
                 %s, %s
             )
             ON CONFLICT (anchor_node_id, rutenummer_key)

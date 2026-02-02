@@ -948,6 +948,7 @@ async def get_route_segments(
             uuid_col = get_segment_uuid_column(conn, schema=route_schema)
             select_parts = [
                 "f.objid",
+                "f.oppdateringsdato",
                 "fi.rutenummer",
                 "fi.rutenavn",
                 "fi.vedlikeholdsansvarlig",
@@ -996,12 +997,15 @@ async def get_route_segments(
 
                 # Initialize segment if not seen before
                 if objid not in segments_dict:
+                    oppd = row.get("oppdateringsdato")
+                    oppdateringsdato = oppd.isoformat() if oppd is not None and hasattr(oppd, "isoformat") else (str(oppd) if oppd is not None else None)
                     segments_dict[objid] = {
                         "objid": objid,
                         "object_uuid": row.get("object_uuid"),
                         "routes": [],
                         "length_meters": float(row["length_meters"]) if row.get("length_meters") is not None else None,
-                        "geometry": None
+                        "geometry": None,
+                        "oppdateringsdato": oppdateringsdato,
                     }
 
                     # Store geometry (same for all rows with same objid)
@@ -1028,7 +1032,8 @@ async def get_route_segments(
                     object_uuid=segment_data.get("object_uuid"),
                     routes=segment_data["routes"],
                     length_meters=segment_data["length_meters"],
-                    geometry=segment_data["geometry"]
+                    geometry=segment_data["geometry"],
+                    oppdateringsdato=segment_data.get("oppdateringsdato"),
                 )
                 segments.append(segment)
 
@@ -1946,6 +1951,7 @@ async def validate_route(
                 SELECT
                     f.objid as segment_objid,
                     f.lokalid as segment_lokalid,
+                    f.oppdateringsdato,
                     fi.rutenummer,
                     fi.rutenavn,
                     fi.vedlikeholdsansvarlig,
@@ -1977,13 +1983,17 @@ async def validate_route(
             # Prepare segment metadata dump for output
             segment_metadata_dump = []
             for segment_objid, fotruteinfo_rows in sorted(segments_dict.items()):
-                segment_length = fotruteinfo_rows[0].get('length_meters') if fotruteinfo_rows else None
-                segment_lokalid = fotruteinfo_rows[0].get('segment_lokalid') if fotruteinfo_rows else None
+                first_row = fotruteinfo_rows[0] if fotruteinfo_rows else {}
+                segment_length = first_row.get('length_meters')
+                segment_lokalid = first_row.get('segment_lokalid')
+                oppd = first_row.get('oppdateringsdato')
+                oppdateringsdato = oppd.isoformat() if oppd is not None and hasattr(oppd, 'isoformat') else (str(oppd) if oppd is not None else None)
                 segment_metadata_dump.append({
                     'segment_objid': str(segment_objid),
                     'segment_lokalid': segment_lokalid,
                     'length_meters': float(segment_length) if segment_length is not None else None,
                     'fotruteinfo_count': len(fotruteinfo_rows),
+                    'oppdateringsdato': oppdateringsdato,
                     'fotruteinfo_rows': [
                         {
                             'fotruteinfo_objid': row['fotruteinfo_objid'],
@@ -2137,18 +2147,18 @@ async def get_segment_routes(
         with db_connection() as conn:
             schema_quoted = quote_identifier(ROUTE_SCHEMA)
 
-            # First verify segment exists
+            # First verify segment exists and get oppdateringsdato
             segment_check_query = f"""
-                SELECT objid
+                SELECT objid, oppdateringsdato
                 FROM {schema_quoted}.fotrute
                 WHERE objid = %s
                 LIMIT 1
             """
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(segment_check_query, (segment_objid,))
-                segment_exists = cur.fetchone()
+                segment_row = cur.fetchone()
 
-            if not segment_exists:
+            if not segment_row:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Segment with objid '{segment_objid}' not found"
@@ -2174,10 +2184,13 @@ async def get_segment_routes(
 
             if not route_rows:
                 # Segment exists but has no routes (shouldn't happen, but handle gracefully)
+                oppd = segment_row.get("oppdateringsdato")
+                oppdateringsdato = oppd.isoformat() if oppd is not None and hasattr(oppd, "isoformat") else (str(oppd) if oppd is not None else None)
                 return {
                     "segment_objid": segment_objid,
                     "routes": [],
-                    "total": 0
+                    "total": 0,
+                    "oppdateringsdato": oppdateringsdato,
                 }
 
             routes = []
@@ -2191,10 +2204,13 @@ async def get_segment_routes(
                     "fotruteinfo_objid": row["fotruteinfo_objid"]
                 })
 
+            oppd = segment_row.get("oppdateringsdato")
+            oppdateringsdato = oppd.isoformat() if oppd is not None and hasattr(oppd, "isoformat") else (str(oppd) if oppd is not None else None)
             return {
                 "segment_objid": segment_objid,
                 "routes": routes,
-                "total": len(routes)
+                "total": len(routes),
+                "oppdateringsdato": oppdateringsdato,
             }
 
     except HTTPException:

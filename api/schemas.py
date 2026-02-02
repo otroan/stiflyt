@@ -103,6 +103,7 @@ class RouteSegment(BaseModel):
     routes: List[RouteInfo]  # List of routes that use this segment
     length_meters: Optional[float] = None
     geometry: Optional[Dict[str, Any]] = None  # GeoJSON geometry (optional)
+    oppdateringsdato: Optional[str] = None  # Last updated in turrutebasen (ISO timestamp)
 
 
 class RouteSegmentsResponse(BaseModel):
@@ -330,6 +331,7 @@ class RouteSegmentDetail(BaseModel):
     rutetype: Optional[str] = None
     gradering: Optional[str] = None
     length_meters: Optional[float] = None
+    oppdateringsdato: Optional[str] = None  # Last updated in turrutebasen (ISO timestamp)
 
 
 class RouteSegmentsDetailResponse(BaseModel):
@@ -376,6 +378,7 @@ class SegmentMetadata(BaseModel):
     length_meters: Optional[float] = None
     fotruteinfo_count: int
     fotruteinfo_rows: List[Dict[str, Any]]
+    oppdateringsdato: Optional[str] = None  # Last updated in turrutebasen (ISO timestamp)
 
 
 class ValidationSummary(BaseModel):

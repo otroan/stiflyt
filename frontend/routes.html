@@ -228,13 +228,13 @@
                 <p id="bulkEditRouteInfo" style="margin-bottom: 16px; color: #666;"></p>
                 <div style="margin-bottom: 16px;">
                     <label style="display: block; font-weight: bold; margin-bottom: 8px;">Rutenummer:</label>
-                    <input type="text" id="bulkEditRutenummer" readonly 
+                    <input type="text" id="bulkEditRutenummer" readonly
                            style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 100%; background: #f5f5f5;" />
                 </div>
                 <div style="margin-bottom: 16px;">
                     <label style="display: block; font-weight: bold; margin-bottom: 8px;">Rutenavn (nytt navn for alle segmenter):</label>
-                    <input type="text" id="bulkEditRutenavn" 
-                           style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 100%;" 
+                    <input type="text" id="bulkEditRutenavn"
+                           style="padding: 8px; border: 1px solid #ccc; border-radius: 4px; width: 100%;"
                            placeholder="Skriv inn nytt rutenavn" />
                 </div>
                 <div style="padding: 12px; background: #fff3cd; border-radius: 4px; margin-bottom: 16px;">
@@ -267,7 +267,7 @@
 
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    
+
     <!-- Leaflet Geoman (for geometry editing) -->
     <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.css" />
     <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@latest/dist/leaflet-geoman.min.js"></script>
@@ -303,7 +303,7 @@
                 removalMode: false,
                 rotateMode: false
             });
-            
+
             // Hide Geoman controls - we'll control it programmatically
             map.pm.addControls({
                 position: 'topleft',
@@ -356,10 +356,19 @@
             });
         });
 
+        function formatOppdateringsdato(isoStr) {
+            if (!isoStr) return null;
+            try {
+                const d = new Date(isoStr);
+                if (isNaN(d.getTime())) return isoStr;
+                return d.toLocaleDateString('nb-NO', { day: '2-digit', month: 'short', year: 'numeric' });
+            } catch (e) { return isoStr; }
+        }
+
         // Route search
         async function performRouteSearch(query) {
             const queryTrimmed = query ? query.trim() : '';
-            
+
             // If empty query, show all routes (with a reasonable limit)
             if (queryTrimmed.length === 0) {
                 try {
@@ -407,7 +416,7 @@
                 // First try exact match via search places
                 const data = await searchPlaces(queryTrimmed, 20);
                 const exactRoutes = (data.results || []).filter(r => r.type === 'rute');
-                
+
                 if (exactRoutes.length > 0) {
                     displayRouteSearchResults(exactRoutes);
                 } else {
@@ -424,7 +433,7 @@
                 }
             } catch (error) {
                 console.error('Søkefeil:', error);
-                document.getElementById('routeSearchResults').innerHTML = 
+                document.getElementById('routeSearchResults').innerHTML =
                     '<div class="search-result-item">Søkefeil</div>';
                 document.getElementById('routeSearchResults').classList.add('active');
             }
@@ -459,7 +468,7 @@
             }
 
             // Show total count if there are more routes than displayed
-            const headerHtml = total > routes.length 
+            const headerHtml = total > routes.length
                 ? `<div class="search-result-header">Viser ${routes.length} av ${total} ruter${prefix ? ` som starter med "${prefix}"` : ''}</div>`
                 : `<div class="search-result-header">${total} rute${total !== 1 ? 'r' : ''}${prefix ? ` som starter med "${prefix}"` : ''}</div>`;
 
@@ -571,7 +580,7 @@
                     </button>
                 </div>
             `;
-            
+
             // Add event listener for bulk edit button
             const bulkEditBtn = document.getElementById('bulkEditRouteBtn');
             if (bulkEditBtn) {
@@ -631,13 +640,13 @@
 
         function getSegmentStatus(segmentObjid, validation) {
             // Check if segment has errors or warnings
-            const hasErrors = validation.errors.some(e => 
+            const hasErrors = validation.errors.some(e =>
                 e.affected_segments && e.affected_segments.includes(String(segmentObjid))
             );
-            const hasWarnings = validation.warnings.some(w => 
+            const hasWarnings = validation.warnings.some(w =>
                 w.affected_segments && w.affected_segments.includes(String(segmentObjid))
             );
-            
+
             if (hasErrors) return 'error';
             if (hasWarnings) return 'warning';
             return 'ok';
@@ -664,18 +673,18 @@
                 if (!segment.senterlinje) return;
 
                 const segmentObjid = segment.segment_objid;
-                
+
                 // Get segment metadata to check if it has any routes
                 const segmentMeta = validation.segment_metadata.find(
                     m => m.segment_objid === String(segmentObjid)
                 );
-                
+
                 // Skip segments that have no routes (all rutenummer removed)
                 if (segmentMeta && segmentMeta.fotruteinfo_rows && segmentMeta.fotruteinfo_rows.length === 0) {
                     console.log(`Skipping segment ${segmentObjid} - no routes`);
                     return;
                 }
-                
+
                 // Also check if all routes have been removed by checking if there are any rutenummer
                 if (segmentMeta && segmentMeta.fotruteinfo_rows) {
                     const hasAnyRutenummer = segmentMeta.fotruteinfo_rows.some(row => row.rutenummer && row.rutenummer.trim() !== '');
@@ -684,9 +693,9 @@
                         return;
                     }
                 }
-                
+
                 const status = getSegmentStatus(segmentObjid, validation);
-                
+
                 // Determine color based on status
                 let color = segmentColors[index % segmentColors.length];
                 let weight = 4;
@@ -713,7 +722,7 @@
                     // Extract unique rutenummer from fotruteinfo_rows
                     const uniqueRutenummer = [...new Set(segmentMeta.fotruteinfo_rows.map(row => row.rutenummer).filter(r => r))];
                     const isShared = uniqueRutenummer.length > 1 || (uniqueRutenummer.length === 1 && uniqueRutenummer[0] !== currentRoute?.rutenummer);
-                    
+
                     popupContent += `
                         <table style="font-size: 0.9em; width: 100%;">
                             <tr><td><strong>Lengde:</strong></td><td>${segmentMeta.length_meters !== null ? `${segmentMeta.length_meters.toFixed(1)} m` : 'N/A'}</td></tr>
@@ -746,6 +755,7 @@
                     });
                 } else {
                     // Fallback to segment data from API
+                    const oppdFormatted = formatOppdateringsdato(segment.oppdateringsdato);
                     popupContent += `
                         <table style="font-size: 0.9em; width: 100%;">
                             <tr><td><strong>Lengde:</strong></td><td>${segment.length_meters ? `${segment.length_meters.toFixed(1)} m` : 'N/A'}</td></tr>
@@ -753,6 +763,7 @@
                             <tr><td><strong>Vedlikeholdsansvarlig:</strong></td><td>${segment.vedlikeholdsansvarlig || '-'}</td></tr>
                             <tr><td><strong>Rutetype:</strong></td><td>${segment.rutetype || '-'}</td></tr>
                             <tr><td><strong>Gradering:</strong></td><td>${segment.gradering || '-'}</td></tr>
+                            ${oppdFormatted ? `<tr><td><strong>Sist oppdatert (turrutebasen):</strong></td><td>${oppdFormatted}</td></tr>` : ''}
                         </table>
                     `;
                 }
@@ -773,7 +784,7 @@
                     onEachFeature: function(feature, layer) {
                         // Bind popup with initial content
                         layer.bindPopup(popupContent);
-                        
+
                         // Load all routes for this segment asynchronously and update popup
                         (async () => {
                             try {
@@ -781,7 +792,7 @@
                                 if (routesResponse.ok) {
                                     const routesData = await routesResponse.json();
                                     const allRoutes = routesData.routes || [];
-                                    
+
                                     // Group by rutenummer
                                     const routesByNumber = {};
                                     allRoutes.forEach(route => {
@@ -796,9 +807,9 @@
                                         }
                                         routesByNumber[rutenummer].count++;
                                     });
-                                    
+
                                     const uniqueRoutes = Object.values(routesByNumber);
-                                    
+
                                     // Hide segment if no routes remain
                                     if (uniqueRoutes.length === 0) {
                                         console.log(`Hiding segment ${segmentObjid} - no routes remaining`);
@@ -812,9 +823,10 @@
                                         }
                                         return;
                                     }
-                                    
+
                                     const isShared = uniqueRoutes.length > 1 || (uniqueRoutes.length === 1 && uniqueRoutes[0].rutenummer !== currentRoute?.rutenummer);
-                                    
+
+                                    const oppdFormatted = routesData.oppdateringsdato ? formatOppdateringsdato(routesData.oppdateringsdato) : (segmentMeta && segmentMeta.oppdateringsdato ? formatOppdateringsdato(segmentMeta.oppdateringsdato) : null);
                                     // Update popup content with all routes
                                     const updatedPopupContent = `
                                         <div style="min-width: 250px;">
@@ -825,6 +837,7 @@
                                             <table style="font-size: 0.9em; width: 100%;">
                                                 <tr><td><strong>Lengde:</strong></td><td>${segmentMeta ? (segmentMeta.length_meters !== null ? `${segmentMeta.length_meters.toFixed(1)} m` : 'N/A') : 'N/A'}</td></tr>
                                                 <tr><td><strong>Fotruteinfo-rader:</strong></td><td>${segmentMeta ? segmentMeta.fotruteinfo_count : 'N/A'}</td></tr>
+                                                ${oppdFormatted ? `<tr><td><strong>Sist oppdatert (turrutebasen):</strong></td><td>${oppdFormatted}</td></tr>` : ''}
                                             </table>
                                             <br>
                                             <strong>Alle ruter som bruker dette segmentet (${uniqueRoutes.length}):</strong><br>
@@ -843,7 +856,7 @@
                                             <small style="color: #666;">Klikk for å se detaljer i sidebar</small>
                                         </div>
                                     `;
-                                    
+
                                     // Update popup if it's still open
                                     if (layer.isPopupOpen()) {
                                         layer.setPopupContent(updatedPopupContent);
@@ -857,7 +870,7 @@
                                 // Keep original popup content on error
                             }
                         })();
-                        
+
                         layer.on('click', () => {
                             selectSegment(String(segmentObjid));
                         });
@@ -871,7 +884,7 @@
                 });
 
                 segmentLayer.addTo(segmentLayerGroup);
-                
+
                 // Add markers at start and end of segment to distinguish them
                 if (segment.senterlinje && segment.senterlinje.coordinates) {
                     const coords = segment.senterlinje.coordinates;
@@ -887,7 +900,7 @@
                             })
                         }).bindTooltip(`Segment ${segmentObjid} (start)`, { permanent: false });
                         startMarker.addTo(segmentLayerGroup);
-                        
+
                         // End marker (circle)
                         const endCoord = coords[coords.length - 1];
                         const endMarker = L.marker([endCoord[1], endCoord[0]], {
@@ -908,7 +921,7 @@
                     weight: weight,
                     opacity: 0.9
                 };
-                
+
                 segmentLayers.push({
                     objid: segmentObjid,
                     layer: segmentLayer,
@@ -920,13 +933,13 @@
 
         function getLinkStatus(linkId, validation) {
             // Check if link has errors or warnings
-            const hasErrors = validation.errors.some(e => 
+            const hasErrors = validation.errors.some(e =>
                 e.affected_links && e.affected_links.includes(linkId)
             );
-            const hasWarnings = validation.warnings.some(w => 
+            const hasWarnings = validation.warnings.some(w =>
                 w.affected_links && w.affected_links.includes(linkId)
             );
-            
+
             if (hasErrors) return 'error';
             if (hasWarnings) return 'warning';
             return 'ok';
@@ -960,7 +973,7 @@
 
                 const linkId = link.link_id;
                 const status = getLinkStatus(linkId, validation);
-                
+
                 // Determine color based on status
                 let color = linkColors[index % linkColors.length];
                 let weight = 3;
@@ -1015,7 +1028,7 @@
                 });
 
                 linkLayer.addTo(linkLayerGroup);
-                
+
                 // Add markers at start and end of link
                 // Handle both LineString and MultiLineString geometries
                 let coords = [];
@@ -1025,7 +1038,7 @@
                     // Use first line string for markers
                     coords = link.geom.coordinates[0] || [];
                 }
-                
+
                 if (coords && coords.length > 0) {
                     // Start marker (a_node)
                     const startCoord = coords[0];
@@ -1038,7 +1051,7 @@
                         })
                     }).bindTooltip(`Link ${linkId} (A: ${link.a_node || '?'})`, { permanent: false });
                     startMarker.addTo(linkLayerGroup);
-                    
+
                     // End marker (b_node)
                     const endCoord = coords[coords.length - 1];
                     const endMarker = L.marker([endCoord[1], endCoord[0]], {
@@ -1058,7 +1071,7 @@
                     weight: weight,
                     opacity: 0.8
                 };
-                
+
                 linkLayers.push({
                     linkId: linkId,
                     layer: linkLayer,
@@ -1071,7 +1084,7 @@
         function selectLink(linkId) {
             // Clear hover highlight first
             clearHighlight();
-            
+
             // Highlight on map
             linkLayers.forEach(({ linkId: lid, layer, originalStyle }) => {
                 if (lid === linkId) {
@@ -1109,17 +1122,17 @@
             const content = document.getElementById('detailsContent');
 
             // Get validation issues for this link
-            const linkErrors = currentValidation.errors.filter(e => 
+            const linkErrors = currentValidation.errors.filter(e =>
                 e.affected_links && e.affected_links.includes(link.link_id)
             );
-            const linkWarnings = currentValidation.warnings.filter(w => 
+            const linkWarnings = currentValidation.warnings.filter(w =>
                 w.affected_links && w.affected_links.includes(link.link_id)
             );
 
             const status = getLinkStatus(link.link_id, currentValidation);
-            const statusBadge = status === 'error' ? 
+            const statusBadge = status === 'error' ?
                 '<span class="validation-status status-error">FEIL</span>' :
-                status === 'warning' ? 
+                status === 'warning' ?
                 '<span class="validation-status status-warning">ADVARSEL</span>' :
                 '<span class="validation-status status-ok">OK</span>';
 
@@ -1181,12 +1194,12 @@
         function highlightSegmentsAndLinks(segmentIds, linkIds) {
             // Clear any existing highlight first
             clearHighlight();
-            
+
             // Debug logging
             console.log('highlightSegmentsAndLinks called with:', { segmentIds, linkIds });
             console.log('Available segmentLayers:', segmentLayers.length, 'showSegments:', showSegments);
             console.log('Available linkLayers:', linkLayers.length, 'showLinks:', showLinks);
-            
+
             // If segments need to be shown but aren't loaded
             if (segmentIds.length > 0 && segmentData) {
                 if (segmentLayers.length === 0) {
@@ -1202,7 +1215,7 @@
                     }
                 }
             }
-            
+
             // If links need to be shown but aren't loaded
             if (linkIds.length > 0 && linkData) {
                 if (linkLayers.length === 0) {
@@ -1218,14 +1231,14 @@
                     }
                 }
             }
-            
+
             // Convert to strings for comparison
             const segmentIdStrings = segmentIds.map(id => String(id));
             const linkIdStrings = linkIds.map(id => String(id));
-            
+
             let highlightedSegments = 0;
             let highlightedLinks = 0;
-            
+
             // Highlight segments
             segmentLayers.forEach(({objid, layer, originalStyle}) => {
                 if (segmentIdStrings.includes(String(objid))) {
@@ -1239,7 +1252,7 @@
                     highlightedSegments++;
                 }
             });
-            
+
             // Highlight links
             linkLayers.forEach(({linkId, layer, originalStyle}) => {
                 // Convert linkId to string for comparison (affected_links might be integers)
@@ -1255,7 +1268,7 @@
                     highlightedLinks++;
                 }
             });
-            
+
             console.log(`Highlighted ${highlightedSegments} segments and ${highlightedLinks} links`);
         }
 
@@ -1273,7 +1286,7 @@
                     }
                 }
             });
-            
+
             // Restore original styles for highlighted links
             linkLayers.forEach(({linkId, layer, originalStyle, status}) => {
                 if (currentlyHighlighted.links.includes(String(linkId))) {
@@ -1287,17 +1300,17 @@
                     }
                 }
             });
-            
+
             currentlyHighlighted = { segments: [], links: [] };
         }
-        
+
         function handleIssueLeave() {
             // Clear timeout if mouse leaves before delay completes
             if (hoverHighlightTimeout) {
                 clearTimeout(hoverHighlightTimeout);
                 hoverHighlightTimeout = null;
             }
-            
+
             // Clear highlight after a small delay (allows moving to child elements)
             // Note: We don't deactivate toggles here - let user control that manually
             setTimeout(() => {
@@ -1309,7 +1322,7 @@
             const content = document.getElementById('validationContent');
 
             // Status badge
-            const statusClass = validation.status === 'OK' ? 'status-ok' : 
+            const statusClass = validation.status === 'OK' ? 'status-ok' :
                                validation.status === 'WARNING' ? 'status-warning' : 'status-error';
             const statusBadge = `<span class="validation-status ${statusClass}">${validation.status}</span>`;
 
@@ -1344,21 +1357,21 @@
                     const linkIds = err.affected_links || [];
                     const hasAffected = segmentIds.length > 0 || linkIds.length > 0;
                     const itemId = `error-item-${errIdx}`;
-                    
+
                     const segmentIdsStr = segmentIds.length > 0 ? segmentIds.map(id => String(id)).join("','") : '';
                     const linkIdsStr = linkIds.length > 0 ? linkIds.map(id => String(id)).join("','") : '';
-                    
+
                     return `
-                    <div class="issue-item issue-error" 
+                    <div class="issue-item issue-error"
                          id="${itemId}"
-                         ${hasAffected ? `onmouseenter="handleIssueHover(${segmentIds.length > 0 ? `['${segmentIdsStr}']` : '[]'}, ${linkIds.length > 0 ? `['${linkIdsStr}']` : '[]'})" 
-                                       onmouseleave="handleIssueLeave()" 
+                         ${hasAffected ? `onmouseenter="handleIssueHover(${segmentIds.length > 0 ? `['${segmentIdsStr}']` : '[]'}, ${linkIds.length > 0 ? `['${linkIdsStr}']` : '[]'})"
+                                       onmouseleave="handleIssueLeave()"
                                        style="cursor: ${hasAffected ? 'pointer' : 'default'};"` : ''}>
                         <strong>${err.type}</strong><br>
                         ${err.message}
-                        ${segmentIds.length > 0 ? 
+                        ${segmentIds.length > 0 ?
                             `<br><small>Segmenter: ${segmentIds.join(', ')}</small>` : ''}
-                        ${linkIds.length > 0 ? 
+                        ${linkIds.length > 0 ?
                             `<br><small>Lenker: ${linkIds.join(', ')}</small>` : ''}
                     </div>
                 `;
@@ -1373,7 +1386,7 @@
                     const linkIds = warn.affected_links || [];
                     const hasAffected = segmentIds.length > 0 || linkIds.length > 0;
                     const itemId = `warning-item-${warnIdx}`;
-                    
+
                     // Handle value_by_segment - extract all segment IDs
                     let allSegmentIds = [...segmentIds];
                     if (warn.value_by_segment) {
@@ -1385,27 +1398,27 @@
                     }
                     // Remove duplicates
                     allSegmentIds = [...new Set(allSegmentIds)];
-                    
+
                     const allSegmentIdsStr = allSegmentIds.length > 0 ? allSegmentIds.map(id => String(id)).join("','") : '';
                     const linkIdsStr = linkIds.length > 0 ? linkIds.map(id => String(id)).join("','") : '';
                     const hasAnyAffected = hasAffected || allSegmentIds.length > 0;
-                    
+
                     return `
-                    <div class="issue-item issue-warning" 
+                    <div class="issue-item issue-warning"
                          id="${itemId}"
-                         ${hasAnyAffected ? `onmouseenter="handleIssueHover(${allSegmentIds.length > 0 ? `['${allSegmentIdsStr}']` : '[]'}, ${linkIds.length > 0 ? `['${linkIdsStr}']` : '[]'})" 
-                                       onmouseleave="handleIssueLeave()" 
+                         ${hasAnyAffected ? `onmouseenter="handleIssueHover(${allSegmentIds.length > 0 ? `['${allSegmentIdsStr}']` : '[]'}, ${linkIds.length > 0 ? `['${linkIdsStr}']` : '[]'})"
+                                       onmouseleave="handleIssueLeave()"
                                        style="cursor: ${hasAnyAffected ? 'pointer' : 'default'};"` : ''}>
                         <strong>${warn.type}</strong><br>
                         ${warn.message}
-                        ${segmentIds.length > 0 ? 
+                        ${segmentIds.length > 0 ?
                             `<br><small>Segmenter: ${segmentIds.join(', ')}</small>` : ''}
-                        ${linkIds.length > 0 ? 
+                        ${linkIds.length > 0 ?
                             `<br><small>Lenker: ${linkIds.join(', ')}</small>` : ''}
                         ${warn.value_by_segment ? `
                             <br><small>Verdier per segment:</small>
                             <ul style="margin: 4px 0; padding-left: 20px;">
-                                ${Object.entries(warn.value_by_segment).map(([val, segs]) => 
+                                ${Object.entries(warn.value_by_segment).map(([val, segs]) =>
                                     `<li>"${val}": ${segs.join(', ')}</li>`
                                 ).join('')}
                             </ul>
@@ -1443,12 +1456,12 @@
         // Hover handlers for validation issues
         function handleIssueHover(segmentIds, linkIds) {
             console.log('handleIssueHover called with:', { segmentIds, linkIds });
-            
+
             // Clear any pending timeout
             if (hoverHighlightTimeout) {
                 clearTimeout(hoverHighlightTimeout);
             }
-            
+
             // Small delay to prevent flickering on quick mouse movements
             hoverHighlightTimeout = setTimeout(() => {
                 // Filter out empty strings and ensure arrays
@@ -1460,39 +1473,40 @@
 
         function displaySegments(validation) {
             const content = document.getElementById('segmentsContent');
-            
+
             if (!validation.segment_metadata || validation.segment_metadata.length === 0) {
                 content.innerHTML = '<p>Ingen segmenter tilgjengelig.</p>';
                 return;
             }
 
             const segmentsHtml = validation.segment_metadata.map(seg => {
-                const lengthStr = seg.length_meters !== null ? 
+                const lengthStr = seg.length_meters !== null ?
                     `${seg.length_meters.toFixed(1)} m` : 'N/A';
-                
+
                 // Find errors/warnings for this segment
-                const segmentErrors = currentValidation.errors.filter(e => 
+                const segmentErrors = currentValidation.errors.filter(e =>
                     e.affected_segments && e.affected_segments.includes(seg.segment_objid)
                 );
-                const segmentWarnings = currentValidation.warnings.filter(w => 
+                const segmentWarnings = currentValidation.warnings.filter(w =>
                     w.affected_segments && w.affected_segments.includes(seg.segment_objid)
                 );
 
                 const hasIssues = segmentErrors.length > 0 || segmentWarnings.length > 0;
-                const issueBadge = hasIssues ? 
+                const issueBadge = hasIssues ?
                     `<span style="color: ${segmentErrors.length > 0 ? '#e74c3c' : '#f39c12'};">
                         ${segmentErrors.length > 0 ? '⚠️' : 'ℹ️'}
                     </span>` : '';
 
+                const oppdStr = seg.oppdateringsdato ? formatOppdateringsdato(seg.oppdateringsdato) : '';
                 return `
-                    <div class="segment-item" 
-                         onclick="selectSegment('${seg.segment_objid}')" 
+                    <div class="segment-item"
+                         onclick="selectSegment('${seg.segment_objid}')"
                          onmouseenter="highlightSegmentOnMap('${seg.segment_objid}')"
                          onmouseleave="clearSegmentHighlight()"
                          data-segment-id="${seg.segment_objid}">
                         <strong>Segment ${seg.segment_objid}</strong> ${issueBadge}
                         <br>
-                        <small>Lengde: ${lengthStr} | ${seg.fotruteinfo_count} fotruteinfo-rad(er)</small>
+                        <small>Lengde: ${lengthStr} | ${seg.fotruteinfo_count} fotruteinfo-rad(er)${oppdStr ? ` | Sist oppdatert: ${oppdStr}` : ''}</small>
                         ${hasIssues ? `
                             <br><small style="color: #e74c3c;">
                                 ${segmentErrors.length} feil, ${segmentWarnings.length} advarsler
@@ -1513,7 +1527,7 @@
             if (currentlyHoveredSegment) {
                 clearSegmentHighlight();
             }
-            
+
             // Update selection in list
             document.querySelectorAll('.segment-item').forEach(item => {
                 item.classList.remove('selected');
@@ -1567,26 +1581,26 @@
 
         async function displaySegmentDetails(segment) {
             const content = document.getElementById('detailsContent');
-            
+
             // Show loading state
             content.innerHTML = '<p>Laster segmentdetaljer...</p>';
 
             // Find segment in API data for additional info
-            const apiSegment = segmentData && segmentData.segments ? 
+            const apiSegment = segmentData && segmentData.segments ?
                 segmentData.segments.find(s => s.segment_objid === segment.segment_objid) : null;
 
             // Get validation issues for this segment
-            const segmentErrors = currentValidation.errors.filter(e => 
+            const segmentErrors = currentValidation.errors.filter(e =>
                 e.affected_segments && e.affected_segments.includes(segment.segment_objid)
             );
-            const segmentWarnings = currentValidation.warnings.filter(w => 
+            const segmentWarnings = currentValidation.warnings.filter(w =>
                 w.affected_segments && w.affected_segments.includes(segment.segment_objid)
             );
 
             const status = getSegmentStatus(segment.segment_objid, currentValidation);
-            const statusBadge = status === 'error' ? 
+            const statusBadge = status === 'error' ?
                 '<span class="validation-status status-error">FEIL</span>' :
-                status === 'warning' ? 
+                status === 'warning' ?
                 '<span class="validation-status status-warning">ADVARSEL</span>' :
                 '<span class="validation-status status-ok">OK</span>';
 
@@ -1625,7 +1639,7 @@
 
             const uniqueRoutes = Object.values(routesByNumber);
             const isShared = uniqueRoutes.length > 1 || (uniqueRoutes.length === 1 && uniqueRoutes[0].rutenummer !== currentRoute?.rutenummer);
-            
+
             const metadataRows = uniqueRoutes.map((route, idx) => {
                 const isCurrentRoute = route.rutenummer === currentRoute?.rutenummer;
                 const rowStyle = isCurrentRoute ? 'background-color: #e3f2fd;' : '';
@@ -1686,6 +1700,12 @@
                         <td>Fotruteinfo-rader:</td>
                         <td>${segment.fotruteinfo_count}</td>
                     </tr>
+                    ${(apiSegment && apiSegment.oppdateringsdato) || segment.oppdateringsdato ? `
+                    <tr>
+                        <td>Sist oppdatert (turrutebasen):</td>
+                        <td>${formatOppdateringsdato((apiSegment && apiSegment.oppdateringsdato) || segment.oppdateringsdato) || 'N/A'}</td>
+                    </tr>
+                    ` : ''}
                     ${apiSegment && apiSegment.source_node ? `
                     <tr>
                         <td>Kilde-node:</td>
@@ -1720,10 +1740,10 @@
                 ${errorsHtml}
                 ${warningsHtml}
             `;
-            
+
             // Store routes data for edit modal
             segment._editRoutesData = uniqueRoutes;
-            
+
             // Add event listeners for buttons
             const editBtn = document.getElementById('editSegmentBtn');
             if (editBtn) {
@@ -1731,14 +1751,14 @@
                     openEditSegmentModal(segment.segment_objid, uniqueRoutes);
                 });
             }
-            
+
             const editGeometryBtn = document.getElementById('editSegmentGeometryBtn');
             if (editGeometryBtn) {
                 editGeometryBtn.addEventListener('click', () => {
                     openEditSegmentGeometryModal(segment.segment_objid, segment);
                 });
             }
-            
+
             const deleteBtn = document.getElementById('deleteSegmentBtn');
             if (deleteBtn) {
                 deleteBtn.addEventListener('click', () => {
@@ -1754,15 +1774,15 @@
         function openEditSegmentModal(segmentObjid, routes) {
             currentEditSegmentObjid = segmentObjid;
             currentEditRoutes = JSON.parse(JSON.stringify(routes)); // Deep copy
-            
+
             const modal = document.getElementById('editSegmentModal');
             const infoEl = document.getElementById('editSegmentInfo');
             const container = document.getElementById('editRoutesContainer');
-            
+
             infoEl.textContent = `Rediger ruter for segment ${segmentObjid}`;
-            
+
             renderEditRoutesList(container);
-            
+
             modal.classList.add('active');
         }
 
@@ -1778,22 +1798,22 @@
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 8px;">
                             <label style="font-weight: bold;">Rutenummer:</label>
-                            <input type="text" class="route-number-input" data-index="${idx}" value="${route.rutenummer || ''}" 
+                            <input type="text" class="route-number-input" data-index="${idx}" value="${route.rutenummer || ''}"
                                    style="padding: 6px; border: 1px solid #ccc; border-radius: 4px;" />
-                            
+
                             <label style="font-weight: bold;">Rutenavn:</label>
-                            <input type="text" class="route-name-input" data-index="${idx}" value="${route.rutenavn || ''}" 
+                            <input type="text" class="route-name-input" data-index="${idx}" value="${route.rutenavn || ''}"
                                    style="padding: 6px; border: 1px solid #ccc; border-radius: 4px;" />
                         </div>
                         <div style="margin-top: 8px; font-size: 0.85em; color: #666;">
-                            Vedlikeholdsansvarlig: ${route.vedlikeholdsansvarlig || '-'} | 
-                            Rutetype: ${route.rutetype || '-'} | 
+                            Vedlikeholdsansvarlig: ${route.vedlikeholdsansvarlig || '-'} |
+                            Rutetype: ${route.rutetype || '-'} |
                             Gradering: ${route.gradering || '-'}
                         </div>
                     </div>
                 `;
             }).join('');
-            
+
             // Add event listeners
             container.querySelectorAll('.remove-route-btn').forEach(btn => {
                 btn.addEventListener('click', (e) => {
@@ -1804,14 +1824,14 @@
                     }
                 });
             });
-            
+
             container.querySelectorAll('.route-number-input').forEach(input => {
                 input.addEventListener('input', (e) => {
                     const index = parseInt(e.target.dataset.index);
                     currentEditRoutes[index].rutenummer = e.target.value.trim();
                 });
             });
-            
+
             container.querySelectorAll('.route-name-input').forEach(input => {
                 input.addEventListener('input', (e) => {
                     const index = parseInt(e.target.dataset.index);
@@ -1832,28 +1852,28 @@
                 alert('Ingen endringer å lagre');
                 return;
             }
-            
+
             // Validate that all routes have rutenummer
             const invalidRoutes = currentEditRoutes.filter(r => !r.rutenummer || r.rutenummer.trim() === '');
             if (invalidRoutes.length > 0) {
                 alert('Alle ruter må ha et rutenummer');
                 return;
             }
-            
+
             // TODO: Send to backend API
             // For now, just show what would be sent
             console.log('Would save segment edits:', {
                 segment_objid: currentEditSegmentObjid,
                 routes: currentEditRoutes
             });
-            
+
             alert('Endringer lagret! (Dette er kun frontend - backend API må implementeres)');
-            
+
             // Reload route to refresh segment display (which will hide segments without routes)
             if (currentRoute) {
                 await loadRoute(currentRoute.rutenummer);
             }
-            
+
             closeEditSegmentModal();
         }
 
@@ -1862,15 +1882,15 @@
             if (!confirm(`Er du sikker på at du vil slette segment ${segmentObjid}?\n\nDette vil påvirke ${routes.length} rute(r): ${routes.map(r => r.rutenummer).join(', ')}\n\nDette kan ikke angres!`)) {
                 return;
             }
-            
+
             // TODO: Send to backend API
             console.log('Would delete segment:', {
                 segment_objid: segmentObjid,
                 affected_routes: routes.map(r => r.rutenummer)
             });
-            
+
             alert('Segment slettet! (Dette er kun frontend - backend API må implementeres)');
-            
+
             // Reload route to refresh display
             if (currentRoute) {
                 await loadRoute(currentRoute.rutenummer);
@@ -1885,13 +1905,13 @@
         function openEditSegmentGeometryModal(segmentObjid, segment) {
             currentEditGeometrySegmentObjid = segmentObjid;
             currentEditGeometrySegment = segment;
-            
+
             const modal = document.getElementById('editSegmentGeometryModal');
             const infoEl = document.getElementById('editSegmentGeometryInfo');
             const container = document.getElementById('editSegmentGeometryContainer');
-            
+
             infoEl.textContent = `Rediger geometri for segment ${segmentObjid}`;
-            
+
             container.innerHTML = `
                 <div style="margin-bottom: 16px;">
                     <p>Velg hva du vil gjøre:</p>
@@ -1907,7 +1927,7 @@
                     </button>
                 </div>
             `;
-            
+
             // Add event listeners
             const splitBtn = document.getElementById('splitSegmentBtn');
             if (splitBtn) {
@@ -1915,14 +1935,14 @@
                     startSplitSegmentMode(segmentObjid, segment);
                 });
             }
-            
+
             const dragBtn = document.getElementById('dragEndpointBtn');
             if (dragBtn) {
                 dragBtn.addEventListener('click', () => {
                     startDragEndpointMode(segmentObjid, segment);
                 });
             }
-            
+
             modal.classList.add('active');
         }
 
@@ -1952,7 +1972,7 @@
                 } catch (e) {
                     console.warn('Could not disable Geoman cut mode:', e);
                 }
-                
+
                 // Disable edit mode on all layers
                 segmentLayers.forEach(({ layer }) => {
                     if (layer && layer.pm && layer.pm.enabled && layer.pm.enabled()) {
@@ -1960,7 +1980,7 @@
                     }
                 });
             }
-            
+
             // Remove any temporary layers or markers
             if (window.geometryEditLayer) {
                 map.removeLayer(window.geometryEditLayer);
@@ -1970,7 +1990,7 @@
                 window.geometryEditMarkers.forEach(m => map.removeLayer(m));
                 window.geometryEditMarkers = [];
             }
-            
+
             // Remove click handlers
             if (window.geometryEditClickHandler) {
                 // Find the segment layer and remove handler
@@ -1985,19 +2005,19 @@
                 }
                 window.geometryEditClickHandler = null;
             }
-            
+
             // Remove event listeners
             if (window.geometryEditDisableHandler) {
                 map.off('pm:disable', window.geometryEditDisableHandler);
                 window.geometryEditDisableHandler = null;
             }
-            
+
             // Remove cancel button
             if (window.geometryEditCancelBtn && window.geometryEditCancelBtn.parentNode) {
                 window.geometryEditCancelBtn.parentNode.removeChild(window.geometryEditCancelBtn);
                 window.geometryEditCancelBtn = null;
             }
-            
+
             // Reset cursor
             map.getContainer().style.cursor = '';
         }
@@ -2005,39 +2025,39 @@
         function startSplitSegmentMode(segmentObjid, segment) {
             geometryEditMode = 'split';
             closeEditSegmentGeometryModal();
-            
+
             // Find the segment layer on the map
             const segmentLayer = segmentLayers.find(s => String(s.objid) === String(segmentObjid));
             if (!segmentLayer || !segmentLayer.layer) {
                 alert('Kunne ikke finne segment på kartet');
                 return;
             }
-            
+
             // Enable Geoman cut mode on the segment layer
             if (typeof map.pm !== 'undefined' && segmentLayer.layer.pm) {
                 // Enable cut mode
-                segmentLayer.layer.pm.enable({ 
+                segmentLayer.layer.pm.enable({
                     allowSelfIntersection: false,
                     snappable: true,
                     snapDistance: 20
                 });
-                
+
                 // Enable cut mode specifically
                 map.pm.toggleCut();
-                
+
                 // Listen for cut event
                 segmentLayer.layer.on('pm:cut', async (e) => {
                     const cutEvent = e;
                     const originalLayer = cutEvent.originalLayer || cutEvent.layer;
                     const newLayers = cutEvent.layers || []; // Array of new layers after cut
-                    
+
                     if (newLayers && newLayers.length >= 2) {
                         // Get geometries from the new layers
                         const geometries = newLayers.map(layer => {
                             const geoJson = layer.toGeoJSON();
                             return geoJson.geometry;
                         });
-                        
+
                         if (confirm(`Segmentet er delt i ${geometries.length} deler. Vil du lagre endringene?`)) {
                             await saveSplitSegment(segmentObjid, geometries, segment.senterlinje);
                         } else {
@@ -2053,11 +2073,11 @@
                             }
                         }
                     }
-                    
+
                     // Exit cut mode
                     exitGeometryEditMode();
                 });
-                
+
                 // Listen for cancel or disable
                 const disableHandler = () => {
                     if (geometryEditMode === 'split') {
@@ -2066,10 +2086,10 @@
                 };
                 map.on('pm:disable', disableHandler);
                 window.geometryEditDisableHandler = disableHandler;
-                
+
                 // Highlight the segment
                 segmentLayer.layer.setStyle({ weight: 8, color: '#2196f3', opacity: 1.0 });
-                
+
                 // Add cancel button
                 const cancelBtn = document.createElement('button');
                 cancelBtn.textContent = 'Avbryt';
@@ -2086,7 +2106,7 @@
                 };
                 map.getContainer().appendChild(cancelBtn);
                 window.geometryEditCancelBtn = cancelBtn;
-                
+
                 alert('Klikk på segmentet for å tegne en linje som deler det. Klikk "Avbryt" for å avslutte.');
             } else {
                 alert('Geoman er ikke tilgjengelig. Fallback til manuell modus.');
@@ -2094,7 +2114,7 @@
                 startSplitSegmentModeManual(segmentObjid, segment);
             }
         }
-        
+
         // Fallback manual split mode (original implementation)
         function startSplitSegmentModeManual(segmentObjid, segment) {
             // Find the segment layer on the map
@@ -2103,34 +2123,34 @@
                 alert('Kunne ikke finne segment på kartet');
                 return;
             }
-            
+
             // Highlight the segment
             segmentLayer.layer.setStyle({ weight: 8, color: '#2196f3', opacity: 1.0 });
-            
+
             // Add click handler to segment
             const clickHandler = (e) => {
                 if (geometryEditMode !== 'split') return;
-                
+
                 const latlng = e.latlng;
                 const clickedPoint = [latlng.lng, latlng.lat]; // GeoJSON format [lng, lat]
-                
+
                 // Find closest point on the line
                 const geometry = segment.senterlinje;
                 if (!geometry || !geometry.coordinates) {
                     alert('Kunne ikke finne geometri for segmentet');
                     return;
                 }
-                
+
                 const closestPoint = findClosestPointOnLine(clickedPoint, geometry.coordinates);
-                
+
                 if (confirm(`Vil du dele segmentet på dette punktet?\n\nKoordinater: ${closestPoint[1].toFixed(6)}, ${closestPoint[0].toFixed(6)}`)) {
                     splitSegmentAtPoint(segmentObjid, closestPoint, geometry);
                 }
             };
-            
+
             segmentLayer.layer.on('click', clickHandler);
             window.geometryEditClickHandler = clickHandler;
-            
+
             // Change cursor
             segmentLayer.layer.on('mouseover', function() {
                 map.getContainer().style.cursor = 'crosshair';
@@ -2138,9 +2158,9 @@
             segmentLayer.layer.on('mouseout', function() {
                 map.getContainer().style.cursor = '';
             });
-            
+
             alert('Klikk på segmentet for å velge hvor det skal deles. Klikk utenfor for å avbryte.');
-            
+
             // Add cancel button
             const cancelBtn = document.createElement('button');
             cancelBtn.textContent = 'Avbryt';
@@ -2164,29 +2184,29 @@
         function startDragEndpointMode(segmentObjid, segment) {
             geometryEditMode = 'drag_endpoint';
             closeEditSegmentGeometryModal();
-            
+
             // Find the segment layer
             const segmentLayer = segmentLayers.find(s => String(s.objid) === String(segmentObjid));
             if (!segmentLayer || !segmentLayer.layer) {
                 alert('Kunne ikke finne segment på kartet');
                 return;
             }
-            
+
             // Use Geoman edit mode for dragging endpoints
             if (typeof map.pm !== 'undefined' && segmentLayer.layer.pm) {
                 // Enable edit mode on the layer
-                segmentLayer.layer.pm.enable({ 
+                segmentLayer.layer.pm.enable({
                     allowSelfIntersection: false,
                     snappable: true,
                     snapDistance: 20
                 });
-                
+
                 // Listen for edit events
                 segmentLayer.layer.on('pm:edit', async (e) => {
                     const editedLayer = e.target;
                     const geoJson = editedLayer.toGeoJSON();
                     const newGeometry = geoJson.geometry;
-                    
+
                     if (confirm('Geometri endret. Vil du lagre endringene?')) {
                         await saveSegmentGeometry(segmentObjid, newGeometry, segment.senterlinje);
                     } else {
@@ -2194,11 +2214,11 @@
                         const originalGeoJson = L.geoJSON(segment.senterlinje);
                         editedLayer.setLatLngs(originalGeoJson.getLayers()[0].getLatLngs());
                     }
-                    
+
                     // Exit edit mode
                     exitGeometryEditMode();
                 });
-                
+
                 // Listen for disable
                 const disableHandler = () => {
                     if (geometryEditMode === 'drag_endpoint') {
@@ -2207,10 +2227,10 @@
                 };
                 map.on('pm:disable', disableHandler);
                 window.geometryEditDisableHandler = disableHandler;
-                
+
                 // Highlight the segment
                 segmentLayer.layer.setStyle({ weight: 8, color: '#2196f3', opacity: 1.0 });
-                
+
                 // Add cancel button
                 const cancelBtn = document.createElement('button');
                 cancelBtn.textContent = 'Avbryt';
@@ -2226,7 +2246,7 @@
                 };
                 map.getContainer().appendChild(cancelBtn);
                 window.geometryEditCancelBtn = cancelBtn;
-                
+
                 alert('Dra endepunkter eller mellompunkter for å endre geometrien. Klikk "Avbryt" for å avslutte.');
             } else {
                 alert('Geoman er ikke tilgjengelig. Fallback til manuell modus.');
@@ -2234,7 +2254,7 @@
                 startDragEndpointModeManual(segmentObjid, segment);
             }
         }
-        
+
         // Fallback manual drag endpoint mode (original implementation)
         function startDragEndpointModeManual(segmentObjid, segment) {
             // Find the segment layer
@@ -2243,21 +2263,21 @@
                 alert('Kunne ikke finne segment på kartet');
                 return;
             }
-            
+
             // Highlight the segment
             segmentLayer.layer.setStyle({ weight: 8, color: '#2196f3', opacity: 1.0 });
-            
+
             // Get geometry
             const geometry = segment.senterlinje;
             if (!geometry || !geometry.coordinates || geometry.coordinates.length < 2) {
                 alert('Segmentet har ikke gyldig geometri');
                 return;
             }
-            
+
             const coords = geometry.coordinates;
             const startPoint = coords[0];
             const endPoint = coords[coords.length - 1];
-            
+
             // Create draggable markers at endpoints
             const startMarker = L.marker([startPoint[1], startPoint[0]], {
                 draggable: true,
@@ -2268,7 +2288,7 @@
                     iconAnchor: [8, 8]
                 })
             }).bindTooltip('Startpunkt (dra for å flytte)', { permanent: false });
-            
+
             const endMarker = L.marker([endPoint[1], endPoint[0]], {
                 draggable: true,
                 icon: L.divIcon({
@@ -2278,18 +2298,18 @@
                     iconAnchor: [8, 8]
                 })
             }).bindTooltip('Sluttpunkt (dra for å flytte)', { permanent: false });
-            
+
             startMarker.addTo(map);
             endMarker.addTo(map);
-            
+
             window.geometryEditMarkers = [startMarker, endMarker];
-            
+
             // Handle drag end
             const onDragEnd = (e) => {
                 const marker = e.target;
                 const newLatLng = marker.getLatLng();
                 const isStart = marker === startMarker;
-                
+
                 if (confirm(`${isStart ? 'Start' : 'Slutt'}punkt flyttet til ${newLatLng.lat.toFixed(6)}, ${newLatLng.lng.toFixed(6)}\n\nVil du lagre denne endringen?`)) {
                     const newPoint = [newLatLng.lng, newLatLng.lat]; // GeoJSON format
                     updateSegmentEndpoint(segmentObjid, isStart ? 'start' : 'end', newPoint, geometry);
@@ -2298,10 +2318,10 @@
                     marker.setLatLng(isStart ? [startPoint[1], startPoint[0]] : [endPoint[1], endPoint[0]]);
                 }
             };
-            
+
             startMarker.on('dragend', onDragEnd);
             endMarker.on('dragend', onDragEnd);
-            
+
             // Add cancel button
             const cancelBtn = document.createElement('button');
             cancelBtn.textContent = 'Avbryt';
@@ -2316,7 +2336,7 @@
             };
             map.getContainer().appendChild(cancelBtn);
             window.geometryEditCancelBtn = cancelBtn;
-            
+
             alert('Dra start- eller sluttpunktet for å flytte det. Klikk "Avbryt" for å avslutte.');
         }
 
@@ -2325,14 +2345,14 @@
             let minDistance = Infinity;
             let closestPoint = lineCoordinates[0];
             let closestIndex = 0;
-            
+
             for (let i = 0; i < lineCoordinates.length - 1; i++) {
                 const p1 = lineCoordinates[i];
                 const p2 = lineCoordinates[i + 1];
-                
+
                 // Calculate distance from clicked point to line segment
                 const dist = pointToLineDistance(clickedPoint, p1, p2);
-                
+
                 if (dist < minDistance) {
                     minDistance = dist;
                     // Find closest point on segment
@@ -2340,7 +2360,7 @@
                         [clickedPoint[0] - p1[0], clickedPoint[1] - p1[1]],
                         [p2[0] - p1[0], p2[1] - p1[1]]
                     ) / Math.pow(distance(p1, p2), 2)));
-                    
+
                     closestPoint = [
                         p1[0] + t * (p2[0] - p1[0]),
                         p1[1] + t * (p2[1] - p1[1])
@@ -2348,7 +2368,7 @@
                     closestIndex = i;
                 }
             }
-            
+
             return closestPoint;
         }
 
@@ -2357,15 +2377,15 @@
             const B = point[1] - lineStart[1];
             const C = lineEnd[0] - lineStart[0];
             const D = lineEnd[1] - lineStart[1];
-            
+
             const dot = A * C + B * D;
             const lenSq = C * C + D * D;
             let param = -1;
-            
+
             if (lenSq !== 0) param = dot / lenSq;
-            
+
             let xx, yy;
-            
+
             if (param < 0) {
                 xx = lineStart[0];
                 yy = lineStart[1];
@@ -2376,7 +2396,7 @@
                 xx = lineStart[0] + param * C;
                 yy = lineStart[1] + param * D;
             }
-            
+
             const dx = point[0] - xx;
             const dy = point[1] - yy;
             return Math.sqrt(dx * dx + dy * dy);
@@ -2399,11 +2419,11 @@
                 original_geometry: originalGeometry,
                 new_geometries: newGeometries
             });
-            
+
             alert(`Segment delt i ${newGeometries.length} deler! (Dette er kun frontend - backend API må implementeres)`);
-            
+
             exitGeometryEditMode();
-            
+
             // Reload route to show updated segments
             if (currentRoute) {
                 await loadRoute(currentRoute.rutenummer);
@@ -2415,7 +2435,7 @@
             const coords = originalGeometry.coordinates;
             let splitIndex = 0;
             let minDist = Infinity;
-            
+
             // Find the segment to split
             for (let i = 0; i < coords.length - 1; i++) {
                 const dist = pointToLineDistance(splitPoint, coords[i], coords[i + 1]);
@@ -2424,18 +2444,18 @@
                     splitIndex = i;
                 }
             }
-            
+
             // Create two new geometries
             const firstPart = coords.slice(0, splitIndex + 1);
             firstPart.push(splitPoint);
-            
+
             const secondPart = [splitPoint, ...coords.slice(splitIndex + 1)];
-            
+
             const newGeometries = [
                 { type: 'LineString', coordinates: firstPart },
                 { type: 'LineString', coordinates: secondPart }
             ];
-            
+
             await saveSplitSegment(segmentObjid, newGeometries, originalGeometry);
         }
 
@@ -2446,11 +2466,11 @@
                 original_geometry: originalGeometry,
                 new_geometry: newGeometry
             });
-            
+
             alert('Segment geometri oppdatert! (Dette er kun frontend - backend API må implementeres)');
-            
+
             exitGeometryEditMode();
-            
+
             // Reload route to show updated segment
             if (currentRoute) {
                 await loadRoute(currentRoute.rutenummer);
@@ -2459,18 +2479,18 @@
 
         async function updateSegmentEndpoint(segmentObjid, endpoint, newPoint, originalGeometry) {
             const coords = [...originalGeometry.coordinates];
-            
+
             if (endpoint === 'start') {
                 coords[0] = newPoint;
             } else {
                 coords[coords.length - 1] = newPoint;
             }
-            
+
             const newGeometry = {
                 type: 'LineString',
                 coordinates: coords
             };
-            
+
             await saveSegmentGeometry(segmentObjid, newGeometry, originalGeometry);
         }
 
@@ -2494,19 +2514,19 @@
             const rutenummerInput = document.getElementById('bulkEditRutenummer');
             const rutenavnInput = document.getElementById('bulkEditRutenavn');
             const segmentCountEl = document.getElementById('bulkEditSegmentCount');
-            
+
             if (!currentValidation || !currentValidation.segment_metadata) {
                 alert('Ingen valideringsdata tilgjengelig');
                 return;
             }
-            
+
             const segmentCount = currentValidation.segment_metadata.length;
-            
+
             infoEl.textContent = `Rediger rutenavn for alle segmenter i ruten "${rutenummer}"`;
             rutenummerInput.value = rutenummer;
             rutenavnInput.value = currentRutenavn || '';
             segmentCountEl.textContent = segmentCount;
-            
+
             modal.classList.add('active');
         }
 
@@ -2518,23 +2538,23 @@
         async function saveBulkEditRoute() {
             const rutenummer = document.getElementById('bulkEditRutenummer').value;
             const newRutenavn = document.getElementById('bulkEditRutenavn').value.trim();
-            
+
             if (!rutenummer) {
                 alert('Rutenummer mangler');
                 return;
             }
-            
+
             if (!currentValidation || !currentValidation.segment_metadata) {
                 alert('Ingen valideringsdata tilgjengelig');
                 return;
             }
-            
+
             const segmentCount = currentValidation.segment_metadata.length;
-            
+
             if (!confirm(`Er du sikker på at du vil oppdatere rutenavn til "${newRutenavn}" for alle ${segmentCount} segmenter i ruten "${rutenummer}"?`)) {
                 return;
             }
-            
+
             // TODO: Send to backend API
             // For now, just show what would be sent
             console.log('Would save bulk edit:', {
@@ -2542,14 +2562,14 @@
                 rutenavn: newRutenavn,
                 segment_count: segmentCount
             });
-            
+
             alert('Endringer lagret! (Dette er kun frontend - backend API må implementeres)');
-            
+
             // Reload route to show updated data
             if (currentRoute) {
                 await loadRoute(currentRoute.rutenummer);
             }
-            
+
             closeBulkEditRouteModal();
         }
 
@@ -2585,18 +2605,18 @@
         let searchTimeout = null;
         document.getElementById('routeSearchInput').addEventListener('input', (e) => {
             const query = e.target.value.trim();
-            
+
             // Clear previous timeout
             if (searchTimeout) {
                 clearTimeout(searchTimeout);
             }
-            
+
             // If empty, show all routes immediately
             if (query.length === 0) {
                 performRouteSearch('');
                 return;
             }
-            
+
             // For non-empty queries, debounce with 300ms delay
             searchTimeout = setTimeout(() => {
                 performRouteSearch(query);
@@ -2774,14 +2794,14 @@
             if (segmentHoverHighlightTimeout) {
                 clearTimeout(segmentHoverHighlightTimeout);
             }
-            
+
             // Small delay to prevent flickering
             segmentHoverHighlightTimeout = setTimeout(() => {
                 // Clear previous hover highlight
                 if (currentlyHoveredSegment) {
                     clearSegmentHighlight();
                 }
-                
+
                 // Ensure segments are loaded and visible
                 if (segmentLayers.length === 0 && segmentData && currentValidation) {
                     displaySegmentsOnMap(segmentData, currentValidation);
@@ -2792,7 +2812,7 @@
                         map.removeLayer(linkLayerGroup);
                     }
                 }
-                
+
                 // Highlight the segment
                 segmentLayers.forEach(({ objid, layer, originalStyle }) => {
                     if (String(objid) === String(segmentObjid)) {
@@ -2814,7 +2834,7 @@
                 clearTimeout(segmentHoverHighlightTimeout);
                 segmentHoverHighlightTimeout = null;
             }
-            
+
             // Clear highlight after a small delay
             setTimeout(() => {
                 if (currentlyHoveredSegment) {

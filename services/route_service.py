@@ -335,7 +335,8 @@ def get_anchor_node_coords(conn, anchor_node_id: int) -> Optional[Dict[str, floa
 
 
 def get_anchor_node_geometry(conn, anchor_node_id: int) -> Optional[str]:
-    """Get anchor node geometry as WKT for a node ID."""
+    """Get anchor node geometry as WKT in SRID 25833 (UTM 33N) for storage in ops.endpoint_names.
+    Geometry is taken from stiflyt.anchor_nodes so sync matches without transform."""
     if not validate_schema_name(ROUTE_SCHEMA):
         raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
 
@@ -355,7 +356,7 @@ def get_anchor_node_geometry(conn, anchor_node_id: int) -> Optional[str]:
 
         query = f"""
             SELECT
-                ST_AsText(ST_Transform(geom, 4326)) as geom_wkt
+                ST_AsText(ST_Transform(geom, 25833)) as geom_wkt
             FROM {ROUTE_SCHEMA}.anchor_nodes
             WHERE node_id = %s
             LIMIT 1
@@ -1401,6 +1402,7 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
         segments_query = f"""
             SELECT
                 f.objid,
+                f.oppdateringsdato,
                 ST_Length(ST_Transform(f.senterlinje::geometry, 4326)::geography) as length_meters,
                 CASE WHEN %s THEN ST_AsGeoJSON(ST_Transform(f.senterlinje::geometry, 4326))::json ELSE NULL END as geometry
                 {select_uuid}
@@ -1439,12 +1441,15 @@ def get_complete_route(conn, rutenummer, include_geometry=True, include_segments
                 })
 
             segment_geom = parse_geometry(seg_row.get('geometry')) if include_geometry and seg_row.get('geometry') else None
+            oppd = seg_row.get('oppdateringsdato')
+            oppdateringsdato = oppd.isoformat() if oppd is not None and hasattr(oppd, 'isoformat') else (str(oppd) if oppd is not None else None)
             segments.append({
                 'objid': objid,
                 'object_uuid': seg_row.get('object_uuid'),
                 'routes': route_infos,
                 'length_meters': float(seg_row['length_meters']) if seg_row.get('length_meters') is not None else 0.0,
-                'geometry': segment_geom
+                'geometry': segment_geom,
+                'oppdateringsdato': oppdateringsdato,
             })
 
     # Build result
@@ -1807,7 +1812,8 @@ def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool =
         "rs.vedlikeholdsansvarlig",
         "rs.rutetype",
         "rs.gradering",
-        "ST_Length(ST_Transform(rs.senterlinje, 4326)::geography) as length_meters"
+        "ST_Length(ST_Transform(rs.senterlinje, 4326)::geography) as length_meters",
+        "f.oppdateringsdato",
     ]
 
     if uuid_col:
@@ -1816,7 +1822,7 @@ def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool =
     if include_geometry:
         select_parts.append("ST_AsGeoJSON(ST_Transform(rs.senterlinje, 4326))::json as senterlinje")
 
-    join_clause = f"LEFT JOIN {ROUTE_SCHEMA}.fotrute f ON f.objid = rs.segment_objid" if uuid_col else ""
+    join_clause = f"LEFT JOIN {ROUTE_SCHEMA}.fotrute f ON f.objid = rs.segment_objid"
     query = f"""
         SELECT
             {', '.join(select_parts)}
@@ -1836,6 +1842,12 @@ def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool =
             if not row.get("object_uuid"):
                 raise ValueError(f"Missing object_uuid for segment objid {row.get('segment_objid')}")
     for row in rows:
+        oppdateringsdato = row.get('oppdateringsdato')
+        if oppdateringsdato is not None and hasattr(oppdateringsdato, 'isoformat'):
+            oppdateringsdato = oppdateringsdato.isoformat()
+        elif oppdateringsdato is not None:
+            oppdateringsdato = str(oppdateringsdato)
+
         segment = {
             'rutenummer': row['rutenummer'],
             'segment_objid': int(row['segment_objid']),
@@ -1846,7 +1858,8 @@ def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool =
             'vedlikeholdsansvarlig': row.get('vedlikeholdsansvarlig'),
             'rutetype': row.get('rutetype'),
             'gradering': row.get('gradering'),
-            'length_meters': float(row['length_meters']) if row.get('length_meters') is not None else None
+            'length_meters': float(row['length_meters']) if row.get('length_meters') is not None else None,
+            'oppdateringsdato': oppdateringsdato,
         }
 
         if include_geometry and row.get('senterlinje'):
