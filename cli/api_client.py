@@ -360,6 +360,32 @@ class RoutesClient:
         url = f"{self.base_url}/routes"
         return self._make_request("GET", url, params)
 
+    def get_routes_statistics(
+        self,
+        prefix: Optional[str] = None,
+        vedlikeholdsansvarlig: Optional[str] = None,
+        bbox: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get aggregate statistics for routes (total count, total km, distinct km).
+
+        At least one of prefix, vedlikeholdsansvarlig, or bbox must be provided.
+
+        Returns:
+            Dictionary with total_routes, total_km, distinct_km
+        """
+        params = {}
+        if prefix:
+            params["prefix"] = prefix
+        if vedlikeholdsansvarlig:
+            params["vedlikeholdsansvarlig"] = vedlikeholdsansvarlig
+        if bbox:
+            params["bbox"] = bbox
+        if not params:
+            raise ValueError("At least one filter is required: prefix, vedlikeholdsansvarlig, or bbox")
+        url = f"{self.base_url}/routes/statistics"
+        return self._make_request("GET", url, params)
+
     def get_route(
         self,
         rutenummer: str,

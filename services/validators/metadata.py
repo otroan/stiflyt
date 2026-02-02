@@ -6,6 +6,76 @@ from collections import defaultdict
 from typing import Dict, List, Any
 from .base import BaseValidator, ValidationResult, ValidationIssue, Severity
 from ..database import ROUTE_SCHEMA, quote_identifier, validate_schema_name
+from psycopg.rows import dict_row
+
+
+def _resolve_segment_objids_to_uuids(
+    conn,
+    schema_quoted: str,
+    segment_objids: List[str],
+) -> Dict[str, str]:
+    """
+    Resolve segment objids to UUIDs (lokalid or object_uuid/uuid/global_id) from fotrute.
+    Returns mapping objid_str -> uuid_str. Missing or unresolvable objids are omitted.
+    """
+    if not segment_objids:
+        return {}
+    try:
+        objids_int = []
+        for s in segment_objids:
+            try:
+                objids_int.append(int(s))
+            except (ValueError, TypeError):
+                pass
+        if not objids_int:
+            return {}
+    except Exception:
+        return {}
+
+    uuid_col = None
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = 'fotrute'
+                  AND column_name IN ('object_uuid', 'uuid', 'global_id', 'lokalid')
+                ORDER BY CASE column_name
+                    WHEN 'object_uuid' THEN 1 WHEN 'uuid' THEN 2
+                    WHEN 'global_id' THEN 3 WHEN 'lokalid' THEN 4
+                    ELSE 5 END
+                LIMIT 1
+                """,
+                (ROUTE_SCHEMA,),
+            )
+            row = cur.fetchone()
+            uuid_col = row.get('column_name') if row else None
+    except Exception:
+        return {}
+
+    if not uuid_col:
+        return {}
+
+    col_quoted = quote_identifier(uuid_col)
+    objid_to_uuid = {}
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""
+                SELECT objid, {schema_quoted}.fotrute.{col_quoted}::text as uuid_val
+                FROM {schema_quoted}.fotrute
+                WHERE objid = ANY(%s)
+                """,
+                (objids_int,),
+            )
+            for r in cur.fetchall():
+                u = r.get('uuid_val')
+                if u:
+                    objid_to_uuid[str(r['objid'])] = u
+    except Exception:
+        pass
+    return objid_to_uuid
 
 
 class MetadataConsistencyValidator(BaseValidator):
@@ -99,13 +169,22 @@ class MetadataConsistencyValidator(BaseValidator):
         # Check rutenavn consistency
         rutenavn_values = set(all_rutenavn)
         if len(rutenavn_values) > 1:
+            _objids = [oid for segs in rutenavn_by_segment.values() for oid in segs]
+            _objid_to_uuid = _resolve_segment_objids_to_uuids(conn, schema_quoted, _objids)
+            _uuids = [_objid_to_uuid[oid] for oid in _objids if oid in _objid_to_uuid]
+            _value_by_segment_uuid = {
+                val: [_objid_to_uuid[oid] for oid in segs if oid in _objid_to_uuid]
+                for val, segs in rutenavn_by_segment.items()
+            }
             result.add_issue(ValidationIssue(
                 type='INCONSISTENT_RUTENAVN',
                 message=f'Route has segments with different rutenavn values: {sorted(rutenavn_values)} (Expected: all segments should have the same rutenavn)',
                 severity=Severity.WARNING,
+                affected_segments=_uuids,
                 metadata={
                     'values': sorted(rutenavn_values),
-                    'value_by_segment': rutenavn_by_segment
+                    'value_by_segment': rutenavn_by_segment,
+                    'value_by_segment_uuid': _value_by_segment_uuid,
                 }
             ))
 
@@ -119,50 +198,80 @@ class MetadataConsistencyValidator(BaseValidator):
                     break
 
         if ukjent_segments:
+            _objids = sorted(ukjent_segments)
+            _objid_to_uuid = _resolve_segment_objids_to_uuids(conn, schema_quoted, _objids)
+            _uuids = [_objid_to_uuid[oid] for oid in _objids if oid in _objid_to_uuid]
             result.add_issue(ValidationIssue(
                 type='RUTENAVN_UKJENT',
                 message='Route has segments with rutenavn "Ukjent". All routes should have a name.',
                 severity=Severity.WARNING,
-                affected_segments=sorted(ukjent_segments),
-                metadata={'value': 'Ukjent'}
+                affected_segments=_uuids if _uuids else _objids,
+                metadata={'value': 'Ukjent', 'segment_objids': _objids}
             ))
 
         # Check vedlikeholdsansvarlig consistency
         vedlikeholdsansvarlig_values = set(all_vedlikeholdsansvarlig)
         if len(vedlikeholdsansvarlig_values) > 1:
+            _objids = [oid for segs in vedlikeholdsansvarlig_by_segment.values() for oid in segs]
+            _objid_to_uuid = _resolve_segment_objids_to_uuids(conn, schema_quoted, _objids)
+            _uuids = [_objid_to_uuid[oid] for oid in _objids if oid in _objid_to_uuid]
+            _value_by_segment_uuid = {
+                val: [_objid_to_uuid[oid] for oid in segs if oid in _objid_to_uuid]
+                for val, segs in vedlikeholdsansvarlig_by_segment.items()
+            }
             result.add_issue(ValidationIssue(
                 type='INCONSISTENT_VEDLIKEHOLDSANSVARLIG',
                 message=f'Route has segments with different vedlikeholdsansvarlig values: {sorted(vedlikeholdsansvarlig_values)} (Note: Different organizations may be responsible for different segments - this may be expected)',
                 severity=Severity.WARNING,
+                affected_segments=_uuids,
                 metadata={
                     'values': sorted(vedlikeholdsansvarlig_values),
-                    'value_by_segment': vedlikeholdsansvarlig_by_segment
+                    'value_by_segment': vedlikeholdsansvarlig_by_segment,
+                    'value_by_segment_uuid': _value_by_segment_uuid,
                 }
             ))
 
         # Check rutetype consistency
         rutetype_values = set(all_rutetype)
         if len(rutetype_values) > 1:
+            _objids = [oid for segs in rutetype_by_segment.values() for oid in segs]
+            _objid_to_uuid = _resolve_segment_objids_to_uuids(conn, schema_quoted, _objids)
+            _uuids = [_objid_to_uuid[oid] for oid in _objids if oid in _objid_to_uuid]
+            _value_by_segment_uuid = {
+                val: [_objid_to_uuid[oid] for oid in segs if oid in _objid_to_uuid]
+                for val, segs in rutetype_by_segment.items()
+            }
             result.add_issue(ValidationIssue(
                 type='INCONSISTENT_RUTETYPE',
                 message=f'Route has segments with different rutetype values: {sorted(rutetype_values)} (Expected: all segments should have the same rutetype)',
                 severity=Severity.WARNING,
+                affected_segments=_uuids,
                 metadata={
                     'values': sorted(rutetype_values),
-                    'value_by_segment': rutetype_by_segment
+                    'value_by_segment': rutetype_by_segment,
+                    'value_by_segment_uuid': _value_by_segment_uuid,
                 }
             ))
 
         # Check gradering consistency
         gradering_values = set(all_gradering)
         if len(gradering_values) > 1:
+            _objids = [oid for segs in gradering_by_segment.values() for oid in segs]
+            _objid_to_uuid = _resolve_segment_objids_to_uuids(conn, schema_quoted, _objids)
+            _uuids = [_objid_to_uuid[oid] for oid in _objids if oid in _objid_to_uuid]
+            _value_by_segment_uuid = {
+                val: [_objid_to_uuid[oid] for oid in segs if oid in _objid_to_uuid]
+                for val, segs in gradering_by_segment.items()
+            }
             result.add_issue(ValidationIssue(
                 type='INCONSISTENT_GRADERING',
                 message=f'Route has segments with different gradering values: {sorted(gradering_values)} (Expected: all segments should have the same gradering)',
                 severity=Severity.WARNING,
+                affected_segments=_uuids,
                 metadata={
                     'values': sorted(gradering_values),
-                    'value_by_segment': gradering_by_segment
+                    'value_by_segment': gradering_by_segment,
+                    'value_by_segment_uuid': _value_by_segment_uuid,
                 }
             ))
 
@@ -374,7 +483,7 @@ class RouteNameSuggestionValidator(BaseValidator):
         if not start_name and not end_name:
             try:
                 from psycopg.rows import dict_row
-                
+
                 # Check if navn column exists in anchor_nodes
                 has_navn_column = False
                 try:
@@ -392,10 +501,10 @@ class RouteNameSuggestionValidator(BaseValidator):
                 except Exception:
                     # If check fails, assume column doesn't exist
                     has_navn_column = False
-                
+
                 # Build SELECT clause conditionally
                 navn_select = "an_a.navn as from_name, an_b.navn as to_name" if has_navn_column else "NULL as from_name, NULL as to_name"
-                
+
                 endpoint_query = f"""
                     WITH route_links_expanded AS (
                         SELECT

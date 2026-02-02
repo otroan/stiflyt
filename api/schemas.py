@@ -310,6 +310,13 @@ class RoutesResponse(BaseModel):
     offset: int
 
 
+class RoutesStatisticsResponse(BaseModel):
+    """Response for routes statistics (total km and distinct km)."""
+    total_routes: int
+    total_km: float
+    distinct_km: float
+
+
 class RouteSegmentDetail(BaseModel):
     """Route segment detail from stiflyt.route_segments view."""
     rutenummer: str

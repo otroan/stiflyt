@@ -2,7 +2,7 @@
 Geometry validators for route validation.
 """
 
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from .base import BaseValidator, ValidationResult, ValidationIssue, Severity
 from ..database import ROUTE_SCHEMA, quote_identifier, validate_schema_name
 from ..route_connections import find_segment_connections
@@ -314,7 +314,7 @@ class LinkConnectivityValidator(BaseValidator):
         # Build SELECT clause conditionally
         navn_select = "an_a.navn as a_node_name, an_b.navn as b_node_name" if has_navn_column else "NULL as a_node_name, NULL as b_node_name"
 
-        # Get links
+        # Get links (degree is not used: endpoint check uses route-local topology only)
         links_query = f"""
             SELECT
                 l.link_id,
@@ -322,8 +322,7 @@ class LinkConnectivityValidator(BaseValidator):
                 l.b_node,
                 l.length_m,
                 l.segment_objids,
-                an_a.degree as a_node_degree,
-                an_b.degree as b_node_degree,
+                l.geom,
                 {navn_select}
             FROM {schema_quoted}.links_with_routes l
             LEFT JOIN {schema_quoted}.anchor_nodes an_a ON an_a.node_id = l.a_node
@@ -387,77 +386,367 @@ class LinkConnectivityValidator(BaseValidator):
                     endpoint_nodes.append(node)
 
             if len(endpoint_nodes) != 2:
-                result.add_issue(ValidationIssue(
-                    type='UNEXPECTED_ENDPOINT_COUNT',
-                    message=f'Route has {len(endpoint_nodes)} endpoint node(s) (expected 2 for a continuous route). Endpoints: {endpoint_nodes}',
-                    severity=Severity.WARNING,
-                    metadata={'endpoint_count': len(endpoint_nodes), 'endpoint_nodes': endpoint_nodes}
-                ))
-
-            # Check endpoints have correct degree
-            for link in links:
-                a_degree = link.get('a_node_degree')
-                b_degree = link.get('b_node_degree')
-
-                if link['a_node'] in endpoint_nodes and a_degree is not None and a_degree != 1:
+                # A single continuous path has exactly 2 endpoints. Any other count is invalid.
+                if len(endpoint_nodes) > 2:
+                    spur_links, spur_segment_lokalids = self._spur_links_and_segment_lokalids(
+                        conn=conn,
+                        schema_quoted=schema_quoted,
+                        link_graph=link_graph,
+                        link_by_id=link_by_id,
+                        endpoint_nodes=endpoint_nodes,
+                    )
                     result.add_issue(ValidationIssue(
-                        type='ENDPOINT_NODE_WRONG_DEGREE',
-                        message=f'Link {link["link_id"]} has a_node {link["a_node"]} marked as endpoint but has degree={a_degree} (expected 1)',
+                        type='ROUTE_HAS_BRANCHES',
+                        message=(
+                            f'Route has branches or spurs: {len(endpoint_nodes)} endpoint node(s) '
+                            f'(expected 2 for a single path). This usually indicates a stray segment or appendix link. '
+                            f'Endpoint nodes: {endpoint_nodes}.'
+                        ),
+                        severity=Severity.ERROR,
+                        affected_segments=spur_segment_lokalids,
+                        affected_links=spur_links,
+                        metadata={
+                            'endpoint_count': len(endpoint_nodes),
+                            'endpoint_nodes': endpoint_nodes,
+                        },
+                    ))
+                else:
+                    # 0 or 1 endpoint: loop or incomplete topology
+                    result.add_issue(ValidationIssue(
+                        type='UNEXPECTED_ENDPOINT_COUNT',
+                        message=(
+                            f'Route has {len(endpoint_nodes)} endpoint node(s) (expected 2 for a single continuous path). '
+                            f'Endpoints: {endpoint_nodes}.'
+                        ),
                         severity=Severity.WARNING,
-                        affected_links=[link['link_id']],
-                        metadata={'node_id': link['a_node'], 'degree': a_degree}
+                        metadata={'endpoint_count': len(endpoint_nodes), 'endpoint_nodes': endpoint_nodes}
                     ))
 
-                if link['b_node'] in endpoint_nodes and b_degree is not None and b_degree != 1:
-                    result.add_issue(ValidationIssue(
-                        type='ENDPOINT_NODE_WRONG_DEGREE',
-                        message=f'Link {link["link_id"]} has b_node {link["b_node"]} marked as endpoint but has degree={b_degree} (expected 1)',
-                        severity=Severity.WARNING,
-                        affected_links=[link['link_id']],
-                        metadata={'node_id': link['b_node'], 'degree': b_degree}
-                    ))
-
-            # Check for multiple components
+            # Connected components should be computed UNDIRECTED:
+            # - A route can traverse a link in either direction
+            # - Links can be shared among routes and stored with arbitrary a/b orientation
+            # So for "is the route in one piece?", any shared endpoint node connects links.
             components = []
-            visited_components = set()
+            visited_undirected = set()
 
-            def dfs_component(link_id, component):
-                if link_id in visited_components:
-                    return
-                visited_components.add(link_id)
-                component.append(link_id)
+            def dfs_component_undirected(start_link_id, component):
+                stack = [start_link_id]
+                while stack:
+                    link_id = stack.pop()
+                    if link_id in visited_undirected:
+                        continue
+                    visited_undirected.add(link_id)
+                    component.append(link_id)
 
-                link = link_by_id[link_id]
-                b_node = link['b_node']
-                if b_node in link_graph:
-                    for node_type, connected_link_id in link_graph[b_node]:
-                        if node_type == 'a' and connected_link_id not in visited_components:
-                            dfs_component(connected_link_id, component)
+                    link = link_by_id[link_id]
+                    for node_id in (link['a_node'], link['b_node']):
+                        for _node_type, connected_link_id in link_graph.get(node_id, []):
+                            if connected_link_id not in visited_undirected:
+                                stack.append(connected_link_id)
 
             for link in links:
                 link_id = link['link_id']
-                if link_id not in visited_components:
+                if link_id not in visited_undirected:
                     component = []
-                    dfs_component(link_id, component)
+                    dfs_component_undirected(link_id, component)
                     components.append(component)
 
             if len(components) > 1:
+                # True disconnected islands (even when ignoring direction)
                 components.sort(key=len, reverse=True)
                 main_component = components[0]
                 appendix_components = components[1:]
 
+                # Compute distance from each appendix component to main component (if geometry is available)
+                appendix_distances = self._compute_component_distances_to_main(
+                    conn=conn,
+                    schema_quoted=schema_quoted,
+                    main_component_link_ids=main_component,
+                    appendix_components_link_ids=appendix_components,
+                )
+
+                distance_summary = ""
+                if appendix_distances:
+                    # Keep message short and human-readable, detailed info goes in metadata
+                    dist_parts = []
+                    for d in appendix_distances:
+                        dist_m = d.get("min_distance_meters")
+                        if dist_m is None:
+                            dist_parts.append("N/A")
+                        else:
+                            dist_parts.append(f"{dist_m:.1f}m")
+                    distance_summary = f" Distances to main: {dist_parts}."
+
                 result.add_issue(ValidationIssue(
                     type='MULTIPLE_LINK_COMPONENTS',
-                    message=f'Route has {len(components)} disconnected link component(s). Main component: {len(main_component)} links, Appendix components: {[len(c) for c in appendix_components]} links. Note: route_geometries should still provide continuous geometry.',
+                    message=(
+                        f'Route has {len(components)} disconnected link component(s). '
+                        f'Main component: {len(main_component)} links, '
+                        f'Appendix components: {[len(c) for c in appendix_components]} links.'
+                        f'{distance_summary} '
+                        f'Note: route_geometries should still provide continuous geometry.'
+                    ),
                     severity=Severity.INFO,
                     metadata={
                         'component_count': len(components),
                         'main_component_link_ids': main_component,
                         'appendix_component_link_ids': [c for c in appendix_components]
+                        ,
+                        'appendix_component_distance_to_main': appendix_distances or []
+                    }
+                ))
+
+            # Additionally, detect when the route is connected UNDIRECTED, but not as a single
+            # directed chain under the stored a_node->b_node orientation.
+            directed_components = []
+            visited_directed = set()
+
+            def dfs_component_directed(link_id, component):
+                if link_id in visited_directed:
+                    return
+                visited_directed.add(link_id)
+                component.append(link_id)
+
+                link = link_by_id[link_id]
+                b_node = link['b_node']
+                for node_type, connected_link_id in link_graph.get(b_node, []):
+                    if node_type == 'a' and connected_link_id not in visited_directed:
+                        dfs_component_directed(connected_link_id, component)
+
+            for link in links:
+                link_id = link['link_id']
+                if link_id not in visited_directed:
+                    component = []
+                    dfs_component_directed(link_id, component)
+                    directed_components.append(component)
+
+            if len(components) == 1 and len(directed_components) > 1:
+                directed_components.sort(key=len, reverse=True)
+                result.add_issue(ValidationIssue(
+                    type='LINK_ORIENTATION_BREAKS_CHAIN',
+                    message=(
+                        f'Route links are connected (ignoring direction), but cannot be traversed as a single chain '
+                        f'using the stored a_node→b_node orientation. '
+                        f'This usually means some links need to be reversed for traversal/line-merge. '
+                        f'Directed components: {len(directed_components)} (sizes: {[len(c) for c in directed_components]}).'
+                    ),
+                    severity=Severity.INFO,
+                    metadata={
+                        'directed_component_count': len(directed_components),
+                        'directed_components_link_ids': directed_components,
                     }
                 ))
 
         return result
+
+    def _compute_component_distances_to_main(
+        self,
+        conn,
+        schema_quoted: str,
+        main_component_link_ids: List[int],
+        appendix_components_link_ids: List[List[int]],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        Compute minimum distance from each appendix component to the main component.
+
+        Uses PostGIS ST_Distance on transformed geometries (to geography) when possible.
+        Returns a list with one entry per appendix component.
+        """
+        if not main_component_link_ids or not appendix_components_link_ids:
+            return None
+
+        results: List[Dict[str, Any]] = []
+
+        # Verify geom column exists and is populated. If not, return None (don't fail validation).
+        try:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(*) as total, COUNT(geom) as with_geom
+                    FROM {schema_quoted}.links_with_routes
+                    WHERE link_id = ANY(%s)
+                    """,
+                    (main_component_link_ids,),
+                )
+                row = cur.fetchone() or {}
+                if (row.get("with_geom") or 0) == 0:
+                    return None
+        except Exception:
+            return None
+
+        for idx, comp_link_ids in enumerate(appendix_components_link_ids, start=1):
+            if not comp_link_ids:
+                results.append(
+                    {
+                        "appendix_index": idx,
+                        "link_count": 0,
+                        "min_distance_meters": None,
+                        "closest_main_link_id": None,
+                        "closest_appendix_link_id": None,
+                    }
+                )
+                continue
+
+            try:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    # Get the closest pair (main link, appendix link) and their distance in meters.
+                    # We transform to 4326 and cast to geography for meter-based distance.
+                    cur.execute(
+                        f"""
+                        SELECT
+                            m.link_id as closest_main_link_id,
+                            a.link_id as closest_appendix_link_id,
+                            ST_Distance(
+                                ST_Transform(m.geom::geometry, 4326)::geography,
+                                ST_Transform(a.geom::geometry, 4326)::geography
+                            ) as distance_meters
+                        FROM {schema_quoted}.links_with_routes m
+                        JOIN {schema_quoted}.links_with_routes a ON true
+                        WHERE m.link_id = ANY(%s)
+                          AND a.link_id = ANY(%s)
+                          AND m.geom IS NOT NULL
+                          AND a.geom IS NOT NULL
+                        ORDER BY distance_meters ASC
+                        LIMIT 1
+                        """,
+                        (main_component_link_ids, comp_link_ids),
+                    )
+                    row = cur.fetchone() or {}
+
+                dist = row.get("distance_meters")
+                results.append(
+                    {
+                        "appendix_index": idx,
+                        "link_count": len(comp_link_ids),
+                        "min_distance_meters": float(dist) if dist is not None else None,
+                        "closest_main_link_id": row.get("closest_main_link_id"),
+                        "closest_appendix_link_id": row.get("closest_appendix_link_id"),
+                    }
+                )
+            except Exception:
+                results.append(
+                    {
+                        "appendix_index": idx,
+                        "link_count": len(comp_link_ids),
+                        "min_distance_meters": None,
+                        "closest_main_link_id": None,
+                        "closest_appendix_link_id": None,
+                    }
+                )
+
+        return results
+
+    def _spur_links_and_segment_lokalids(
+        self,
+        conn,
+        schema_quoted: str,
+        link_graph: Dict[int, List[tuple]],
+        link_by_id: Dict[int, Dict[str, Any]],
+        endpoint_nodes: List[int],
+    ) -> tuple:
+        """
+        Identify the smallest "spur" branch (set of links from one endpoint to the junction)
+        and resolve its segment objids to UUIDs (lokalid or fallback).
+
+        Returns (spur_link_ids: List[int], spur_segment_lokalids: List[str]).
+        """
+        def branch_from_endpoint(endpoint: int):
+            branch_links = set()
+            current = endpoint
+            visited = {endpoint}
+            while True:
+                refs = link_graph.get(current, [])
+                next_link_id = None
+                for (_node_type, link_id) in refs:
+                    if link_id not in branch_links:
+                        next_link_id = link_id
+                        break
+                if next_link_id is None:
+                    break
+                branch_links.add(next_link_id)
+                link = link_by_id[next_link_id]
+                other = link['b_node'] if link['a_node'] == current else link['a_node']
+                if other in visited:
+                    break
+                visited.add(other)
+                if len(link_graph.get(other, [])) >= 3:
+                    break  # junction
+                current = other
+            return branch_links
+
+        if not endpoint_nodes:
+            return ([], [])
+
+        branches = [branch_from_endpoint(ep) for ep in endpoint_nodes]
+
+        def branch_length(branch):
+            return sum(
+                (link_by_id.get(lid, {}).get('length_m') or 0)
+                for lid in branch
+            )
+
+        spur_links = min(branches, key=branch_length)
+        if not spur_links:
+            return ([], [])
+
+        segment_objids = []
+        for link_id in spur_links:
+            link = link_by_id.get(link_id, {})
+            objids = link.get('segment_objids')
+            if objids is not None:
+                segment_objids.extend(objids if isinstance(objids, list) else [objids])
+        segment_objids = list(dict.fromkeys(segment_objids))  # unique, preserve order
+
+        if not segment_objids:
+            return (list(spur_links), [])
+
+        # Resolve objid -> UUID (lokalid or object_uuid/uuid/global_id)
+        uuid_col = None
+        try:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = 'fotrute'
+                      AND column_name IN ('object_uuid', 'uuid', 'global_id', 'lokalid')
+                    ORDER BY CASE column_name
+                        WHEN 'object_uuid' THEN 1 WHEN 'uuid' THEN 2
+                        WHEN 'global_id' THEN 3 WHEN 'lokalid' THEN 4
+                        ELSE 5 END
+                    LIMIT 1
+                    """,
+                    (ROUTE_SCHEMA,),
+                )
+                row = cur.fetchone()
+                uuid_col = row.get('column_name') if row else None
+        except Exception:
+            pass
+
+        if not uuid_col:
+            return (list(spur_links), [str(oid) for oid in segment_objids])
+
+        col_quoted = quote_identifier(uuid_col)
+        lokalids = []
+        try:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    f"""
+                    SELECT objid, {schema_quoted}.fotrute.{col_quoted}::text as uuid_val
+                    FROM {schema_quoted}.fotrute
+                    WHERE objid = ANY(%s)
+                    """,
+                    (segment_objids,),
+                )
+                objid_to_uuid = {r['objid']: r['uuid_val'] for r in cur.fetchall() if r.get('uuid_val')}
+            for oid in segment_objids:
+                u = objid_to_uuid.get(oid)
+                if u:
+                    lokalids.append(u)
+        except Exception:
+            lokalids = [str(oid) for oid in segment_objids]
+
+        return (list(spur_links), lokalids)
 
 
 class SegmentGapValidator(BaseValidator):

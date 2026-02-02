@@ -23,6 +23,7 @@ from .formatters import (
     format_routes_table,
     format_routes_csv,
     format_routes_summary,
+    format_routes_statistics,
     build_changeset_report,
     format_changeset_report,
     format_signs_table,
@@ -45,7 +46,9 @@ Examples:
   %(prog)s routes list
   %(prog)s routes list --prefix bre
   %(prog)s routes list --prefix bre --format json
+  %(prog)s routes list --prefix bre --statistics
   %(prog)s routes list --bbox 10.0,59.0,11.0,60.0
+  %(prog)s routes statistics --prefix bre
   %(prog)s routes get bre10
   %(prog)s routes segments bre10  # Physical route segments
   %(prog)s routes links bre10     # Routing topology links
@@ -212,6 +215,11 @@ Examples:
         type=str,
         help='Filter by organization (e.g., "DNT Oslo")'
     )
+    routes_list_parser.add_argument(
+        '--statistics',
+        action='store_true',
+        help='Include aggregate statistics (total km, distinct km) in summary'
+    )
 
     routes_get_parser = routes_subparsers.add_parser(
         'get',
@@ -331,6 +339,27 @@ Examples:
         '--debug-prefix',
         type=str,
         help='Debug: list vedlikeholdsansvarlig values for segments with this rutenummer prefix'
+    )
+
+    routes_statistics_parser = routes_subparsers.add_parser(
+        'statistics',
+        parents=[config_parser, format_parser, output_file_parser],
+        help='Route statistics for an area (total km and distinct km)'
+    )
+    routes_statistics_parser.add_argument(
+        '--prefix',
+        type=str,
+        help='Filter by route number prefix (e.g., "bre", "jot")'
+    )
+    routes_statistics_parser.add_argument(
+        '--vedlikeholdsansvarlig',
+        type=str,
+        help='Filter by organization (e.g., "DNT Oslo")'
+    )
+    routes_statistics_parser.add_argument(
+        '--bbox',
+        type=str,
+        help='Bounding box as "xmin,ymin,xmax,ymax" in WGS84'
     )
 
     routes_reasons_parser = routes_subparsers.add_parser(
@@ -855,6 +884,17 @@ Examples:
         try:
             validation_report = client.validate_route(rutenummer)
 
+            # Basic route info (start, end, length) from routes API for context
+            route_info = None
+            try:
+                route_info = client.get_route(rutenummer)
+            except APIResponseError as e:
+                if e.status_code != 404:
+                    if args.verbose:
+                        print(f"Note: could not load route info: {e}", file=sys.stderr)
+            except Exception:
+                pass
+
             if args.changeset_report:
                 report = build_changeset_report(validation_report)
                 if args.format == "json":
@@ -864,7 +904,16 @@ Examples:
                 sys.exit(0)
 
             if args.format == 'json':
-                print(format_json(validation_report))
+                out = dict(validation_report)
+                if route_info is not None:
+                    out["route_info"] = {
+                        "rutenavn": route_info.get("rutenavn"),
+                        "from_name": route_info.get("from_name"),
+                        "to_name": route_info.get("to_name"),
+                        "total_length_m": route_info.get("total_length_m"),
+                        "segment_count": route_info.get("segment_count"),
+                    }
+                print(format_json(out))
             else:
                 errors = validation_report.get("errors", [])
                 warnings = validation_report.get("warnings", [])
@@ -875,6 +924,28 @@ Examples:
                 print("=" * 80)
                 print(f"VALIDATION REPORT: {rutenummer}")
                 print("=" * 80)
+
+                if route_info is not None:
+                    print()
+                    print("ROUTE INFO:")
+                    print("-" * 80)
+                    rutenavn = route_info.get("rutenavn")
+                    print(f"  rutenavn:   {rutenavn or '(not set)'}")
+                    from_name = route_info.get("from_name")
+                    to_name = route_info.get("to_name")
+                    if isinstance(from_name, dict):
+                        from_name = from_name.get("name") or from_name
+                    if isinstance(to_name, dict):
+                        to_name = to_name.get("name") or to_name
+                    print(f"  Start:     {from_name or '(unknown)'}")
+                    print(f"  End:       {to_name or '(unknown)'}")
+                    total_m = route_info.get("total_length_m")
+                    if total_m is not None:
+                        print(f"  Length:    {float(total_m):.1f} m ({float(total_m) / 1000.0:.2f} km)")
+                    else:
+                        print(f"  Length:    (N/A)")
+                    print()
+
                 print(f"Total segments: {validation_report.get('segment_count', 0)}")
                 print(f"Total links: {validation_report.get('link_count', 0)}")
                 print(f"Status: {validation_report.get('status')}")
@@ -1400,7 +1471,7 @@ Examples:
                 traceback.print_exc()
             sys.exit(1)
 
-    if args.command == 'routes' and args.routes_command in {'list', 'get', 'segments', 'links', 'areas', 'anchors-name', 'anchors-missing'}:
+    if args.command == 'routes' and args.routes_command in {'list', 'get', 'segments', 'links', 'areas', 'anchors-name', 'anchors-missing', 'statistics'}:
         # Create configuration
         config = CLIConfig(
             api_url=args.api_url,
@@ -1452,6 +1523,19 @@ Examples:
                             for entry in prefix_entries:
                                 lines.append(f"  vedlikeholdsansvarlig \"{entry.get('value')}\": {entry.get('count')}")
                     output_text = "\n".join(lines)
+
+            elif args.routes_command == 'statistics':
+                if not args.prefix and not args.vedlikeholdsansvarlig and not args.bbox:
+                    parser.error("At least one filter is required: --prefix, --vedlikeholdsansvarlig, or --bbox")
+                response = client.get_routes_statistics(
+                    prefix=args.prefix,
+                    vedlikeholdsansvarlig=args.vedlikeholdsansvarlig,
+                    bbox=args.bbox,
+                )
+                if args.format == "json":
+                    output_text = format_json(response)
+                else:
+                    output_text = format_routes_statistics(response)
 
             elif args.routes_command == 'anchors-missing':
                 routes_limit = max(1, min(args.routes_limit, 1000))
@@ -1565,6 +1649,17 @@ Examples:
                     output_lines = []
                     if not args.no_summary:
                         output_lines.append(format_routes_summary(response))
+                        if args.statistics and (args.prefix or args.vedlikeholdsansvarlig or args.bbox):
+                            try:
+                                stats_response = client.get_routes_statistics(
+                                    prefix=args.prefix,
+                                    vedlikeholdsansvarlig=args.vedlikeholdsansvarlig,
+                                    bbox=args.bbox,
+                                )
+                                output_lines.append("")
+                                output_lines.append(format_routes_statistics(stats_response))
+                            except (APIError, APIResponseError, ValueError):
+                                pass
                     routes = response.get("routes", [])
                     output_lines.append(format_routes_table(routes, show_geometry=args.include_geometry))
                     output_text = "\n".join(output_lines)

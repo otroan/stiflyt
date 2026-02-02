@@ -1,7 +1,7 @@
 """Route service for processing routes and matrikkelenhet."""
 import psycopg
 import json
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from psycopg.rows import dict_row
 from .database import (
     db_connection,
@@ -1693,6 +1693,93 @@ def get_routes_from_view(
             pass
 
     return routes, total_count
+
+
+def get_routes_statistics(
+    conn,
+    prefix: Optional[str] = None,
+    vedlikeholdsansvarlig: Optional[str] = None,
+    bbox: Optional[tuple[float, float, float, float]] = None,
+) -> Dict[str, Any]:
+    """
+    Get aggregate statistics for routes matching the given filters.
+
+    Uses the same filters as get_routes_from_view (prefix, vedlikeholdsansvarlig, bbox).
+    Returns total route count, total km (sum of route lengths, overlapping links
+    counted per route), and distinct km (sum of link lengths, each link counted once).
+
+    Args:
+        conn: Database connection
+        prefix: Route number prefix (e.g., "bre", "jot")
+        vedlikeholdsansvarlig: Organization filter (pattern match)
+        bbox: Bounding box as (xmin, ymin, xmax, ymax) in WGS84 (4326)
+
+    Returns:
+        Dict with total_routes (int), total_km (float), distinct_km (float)
+    """
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+
+    where_conditions = []
+    params = []
+
+    if prefix:
+        where_conditions.append("rutenummer LIKE %s")
+        params.append(f"{prefix}%")
+
+    if vedlikeholdsansvarlig:
+        where_conditions.append("vedlikeholdsansvarlig ILIKE %s")
+        params.append(f"%{vedlikeholdsansvarlig}%")
+
+    if bbox:
+        xmin, ymin, xmax, ymax = bbox
+        where_conditions.append(
+            "route_geometry && ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), 25833) "
+            "AND ST_Intersects(route_geometry, ST_Transform(ST_MakeEnvelope(%s, %s, %s, %s, 4326), 25833))"
+        )
+        params.extend([xmin, ymin, xmax, ymax, xmin, ymin, xmax, ymax])
+
+    where_clause = "WHERE " + " AND ".join(where_conditions) if where_conditions else ""
+    schema_quoted = quote_identifier(ROUTE_SCHEMA)
+
+    # Query 1: count and sum of route lengths from routes view
+    count_sum_query = f"""
+        SELECT
+            COUNT(*)::int as total_routes,
+            COALESCE(SUM(total_length_m), 0)::float as total_length_m
+        FROM {schema_quoted}.routes
+        {where_clause}
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(count_sum_query, params)
+        row = cur.fetchone()
+    total_routes = int(row["total_routes"]) if row else 0
+    total_length_m = float(row["total_length_m"]) if row and row["total_length_m"] is not None else 0.0
+    total_km = total_length_m / 1000.0
+
+    # Query 2: distinct km (sum of link lengths, each link once) via links_with_routes
+    distinct_km = 0.0
+    try:
+        distinct_query = f"""
+            SELECT COALESCE(SUM(l.length_m), 0)::float as distinct_length_m
+            FROM {schema_quoted}.links_with_routes l
+            WHERE l.rutenummer_list && (
+                SELECT array_agg(rutenummer) FROM {schema_quoted}.routes {where_clause}
+            )
+        """
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(distinct_query, params)
+            drow = cur.fetchone()
+        distinct_length_m = float(drow["distinct_length_m"]) if drow and drow["distinct_length_m"] is not None else 0.0
+        distinct_km = distinct_length_m / 1000.0
+    except Exception:
+        distinct_km = 0.0
+
+    return {
+        "total_routes": total_routes,
+        "total_km": round(total_km, 2),
+        "distinct_km": round(distinct_km, 2),
+    }
 
 
 def get_route_segments_from_view(conn, rutenummer: str, include_geometry: bool = False):

@@ -581,6 +581,25 @@ def format_routes_summary(response: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_routes_statistics(stats: Dict[str, Any]) -> str:
+    """
+    Format route statistics (total routes, total km, distinct km) for display.
+
+    Args:
+        stats: Dict with total_routes, total_km, distinct_km
+
+    Returns:
+        Human-readable summary string
+    """
+    lines = []
+    lines.append("Route statistics")
+    lines.append("-" * 80)
+    lines.append(f"Total routes:     {stats.get('total_routes', 0)}")
+    lines.append(f"Total length:    {stats.get('total_km', 0):.2f} km")
+    lines.append(f"Distinct length: {stats.get('distinct_km', 0):.2f} km (overlapping links counted once)")
+    return "\n".join(lines)
+
+
 def format_route_registry_yaml(routes_by_number: Dict[int, Dict[str, Any]], as_list: bool = False) -> str:
     """
     Format routes as YAML according to the route registry schema.

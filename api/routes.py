@@ -24,6 +24,7 @@ from .schemas import (
     CompleteRouteResponse,
     Route,
     RoutesResponse,
+    RoutesStatisticsResponse,
     RouteSegmentDetail,
     RouteSegmentsDetailResponse,
     RouteLink,
@@ -46,6 +47,7 @@ from services.route_service import (
     search_places,
     get_complete_route,
     get_routes_from_view,
+    get_routes_statistics,
     get_route_segments_from_view,
     get_route_links,
     get_segment_uuid_column,
@@ -1168,6 +1170,50 @@ async def get_routes(
         raise HTTPException(
             status_code=500,
             detail=f"Error querying routes: {str(e)}"
+        )
+
+
+@router.get("/routes/statistics", response_model=RoutesStatisticsResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+async def get_routes_statistics_endpoint(
+    prefix: Annotated[Optional[str], Query(description="Filter by route number prefix (e.g., 'bre', 'jot')")] = None,
+    vedlikeholdsansvarlig: Annotated[Optional[str], Query(description="Filter by organization (pattern match)")] = None,
+    bbox: Annotated[Optional[str], Query(description="Bounding box as 'xmin,ymin,xmax,ymax' in WGS84")] = None,
+) -> RoutesStatisticsResponse:
+    """
+    Get aggregate statistics for routes: total count, total km (sum of route lengths),
+    and distinct km (sum of link lengths without double-counting overlapping links).
+
+    At least one filter (prefix, vedlikeholdsansvarlig, or bbox) is required.
+    """
+    if not prefix and not vedlikeholdsansvarlig and not bbox:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one filter is required: prefix, vedlikeholdsansvarlig, or bbox"
+        )
+    try:
+        bbox_tuple = None
+        if bbox:
+            try:
+                bbox_tuple = parse_bbox(bbox)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid bbox format: {e}")
+
+        with db_connection() as conn:
+            stats = get_routes_statistics(
+                conn,
+                prefix=prefix,
+                vedlikeholdsansvarlig=vedlikeholdsansvarlig,
+                bbox=bbox_tuple,
+            )
+        return RoutesStatisticsResponse(**stats)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting route statistics: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting route statistics: {str(e)}"
         )
 
 

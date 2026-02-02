@@ -170,10 +170,8 @@ def lookup_name_in_ruteinfopunkt(conn, point_lon: float, point_lat: float, ruten
                     'tilrettelegging': result.get('tilrettelegging')
                 }
     except Exception as e:
-        try:
-            conn.rollback()
-        except:
-            pass
+        # Do not conn.rollback() here: callers (e.g. validators) may be inside a savepoint;
+        # a full rollback would invalidate it and cause "savepoint does not exist".
         # Only log meaningful errors (not just "view doesn't exist")
         error_str = str(e)
         if error_str and error_str != "0" and "does not exist" not in error_str.lower():
@@ -253,10 +251,7 @@ def list_ruteinfopunkt_facilities(
                 if row.get("navn")
             ]
     except Exception:
-        try:
-            conn.rollback()
-        except:
-            pass
+        # Do not conn.rollback(): callers may be inside a savepoint.
         return []
 
 
@@ -272,7 +267,7 @@ def list_stedsnavn_candidates(
     if not (-180 <= point_lon <= 180) or not (-90 <= point_lat <= 90):
         # Invalid coordinates, skip query
         return []
-    
+
     # Check if connection is closed
     try:
         if conn.closed:
@@ -280,7 +275,7 @@ def list_stedsnavn_candidates(
     except (AttributeError, Exception):
         # Connection might not have 'closed' attribute, continue
         pass
-    
+
     try:
         with conn.cursor(row_factory=dict_row) as cur:
             query = """
@@ -340,15 +335,8 @@ def list_stedsnavn_candidates(
         if "connection is closed" in error_str or "invalid coordinate" in error_str or "transform" in error_str:
             # These are expected errors that can happen with invalid data, silently return empty list
             return []
-        
-        # For other errors, try to rollback if connection is still open
-        try:
-            if not conn.closed:
-                conn.rollback()
-        except (AttributeError, Exception):
-            # Connection might not have 'closed' attribute or rollback might fail
-            pass
-        
+
+        # Do not conn.rollback(): callers (e.g. validators) may be inside a savepoint.
         # Only print unexpected errors
         if "does not exist" not in error_str and "relation" not in error_str:
             print(f"Error querying stedsnavn: {e}")
@@ -387,7 +375,7 @@ def lookup_name_in_stedsnavn(conn, point_lon: float, point_lat: float, search_ra
     if not (-180 <= point_lon <= 180) or not (-90 <= point_lat <= 90):
         # Invalid coordinates, skip query
         return None
-    
+
     # Check if connection is closed
     try:
         if conn.closed:
@@ -395,7 +383,7 @@ def lookup_name_in_stedsnavn(conn, point_lon: float, point_lat: float, search_ra
     except (AttributeError, Exception):
         # Connection might not have 'closed' attribute, continue
         pass
-    
+
     try:
         with conn.cursor(row_factory=dict_row) as cur:
             # Use the same structure as search_places: public.stedsnavn with skrivemate
@@ -454,15 +442,8 @@ def lookup_name_in_stedsnavn(conn, point_lon: float, point_lat: float, search_ra
         if "connection is closed" in error_str or "invalid coordinate" in error_str or "transform" in error_str:
             # These are expected errors that can happen with invalid data, silently return None
             return None
-        
-        # For other errors, try to rollback if connection is still open
-        try:
-            if not conn.closed:
-                conn.rollback()
-        except (AttributeError, Exception):
-            # Connection might not have 'closed' attribute or rollback might fail
-            pass
-        
+
+        # Do not conn.rollback(): callers may be inside a savepoint.
         # Only print unexpected errors
         if "does not exist" not in error_str and "relation" not in error_str:
             print(f"Error querying stedsnavn: {e}")
@@ -546,10 +527,7 @@ def lookup_name_in_anchor_nodes(conn, point_lon: float, point_lat: float, search
                     'distance_meters': float(result['distance_meters']) if result.get('distance_meters') is not None else None,
                 }
     except Exception as e:
-        try:
-            conn.rollback()
-        except:
-            pass
+        # Do not conn.rollback(): callers may be inside a savepoint.
         # Only log if it's a meaningful error (not just table doesn't exist or empty result)
         error_str = str(e)
         if error_str and error_str != "0" and "does not exist" not in error_str.lower():
@@ -621,10 +599,7 @@ def find_nearest_anchor_node(
                 "distance_meters": float(row["distance_meters"]) if row.get("distance_meters") is not None else None,
             }
     except Exception:
-        try:
-            conn.rollback()
-        except:
-            pass
+        # Do not conn.rollback(): callers may be inside a savepoint.
         return None
 
 
@@ -718,10 +693,7 @@ def lookup_named_anchor_within_radius(
             }
         return None
     except Exception:
-        try:
-            conn.rollback()
-        except:
-            pass
+        # Do not conn.rollback(): callers may be inside a savepoint.
         return None
 
 
