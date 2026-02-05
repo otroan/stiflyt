@@ -46,7 +46,6 @@ interface MapViewProps {
   selectedFeatureId?: string;
   selectedFeatureIds?: Set<string>; // Multi-select support - all selected feature IDs
   onFeatureSelect?: (id: string, properties?: Record<string, unknown>, isMultiSelect?: boolean) => void;
-  onOpenEditForm?: () => void; // Callback to open edit form in InfoPanel
   localEventsCount?: number;
   signsPrefix?: string | null; // Prefix for loading signs by area
   signsData?: SignsReportResponse | null; // Lifted from App when provided
@@ -1523,7 +1522,6 @@ export function MapView({
   selectedFeatureId,
   selectedFeatureIds = new Set(),
   onFeatureSelect,
-  onOpenEditForm,
   localEventsCount = 0,
   signsPrefix,
   signsData: signsDataProp,
@@ -3621,62 +3619,6 @@ export function MapView({
                 🔧
               </button>
 
-              {/* Edit segment/route data */}
-              <button
-                onClick={() => {
-              debugLog('Edit button clicked:', {
-                selectedFeatureId,
-                selectedFeatureIdsSize: selectedFeatureIds.size,
-                selectedFeatureIdsArray: Array.from(selectedFeatureIds),
-                routeNumber
-              });
-
-              if (selectedFeatureId || selectedFeatureIds.size > 0) {
-                // One or more segments selected - open edit form in InfoPanel
-                debugLog('Opening edit form for segment(s)');
-                if (onOpenEditForm) {
-                  onOpenEditForm();
-                } else {
-                  notificationManager.info(
-                    selectedFeatureIds.size > 1
-                      ? `Rediger metadata for ${selectedFeatureIds.size} segmenter: Åpner redigeringsform`
-                      : 'Rediger metadata: Åpner redigeringsform'
-                  );
-                }
-                setActiveTool('edit-data');
-              } else if (routeNumber) {
-                // Route selected but no segment - open route edit form in InfoPanel
-                // Note: changeset is not required for route editing (can use localEvents)
-                debugLog('Opening edit form for route');
-                if (onOpenEditForm) {
-                  onOpenEditForm();
-                } else {
-                  notificationManager.info('Rediger rute-metadata: Åpner redigeringsform');
-                }
-              } else {
-                notificationManager.warning('Velg en rute eller et segment først for å redigere data');
-              }
-                }}
-                style={{
-                  padding: '12px',
-                  border: 'none',
-                  borderRadius: '6px',
-                  background: activeTool === 'edit-data' ? '#6f42c1' : '#f8f9fa',
-                  color: activeTool === 'edit-data' ? 'white' : '#333',
-                  cursor: 'pointer',
-                  fontSize: '20px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  transition: 'all 0.2s',
-                  minWidth: '48px',
-                  minHeight: '48px',
-                }}
-                title="Rediger segment/rutedata (rutenummer, rutenavn, etc.)"
-              >
-                📋
-              </button>
-
               {/* Split segment */}
               <button
                 onClick={() => {
@@ -3865,7 +3807,7 @@ export function MapView({
               {selectedFeatureIds.size} segmenter valgt
             </div>
             <div style={{ fontSize: '12px', color: '#666' }}>
-              Hold Ctrl/Cmd og klikk for å velge flere. Klikk "Rediger segment/rutedata" for bulk-redigering.
+              Hold Ctrl/Cmd og klikk for å velge flere.
             </div>
           </div>
         </div>

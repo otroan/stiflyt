@@ -16,9 +16,6 @@ import { isSegmentAddEvent, isSegmentUpdateGeomEvent } from '../types';
 import { api, isAbortError } from '../api/client';
 import { handleApiError } from '../utils/errorHandler';
 import { notificationManager } from '../utils/notifications';
-import { SegmentEditForm } from './SegmentEditForm';
-import { BulkSegmentEditForm } from './BulkSegmentEditForm';
-import { RouteEditForm } from './RouteEditForm';
 import type { SegmentUpdateAttrsEvent } from '../types';
 import './InfoPanel.css';
 
@@ -37,8 +34,6 @@ interface InfoPanelProps {
   onPublish?: () => void;
   onFeatureUpdate?: (() => void) | ((event?: unknown) => void);
   loading?: boolean;
-  shouldOpenEditForm?: boolean; // Flag to open edit form from MapView
-  onEditFormOpened?: () => void; // Callback when edit form has been opened
   selectedSignDestinations?: Set<string>; // Selected sign destination keys
   onSignDestinationSelect?: (destKey: string, selected: boolean) => void; // Callback for destination selection
   onSignsPrefixChange?: (prefix: string) => void; // Callback when signs prefix changes
@@ -72,8 +67,6 @@ export function InfoPanel({
   onPublish,
   onFeatureUpdate,
   loading = false,
-  shouldOpenEditForm = false,
-  onEditFormOpened,
   selectedSignDestinations = new Set(),
   onSignDestinationSelect,
   onSignsPrefixChange,
@@ -96,22 +89,15 @@ export function InfoPanel({
   const [validation, setValidation] = useState<{ errors: ValidationIssue[]; warnings: ValidationIssue[] } | null>(null);
   const [isValidating, setIsValidating] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
-  const [showEditForm, setShowEditForm] = useState(false);
-  const [showBulkEditForm, setShowBulkEditForm] = useState(false);
-  const [showRouteEditForm, setShowRouteEditForm] = useState(false);
-
   // Debug logging for form visibility
   useEffect(() => {
     console.log('InfoPanel render state:', {
-      showEditForm,
       selectedFeatureId,
       selectedFeatureIdsSize: selectedFeatureIds.size,
       selectedFeatureIdsArray: Array.from(selectedFeatureIds),
       isOpen,
-      shouldRenderSingleSelect: selectedFeatureId && selectedFeatureIds.size <= 1,
-      shouldRenderForm: selectedFeatureId && selectedFeatureIds.size <= 1 && showEditForm
     });
-  }, [showEditForm, selectedFeatureId, selectedFeatureIds, isOpen]);
+  }, [selectedFeatureId, selectedFeatureIds, isOpen]);
   const [routeMetadata, setRouteMetadata] = useState<Record<string, unknown> | null>(null);
   const [routeValidation, setRouteValidation] = useState<RouteValidationResponse | null>(null);
   const [isLoadingRouteValidation, setIsLoadingRouteValidation] = useState(false);
@@ -144,45 +130,6 @@ export function InfoPanel({
   const [isLoadingSigns, setIsLoadingSigns] = useState(false);
   const [isLoadingMissingSigns, setIsLoadingMissingSigns] = useState(false);
   const [signsError, setSignsError] = useState<string | null>(null);
-
-  // Open edit form when requested from MapView
-  useEffect(() => {
-    if (shouldOpenEditForm) {
-      console.log('Opening edit form:', {
-        selectedFeatureIdsSize: selectedFeatureIds.size,
-        selectedFeatureId,
-        routeNumber,
-        hasChangeset: !!changeset,
-        isOpen
-      });
-
-      // Ensure panel is open when opening edit form
-      setIsOpen(true);
-
-      if (selectedFeatureIds.size > 1) {
-        // Multiple segments selected - show bulk edit
-        console.log('Opening bulk edit form');
-        setShowBulkEditForm(true);
-        setShowEditForm(false); // Ensure single edit is closed
-      } else if (selectedFeatureId || selectedFeatureIds.size === 1) {
-        // Single segment selected - show single edit
-        console.log('Opening single edit form', { selectedFeatureId, selectedFeatureIdsSize: selectedFeatureIds.size });
-        setShowEditForm(true);
-        setShowBulkEditForm(false); // Ensure bulk edit is closed
-      } else if (routeNumber) {
-        // Route editing works with or without changeset
-        console.log('Opening route edit form');
-        setShowRouteEditForm(true);
-        setShowEditForm(false); // Ensure single edit is closed
-        setShowBulkEditForm(false); // Ensure bulk edit is closed
-      } else {
-        console.warn('No segment or route selected - cannot open edit form');
-      }
-      if (onEditFormOpened) {
-        onEditFormOpened();
-      }
-    }
-  }, [shouldOpenEditForm, selectedFeatureId, selectedFeatureIds, routeNumber, changeset, onEditFormOpened, isOpen]);
 
   // Auto-open panel when changeset is loaded, route is selected, or feature is selected
   useEffect(() => {
@@ -641,67 +588,6 @@ export function InfoPanel({
       ts: event.ts,
     })),
   ];
-
-  // Extract segment attributes from properties
-  // Properties from effective/diff layer contain the current attributes
-  const segmentAttributes = selectedFeatureProperties
-    ? {
-        rutenummer: selectedFeatureProperties.rutenummer || selectedFeatureProperties.route_ref,
-        rutenavn: selectedFeatureProperties.rutenavn || selectedFeatureProperties.name,
-        vedlikeholdsansvarlig: selectedFeatureProperties.vedlikeholdsansvarlig,
-        rutetype: selectedFeatureProperties.rutetype,
-        gradering: selectedFeatureProperties.gradering,
-        ...selectedFeatureProperties, // Include all other properties
-      } as Record<string, unknown>
-    : null;
-
-  // Calculate common attributes for bulk edit (attributes that are the same across all selected segments)
-  const getCommonAttributes = (): Record<string, unknown> => {
-    if (selectedFeaturesMap.size === 0) return {};
-
-    const allAttributes = Array.from(selectedFeaturesMap.values());
-    if (allAttributes.length === 0) return {};
-
-    // Find attributes that are the same across all selected segments
-    const commonAttrs: Record<string, unknown> = {};
-    const firstAttrs = allAttributes[0];
-
-    for (const key of Object.keys(firstAttrs)) {
-      // Skip internal fields
-      if (key === 'op' || key === 'id' || key === 'objid' || key === 'segment_objid' || key === 'link_id') {
-        continue;
-      }
-
-      const value = firstAttrs[key];
-      // Check if all segments have the same value for this attribute
-      const allSame = allAttributes.every(attrs => {
-        const normalizedValue = attrs[key];
-        // Normalize for comparison (handle route_ref/rutenummer, name/rutenavn)
-        if (key === 'rutenummer' || key === 'route_ref') {
-          return (attrs.rutenummer || attrs.route_ref) === (value || firstAttrs.route_ref);
-        }
-        if (key === 'rutenavn' || key === 'name') {
-          return (attrs.rutenavn || attrs.name) === (value || firstAttrs.name);
-        }
-        return normalizedValue === value;
-      });
-
-      if (allSame && value !== undefined && value !== null && value !== '') {
-        // Normalize field names
-        if (key === 'route_ref') {
-          commonAttrs.rutenummer = value;
-        } else if (key === 'name') {
-          commonAttrs.rutenavn = value;
-        } else {
-          commonAttrs[key] = value;
-        }
-      }
-    }
-
-    return commonAttrs;
-  };
-
-  const commonAttributes = selectedFeatureIds.size > 1 ? getCommonAttributes() : {};
 
   return (
     <>
@@ -1493,111 +1379,6 @@ export function InfoPanel({
                 </>
               )}
 
-              {/* Route editing (when route is selected but no segment) - only in edit mode */}
-              {editMode && !selectedFeatureId && routeNumber && (
-                <div className="info-panel-section">
-                  <h3 style={{ margin: 0, marginBottom: '0.75rem' }}>Rediger Rute</h3>
-
-                  {showRouteEditForm ? (
-                    <RouteEditForm
-                      changeset={changeset}
-                      routeNumber={routeNumber}
-                      currentAttributes={(routeMetadata || {}) as Record<string, unknown>}
-                      onEventAdded={onFeatureUpdate as ((event: SegmentUpdateAttrsEvent) => void) | undefined}
-                      onSave={() => {
-                        setShowRouteEditForm(false);
-                        if (onFeatureUpdate) {
-                          onFeatureUpdate();
-                        }
-                        if (changeset) {
-                          onChangesetUpdate();
-                        }
-                        // Reload route metadata
-                        api.getRoute(routeNumber, false)
-                          .then((data) => {
-                            setRouteMetadata({
-                              rutenummer: data.rutenummer,
-                              rutenavn: data.rutenavn,
-                              vedlikeholdsansvarlig: data.vedlikeholdsansvarlig,
-                              rutetype: data.rutetype,
-                              gradering: data.gradering,
-                            });
-                          })
-                          .catch(() => {
-                            // Ignore errors
-                          });
-                      }}
-                      onCancel={() => setShowRouteEditForm(false)}
-                    />
-                  ) : (
-                    <button
-                      onClick={() => setShowRouteEditForm(true)}
-                      className="btn btn-secondary"
-                      style={{ marginTop: '0.5rem' }}
-                    >
-                      Rediger rute-metadata
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* Selected features - Multi-select - only in edit mode */}
-              {editMode && selectedFeatureIds.size > 1 && (
-                <div className="info-panel-section">
-                  <h3 style={{ margin: 0, marginBottom: '0.75rem' }}>
-                    {selectedFeatureIds.size} valgte elementer
-                  </h3>
-
-                  {showBulkEditForm ? (
-                    <BulkSegmentEditForm
-                      changeset={changeset}
-                      segmentIds={Array.from(selectedFeatureIds)}
-                      currentAttributes={commonAttributes}
-                      onEventAdded={onFeatureUpdate as ((event: SegmentUpdateAttrsEvent) => void) | undefined}
-                      onSave={() => {
-                        setShowBulkEditForm(false);
-                        if (onFeatureUpdate) {
-                          onFeatureUpdate();
-                        }
-                        if (changeset) {
-                          onChangesetUpdate();
-                        }
-                      }}
-                      onCancel={() => setShowBulkEditForm(false)}
-                    />
-                  ) : (
-                    <>
-                      <div className="info-panel-item">
-                        <span className="info-label">Antall valgte:</span>
-                        <span>{selectedFeatureIds.size} segmenter</span>
-                      </div>
-                      {Object.keys(commonAttributes).length > 0 && (
-                        <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: '#666' }}>
-                          <strong>Felles attributter:</strong>
-                          <ul style={{ margin: '0.25rem 0', paddingLeft: '1.5rem' }}>
-                            {commonAttributes.rutenummer && (
-                              <li>Rutenummer: {String(commonAttributes.rutenummer)}</li>
-                            )}
-                            {commonAttributes.rutenavn && (
-                              <li>Rutenavn: {String(commonAttributes.rutenavn)}</li>
-                            )}
-                            {commonAttributes.vedlikeholdsansvarlig && (
-                              <li>Vedlikeholdsansvarlig: {String(commonAttributes.vedlikeholdsansvarlig)}</li>
-                            )}
-                            {commonAttributes.rutetype && (
-                              <li>Rutetype: {String(commonAttributes.rutetype)}</li>
-                            )}
-                            {commonAttributes.gradering && (
-                              <li>Gradering: {String(commonAttributes.gradering)}</li>
-                            )}
-                          </ul>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-
               {/* Events list - only when changeset exists */}
               {changeset && (
                 <>
@@ -1655,110 +1436,77 @@ export function InfoPanel({
                 </>
               )}
 
-              {/* Selected feature - Single select - only in edit mode */}
-              {editMode && selectedFeatureId && selectedFeatureIds.size <= 1 && (
+              {/* Selected feature - Single select (read-only) */}
+              {selectedFeatureId && selectedFeatureIds.size <= 1 && (
                 <div className="info-panel-section">
                   <h3 style={{ margin: 0, marginBottom: '0.75rem' }}>Valgt element</h3>
-
-                  {showEditForm ? (
-                    <div style={{ border: '2px solid #007bff', padding: '1rem', marginTop: '0.5rem', borderRadius: '4px', backgroundColor: '#f0f8ff' }}>
-                      <div style={{ marginBottom: '0.5rem', fontWeight: 'bold', color: '#007bff' }}>📝 Redigerer metadata...</div>
-                      <SegmentEditForm
-                        changeset={changeset}
-                        segmentId={selectedFeatureId}
-                        currentAttributes={segmentAttributes || {}}
-                        onEventAdded={onFeatureUpdate as ((event: SegmentUpdateAttrsEvent) => void) | undefined}
-                        onSave={() => {
-                          setShowEditForm(false);
-                          if (onFeatureUpdate) {
-                            onFeatureUpdate();
-                          }
-                          if (changeset) {
-                            onChangesetUpdate();
-                          }
-                        }}
-                        onCancel={() => setShowEditForm(false)}
-                      />
+                  <div className="info-panel-item">
+                    <span className="info-label">ID:</span>
+                    <span>{selectedFeatureId}</span>
+                  </div>
+                  {selectedEvent && (
+                    <div className="info-panel-item">
+                      <span className="info-label">Event:</span>
+                      <span>{selectedEvent.event.type}</span>
                     </div>
-                  ) : (
+                  )}
+                  {selectedFeatureProperties && (
                     <>
-                      <div className="info-panel-item">
-                        <span className="info-label">ID:</span>
-                        <span>{selectedFeatureId}</span>
-                      </div>
-                      {selectedEvent && (
+                      {selectedFeatureProperties.rutenummer && (
                         <div className="info-panel-item">
-                          <span className="info-label">Event:</span>
-                          <span>{selectedEvent.event.type}</span>
+                          <span className="info-label">Rutenummer:</span>
+                          <span>{String(selectedFeatureProperties.rutenummer)}</span>
                         </div>
                       )}
-                      {selectedFeatureProperties && (
-                        <>
-                          {selectedFeatureProperties.rutenummer && (
-                            <div className="info-panel-item">
-                              <span className="info-label">Rutenummer:</span>
-                              <span>{String(selectedFeatureProperties.rutenummer)}</span>
-                            </div>
-                          )}
-                          {selectedFeatureProperties.rutenavn && (
-                            <div className="info-panel-item">
-                              <span className="info-label">Rutenavn:</span>
-                              <span>{String(selectedFeatureProperties.rutenavn)}</span>
-                            </div>
-                          )}
-                          {selectedFeatureProperties.vedlikeholdsansvarlig && (
-                            <div className="info-panel-item">
-                              <span className="info-label">Vedlikeholdsansvarlig:</span>
-                              <span>{String(selectedFeatureProperties.vedlikeholdsansvarlig)}</span>
-                            </div>
-                          )}
-                          {selectedFeatureProperties.rutetype && (
-                            <div className="info-panel-item">
-                              <span className="info-label">Rutetype:</span>
-                              <span>{String(selectedFeatureProperties.rutetype)}</span>
-                            </div>
-                          )}
-                          {selectedFeatureProperties.gradering && (
-                            <div className="info-panel-item">
-                              <span className="info-label">Gradering:</span>
-                              <span>{String(selectedFeatureProperties.gradering)}</span>
-                            </div>
-                          )}
-                        </>
+                      {selectedFeatureProperties.rutenavn && (
+                        <div className="info-panel-item">
+                          <span className="info-label">Rutenavn:</span>
+                          <span>{String(selectedFeatureProperties.rutenavn)}</span>
+                        </div>
                       )}
-                      {routeValidation && selectedFeatureId && (() => {
-                        const segId = String(selectedFeatureId);
-                        const inError = routeValidation.errors.some(
-                          (e) => e.affected_segments && e.affected_segments.includes(segId)
-                        );
-                        const inWarning = routeValidation.warnings.some(
-                          (w) => w.affected_segments && w.affected_segments.includes(segId)
-                        );
-                        const status = inError ? 'Feil' : inWarning ? 'Advarsel' : 'OK';
-                        const statusColor = inError ? '#e74c3c' : inWarning ? '#f39c12' : '#2ecc71';
-                        return (
-                          <div className="info-panel-item" style={{ marginTop: '0.5rem' }}>
-                            <span className="info-label">Validering:</span>
-                            <span style={{ color: statusColor, fontWeight: 500 }}>{status}</span>
-                          </div>
-                        );
-                      })()}
-                      <div className="info-panel-item" style={{ marginTop: '0.75rem' }}>
-                        <span className="info-label">Endringshistorikk:</span>
-                        <span style={{ color: '#999', fontStyle: 'italic' }}>
-                          Ikke tilgjengelig (kommer når endringslogg er implementert)
-                        </span>
-                      </div>
-                      <div className="info-panel-actions" style={{ marginTop: '0.75rem' }}>
-                        <button
-                          onClick={() => setShowEditForm(true)}
-                          className="btn btn-primary"
-                        >
-                          Rediger metadata
-                        </button>
-                      </div>
+                      {selectedFeatureProperties.vedlikeholdsansvarlig && (
+                        <div className="info-panel-item">
+                          <span className="info-label">Vedlikeholdsansvarlig:</span>
+                          <span>{String(selectedFeatureProperties.vedlikeholdsansvarlig)}</span>
+                        </div>
+                      )}
+                      {selectedFeatureProperties.rutetype && (
+                        <div className="info-panel-item">
+                          <span className="info-label">Rutetype:</span>
+                          <span>{String(selectedFeatureProperties.rutetype)}</span>
+                        </div>
+                      )}
+                      {selectedFeatureProperties.gradering && (
+                        <div className="info-panel-item">
+                          <span className="info-label">Gradering:</span>
+                          <span>{String(selectedFeatureProperties.gradering)}</span>
+                        </div>
+                      )}
                     </>
                   )}
+                  {routeValidation && selectedFeatureId && (() => {
+                    const segId = String(selectedFeatureId);
+                    const inError = routeValidation.errors.some(
+                      (e) => e.affected_segments && e.affected_segments.includes(segId)
+                    );
+                    const inWarning = routeValidation.warnings.some(
+                      (w) => w.affected_segments && w.affected_segments.includes(segId)
+                    );
+                    const status = inError ? 'Feil' : inWarning ? 'Advarsel' : 'OK';
+                    const statusColor = inError ? '#e74c3c' : inWarning ? '#f39c12' : '#2ecc71';
+                    return (
+                      <div className="info-panel-item" style={{ marginTop: '0.5rem' }}>
+                        <span className="info-label">Validering:</span>
+                        <span style={{ color: statusColor, fontWeight: 500 }}>{status}</span>
+                      </div>
+                    );
+                  })()}
+                  <div className="info-panel-item" style={{ marginTop: '0.75rem' }}>
+                    <span className="info-label">Endringshistorikk:</span>
+                    <span style={{ color: '#999', fontStyle: 'italic' }}>
+                      Ikke tilgjengelig (kommer når endringslogg er implementert)
+                    </span>
+                  </div>
                 </div>
               )}
         </div>

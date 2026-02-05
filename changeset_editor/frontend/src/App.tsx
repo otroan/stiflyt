@@ -18,7 +18,6 @@ function App() {
   const [selectedFeatureIds, setSelectedFeatureIds] = useState<Set<string>>(new Set()); // Multi-select support
   const [selectedFeaturesMap, setSelectedFeaturesMap] = useState<Map<string, Record<string, unknown>>>(new Map()); // Map of feature ID to properties
   const [loading, setLoading] = useState(true);
-  const [shouldOpenEditForm, setShouldOpenEditForm] = useState(false);
 
   const [routeNumber, setRouteNumber] = useState<string | null>(null);
   const [selectedRouteNumber, setSelectedRouteNumber] = useState<string | null>(null);
@@ -410,10 +409,6 @@ function App() {
                 setSelectedFeatureProperties(properties || null);
               }
             }}
-            onOpenEditForm={() => {
-              // Trigger edit form opening in InfoPanel
-              setShouldOpenEditForm(true);
-            }}
             localEventsCount={localEvents.length}
           />
           </div>
@@ -437,8 +432,6 @@ function App() {
               // The actual event is already added via onEventAdded in MapView
             }}
             loading={loading}
-            shouldOpenEditForm={shouldOpenEditForm}
-            onEditFormOpened={() => setShouldOpenEditForm(false)}
             selectedSignDestinations={selectedSignDestinations}
             onSignDestinationSelect={handleSignDestinationSelect}
             onSignsPrefixChange={handleSignsPrefixChange}
