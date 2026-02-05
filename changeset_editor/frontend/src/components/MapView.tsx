@@ -1,5 +1,5 @@
 /** Map view component with Leaflet and Geoman */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
@@ -36,8 +36,6 @@ const DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-type AppMode = 'inspection' | 'edit' | 'anchor-naming' | 'signs' | 'property-ownership';
-
 interface MapViewProps {
   changeset: Changeset | null;
   routeGeometry?: GeoJSON.Geometry | null;
@@ -51,10 +49,22 @@ interface MapViewProps {
   onOpenEditForm?: () => void; // Callback to open edit form in InfoPanel
   localEventsCount?: number;
   signsPrefix?: string | null; // Prefix for loading signs by area
+  signsData?: SignsReportResponse | null; // Lifted from App when provided
+  onSignsDataLoad?: (data: SignsReportResponse | null) => void; // Callback when signs data is loaded
   onSignDestinationSelect?: (destKey: string, selected: boolean) => void; // Callback for destination selection
   selectedSignDestinations?: Set<string>; // Selected destination keys
-  activeMode: AppMode;
-  onModeChange: (mode: AppMode) => void;
+  showLinks: boolean;
+  onShowLinksChange: (v: boolean) => void;
+  showSegments: boolean;
+  onShowSegmentsChange: (v: boolean) => void;
+  showAnchors: boolean;
+  onShowAnchorsChange: (v: boolean) => void;
+  showSigns: boolean;
+  onShowSignsChange: (v: boolean) => void;
+  showOwnership: boolean;
+  onShowOwnershipChange: (v: boolean) => void;
+  editMode: boolean;
+  onEditModeChange: (v: boolean) => void;
   selectedGeometryForOwnership?: GeoJSON.Geometry | null;
   onGeometrySelectForOwnership?: (geometry: GeoJSON.Geometry | null) => void;
   ownershipData?: any;
@@ -178,7 +188,7 @@ function LinksLayer({
   selectedFeatureId,
   selectedFeatureIds,
   onFeatureSelect,
-  activeMode,
+  showOwnership,
   onGeometrySelectForOwnership,
   onOwnershipDataChange,
   selectedRouteNumber,
@@ -190,7 +200,7 @@ function LinksLayer({
   selectedFeatureId?: string;
   selectedFeatureIds?: Set<string>;
   onFeatureSelect?: (id: string, properties?: Record<string, unknown>, isMultiSelect?: boolean) => void;
-  activeMode?: AppMode;
+  showOwnership?: boolean;
   onGeometrySelectForOwnership?: (geometry: GeoJSON.Geometry | null) => void;
   onOwnershipDataChange?: (data: any) => void;
   selectedRouteNumber?: string | null;
@@ -979,7 +989,7 @@ function LinksLayer({
 
         layer.on('click', (e: L.LeafletMouseEvent) => {
           // Property ownership mode: fetch ownership for link geometry
-          if (activeMode === 'property-ownership' && onGeometrySelectForOwnership && feature.geometry) {
+          if (showOwnership && onGeometrySelectForOwnership && feature.geometry) {
             if (feature.geometry.type === 'LineString') {
               onGeometrySelectForOwnership(feature.geometry);
               // Fetch ownership data
@@ -1031,7 +1041,7 @@ function LinksLayer({
         mouseoutTimeoutRef.current = null;
       }
     };
-  }, [linksData, selectedFeatureId, selectedFeatureIds, onFeatureSelect, linksLayerRef, activeMode, onGeometrySelectForOwnership, onOwnershipDataChange, clearRouteHighlight, highlightRouteLinks, map]);
+  }, [linksData, selectedFeatureId, selectedFeatureIds, onFeatureSelect, linksLayerRef, showOwnership, onGeometrySelectForOwnership, onOwnershipDataChange, clearRouteHighlight, highlightRouteLinks, map]);
 
   // Handler for route selection from panel
   const handleRouteSelect = useCallback(async (rutenummer: string) => {
@@ -1101,35 +1111,52 @@ function LinksLayer({
 
 // Component to render the signs layer for LayersControl
 function SignsLayer({
+  showSigns,
   signsData,
   selectedSignDestinations,
   onSignDestinationSelect,
   signsLayerRef
 }: {
+  showSigns: boolean;
   signsData: SignsReportResponse | null;
   selectedSignDestinations: Set<string>;
   onSignDestinationSelect?: (destKey: string, selected: boolean) => void;
   signsLayerRef: React.MutableRefObject<L.LayerGroup | null>;
 }) {
-  const layerGroupRef = useRef<L.LayerGroup | null>(null);
   const map = useMap();
+  const layerGroupRef = useRef<L.LayerGroup | null>(null);
 
-  // Initialize layer group and sync with signsLayerRef
+  // Create our own layer and add/remove from map when overlay is on/off
   useEffect(() => {
-    if (!layerGroupRef.current) {
-      layerGroupRef.current = L.layerGroup();
-      signsLayerRef.current = layerGroupRef.current;
+    if (!showSigns) {
+      if (layerGroupRef.current && map) {
+        map.removeLayer(layerGroupRef.current);
+        layerGroupRef.current = null;
+        signsLayerRef.current = null;
+      }
+      return;
     }
-  }, [signsLayerRef]);
+    const lg = L.layerGroup();
+    layerGroupRef.current = lg;
+    signsLayerRef.current = lg;
+    map.addLayer(lg);
+    return () => {
+      if (layerGroupRef.current) {
+        map.removeLayer(layerGroupRef.current);
+        layerGroupRef.current = null;
+        signsLayerRef.current = null;
+      }
+    };
+  }, [map, showSigns, signsLayerRef]);
 
-  // Create markers when signs data changes
+  // Create markers when signs data changes (layer must exist and be on map)
   useEffect(() => {
-    if (!layerGroupRef.current || !signsData) {
+    const group = layerGroupRef.current;
+    if (!group || !signsData || !showSigns) {
       return;
     }
 
-    // Clear existing markers
-    layerGroupRef.current.clearLayers();
+    group.clearLayers();
 
     // Create flag icon for endpoints (blue)
     const endpointFlagIcon = L.divIcon({
@@ -1162,7 +1189,7 @@ function SignsLayer({
 
       const icon = sign.is_endpoint ? endpointFlagIcon : junctionFlagIcon;
       const marker = L.marker([lat, lon], { icon });
-      layerGroupRef.current?.addLayer(marker);
+      group.addLayer(marker);
 
       // Create popup content with destinations
       const createDestinationPopup = (sign: typeof signsData.signs[0]) => {
@@ -1237,9 +1264,9 @@ function SignsLayer({
         });
       });
     });
-  }, [signsData, selectedSignDestinations, onSignDestinationSelect]);
+  }, [signsData, selectedSignDestinations, onSignDestinationSelect, showSigns]);
 
-  return <LayerGroup ref={layerGroupRef} />;
+  return null;
 }
 
 // Component to handle layer control changes for segments and links (mutually exclusive)
@@ -1279,129 +1306,7 @@ function SegmentsLinksLayerControl({
   return null;
 }
 
-// Custom Leaflet Control for Mode Selection
-function ModeControl({
-  activeMode,
-  onModeChange,
-  onEditModeChange
-}: {
-  activeMode: AppMode;
-  onModeChange: (mode: AppMode) => void;
-  onEditModeChange: (enabled: boolean) => void;
-}) {
-  const map = useMap();
-  const controlRef = useRef<L.Control | null>(null);
-  const [container, setContainer] = useState<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    // Create custom Leaflet control
-    const ModeControlClass = L.Control.extend({
-      onAdd: () => {
-        const containerDiv = L.DomUtil.create('div', 'leaflet-bar leaflet-control leaflet-control-mode');
-        containerDiv.style.background = 'white';
-        containerDiv.style.borderRadius = '4px';
-        containerDiv.style.boxShadow = '0 1px 5px rgba(0,0,0,0.4)';
-        containerDiv.style.padding = '4px';
-        containerDiv.style.marginTop = '10px'; // Space below zoom controls
-
-        // Prevent map panning when clicking on control
-        L.DomEvent.disableClickPropagation(containerDiv);
-        L.DomEvent.disableScrollPropagation(containerDiv);
-
-        setContainer(containerDiv);
-        return containerDiv;
-      },
-      onRemove: () => {
-        setContainer(null);
-      }
-    });
-
-    // Create and add control to map
-    controlRef.current = new ModeControlClass({ position: 'topright' });
-    controlRef.current.addTo(map);
-
-    return () => {
-      if (controlRef.current) {
-        map.removeControl(controlRef.current);
-        controlRef.current = null;
-      }
-      setContainer(null);
-    };
-  }, [map]);
-
-  // Render mode buttons using portal
-  const modeLabels: Record<AppMode, string> = {
-    'inspection': '👁️ Inspiser',
-    'edit': '✏️ Rediger',
-    'anchor-naming': '🏷️ Navngi Ankere',
-    'signs': '🚩 Skilt',
-    'property-ownership': '🏠 Grunneier',
-  };
-
-  const modes: AppMode[] = ['inspection', 'edit', 'anchor-naming', 'signs', 'property-ownership'];
-
-  if (!container) {
-    return null;
-  }
-
-  return createPortal(
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '4px',
-    }}>
-      <div style={{
-        fontSize: '11px',
-        fontWeight: 'bold',
-        marginBottom: '2px',
-        color: '#666',
-        padding: '0 4px',
-        textAlign: 'center',
-      }}>
-        Modus:
-      </div>
-      {modes.map((mode) => {
-        const isActive = activeMode === mode;
-        return (
-          <button
-            key={mode}
-            onClick={() => {
-              onModeChange(mode);
-              // Auto-enable edit mode when entering edit mode
-              if (mode === 'edit') {
-                onEditModeChange(true);
-              } else {
-                onEditModeChange(false);
-              }
-            }}
-            style={{
-              padding: '6px 10px',
-              border: 'none',
-              borderRadius: '4px',
-              background: isActive ? '#007bff' : '#f8f9fa',
-              color: isActive ? 'white' : '#333',
-              cursor: 'pointer',
-              fontSize: '12px',
-              fontWeight: isActive ? 'bold' : 'normal',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s',
-              whiteSpace: 'nowrap',
-              width: '100%',
-            }}
-            title={modeLabels[mode]}
-          >
-            {modeLabels[mode]}
-          </button>
-        );
-      })}
-    </div>,
-    container
-  );
-}
-
-// Component to handle layer control changes
+// Sync LayersControl overlay toggles with React state
 function SignsLayerControl({
   onToggle
 }: {
@@ -1431,6 +1336,42 @@ function SignsLayerControl({
     };
   }, [map, onToggle]);
 
+  return null;
+}
+
+function LinksLayerControl({ onToggle }: { onToggle: (enabled: boolean) => void }) {
+  const map = useMap();
+  useEffect(() => {
+    const handleOverlayAdd = (e: L.LayersControlEvent) => { if (e.name === 'Lenker') onToggle(true); };
+    const handleOverlayRemove = (e: L.LayersControlEvent) => { if (e.name === 'Lenker') onToggle(false); };
+    map.on('overlayadd', handleOverlayAdd);
+    map.on('overlayremove', handleOverlayRemove);
+    return () => { map.off('overlayadd', handleOverlayAdd); map.off('overlayremove', handleOverlayRemove); };
+  }, [map, onToggle]);
+  return null;
+}
+
+function AnkerpunkterLayerControl({ onToggle }: { onToggle: (enabled: boolean) => void }) {
+  const map = useMap();
+  useEffect(() => {
+    const handleOverlayAdd = (e: L.LayersControlEvent) => { if (e.name === 'Ankerpunkter') onToggle(true); };
+    const handleOverlayRemove = (e: L.LayersControlEvent) => { if (e.name === 'Ankerpunkter') onToggle(false); };
+    map.on('overlayadd', handleOverlayAdd);
+    map.on('overlayremove', handleOverlayRemove);
+    return () => { map.off('overlayadd', handleOverlayAdd); map.off('overlayremove', handleOverlayRemove); };
+  }, [map, onToggle]);
+  return null;
+}
+
+function GrunneierLayerControl({ onToggle }: { onToggle: (enabled: boolean) => void }) {
+  const map = useMap();
+  useEffect(() => {
+    const handleOverlayAdd = (e: L.LayersControlEvent) => { if (e.name === 'Grunneier') onToggle(true); };
+    const handleOverlayRemove = (e: L.LayersControlEvent) => { if (e.name === 'Grunneier') onToggle(false); };
+    map.on('overlayadd', handleOverlayAdd);
+    map.on('overlayremove', handleOverlayRemove);
+    return () => { map.off('overlayadd', handleOverlayAdd); map.off('overlayremove', handleOverlayRemove); };
+  }, [map, onToggle]);
   return null;
 }
 
@@ -1584,10 +1525,22 @@ export function MapView({
   onOpenEditForm,
   localEventsCount = 0,
   signsPrefix,
+  signsData: signsDataProp,
+  onSignsDataLoad,
   onSignDestinationSelect,
   selectedSignDestinations = new Set(),
-  activeMode,
-  onModeChange,
+  showLinks,
+  onShowLinksChange,
+  showSegments,
+  onShowSegmentsChange,
+  showAnchors,
+  onShowAnchorsChange,
+  showSigns,
+  onShowSignsChange,
+  showOwnership,
+  onShowOwnershipChange,
+  editMode,
+  onEditModeChange,
   selectedGeometryForOwnership,
   onGeometrySelectForOwnership,
   ownershipData,
@@ -1603,13 +1556,12 @@ export function MapView({
   const [mapReady, setMapReady] = useState(false);
   const [routesInView, setRoutesInView] = useState<GeoJSON.FeatureCollection | null>(null);
   const [activeTool, setActiveTool] = useState<string | null>(null);
-  const [showSegments, setShowSegments] = useState(false); // Default: segments hidden
-  const [showLinks, setShowLinks] = useState(true); // Links always visible by default
-  const [showSigns, setShowSigns] = useState(false);
-  const [editMode, setEditMode] = useState(false); // Separate edit mode toggle
   const [segmentsData, setSegmentsData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [linksData, setLinksData] = useState<GeoJSON.FeatureCollection | null>(null);
-  const [signsData, setSignsData] = useState<SignsReportResponse | null>(null);
+  // Lifted state from App when onSignsDataLoad provided; otherwise local
+  const [signsDataLocal, setSignsDataLocal] = useState<SignsReportResponse | null>(null);
+  const signsData = signsDataProp !== undefined ? signsDataProp : signsDataLocal;
+  const setSignsData = onSignsDataLoad ?? setSignsDataLocal;
   const segmentsLayerRef = useRef<L.GeoJSON | null>(null);
   const linksLayerRef = useRef<L.GeoJSON | null>(null);
   const endpointsLayerRef = useRef<L.LayerGroup | null>(null);
@@ -1622,6 +1574,22 @@ export function MapView({
   const [anchorSelectedIndex, setAnchorSelectedIndex] = useState<number | null>(null);
   const [anchorManualName, setAnchorManualName] = useState('');
   const [anchorSearchRadius] = useState(1500);
+
+  // When an area is selected, show only anchor nodes that belong to links in that area (linksData is already area-filtered)
+  const visibleAnchorNodes = useMemo(() => {
+    if (!selectedArea || !linksData?.features?.length) {
+      return anchorNodes;
+    }
+    const nodeIdsInArea = new Set<number>();
+    linksData.features.forEach((feature) => {
+      const props = feature.properties as { a_node?: number; b_node?: number } | null;
+      if (props) {
+        if (props.a_node != null) nodeIdsInArea.add(props.a_node);
+        if (props.b_node != null) nodeIdsInArea.add(props.b_node);
+      }
+    });
+    return anchorNodes.filter((a) => nodeIdsInArea.has(a.anchor_node_id));
+  }, [anchorNodes, linksData, selectedArea]);
 
   // Segment hover -> route highlight (architecture A)
   const segmentRoutesCacheRef = useRef<Map<string, SegmentRoutesItem[]>>(new Map());
@@ -1880,10 +1848,14 @@ export function MapView({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [activateHoverRoute, hoveredSegmentId]);
 
-  // Load routes - either by area prefix or by bounding box
+  // Load routes in viewport - only when Links layer is on (routes are used for link popups / route selector)
   useEffect(() => {
-    debugLog('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current, selectedArea });
+    debugLog('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current, selectedArea, showLinks });
 
+    if (!showLinks) {
+      setRoutesInView(null);
+      return;
+    }
     if (!mapRef.current || !mapReady) {
       debugLog('Skipping routes load - map not ready');
       return;
@@ -2126,7 +2098,7 @@ export function MapView({
         mapRef.current.off('zoomend', debouncedLoadRoutes);
       }
     };
-  }, [mapReady, selectedArea]);
+  }, [mapReady, selectedArea, showLinks]);
 
 
   // Load segments and links - by route if selected, otherwise by bbox in inspection mode
@@ -2136,17 +2108,17 @@ export function MapView({
     }
 
     // In edit mode, require route selection
-    if (activeMode === 'edit' && !routeNumber) {
+    if (editMode && !routeNumber) {
       setSegmentsData(null);
       setLinksData(null);
-      setShowSegments(false);
-      setShowLinks(false);
+      onShowSegmentsChange(false);
+      onShowLinksChange(false);
       setAnchorNodes([]);
       return;
     }
 
-    // In inspection mode, always load links by bbox (routes are logical layer on top)
-    if (activeMode === 'inspection' && mapRef.current) {
+    // When links layer is on, load links by bbox (routes are logical layer on top)
+    if (showLinks && mapRef.current) {
       const bounds = mapRef.current.getBounds();
       const bbox = {
         xmin: bounds.getWest(),
@@ -2191,60 +2163,16 @@ export function MapView({
 
       // Note: Segments don't have a bbox endpoint yet, so we skip them when no route is selected
       setSegmentsData(null);
-      // Don't clear anchor nodes here - they're loaded separately by bbox in inspection mode
+      // Anchor nodes are loaded only by the "reload anchors by bbox on move/zoom" effect when showAnchors && !routeNumber
 
       return () => {
         linksController.abort();
       };
     }
 
-    // Load anchors by bbox in anchor-naming mode
-    if (activeMode === 'anchor-naming' && mapRef.current && !routeNumber) {
-      const bounds = mapRef.current.getBounds();
-      const bbox = {
-        xmin: bounds.getWest(),
-        ymin: bounds.getSouth(),
-        xmax: bounds.getEast(),
-        ymax: bounds.getNorth(),
-      };
-
-      const anchorsController = new AbortController();
-
-      api.getAnchorsByBbox(bbox, 500, { signal: anchorsController.signal })
-        .then((data: GeoJSON.FeatureCollection) => {
-          const anchors: AnchorNodeInfo[] = (data.features || []).map((feature) => {
-            const props = feature.properties || {};
-            const geometry = feature.geometry;
-            let coordinates: [number, number] = [0, 0];
-            if (geometry && geometry.type === 'Point' && geometry.coordinates) {
-              coordinates = [geometry.coordinates[0], geometry.coordinates[1]];
-            }
-            return {
-              anchor_node_id: props.node_id as number || parseInt(String(feature.id || '0'), 10),
-              coordinates,
-              name: props.navn ? {
-                name: String(props.navn),
-                source_type: String(props.navn_kilde || 'unknown'),
-                distance_meters: props.navn_distance_m ? Number(props.navn_distance_m) : null,
-              } : null,
-              link_count: 0, // Not available from bbox endpoint
-            };
-          });
-          setAnchorNodes(anchors);
-        })
-        .catch((error) => {
-          if (isAbortError(error)) return;
-          // Silently fail - anchors are optional
-        });
-
-      return () => {
-        anchorsController.abort();
-      };
-    }
-
     // Don't clear anchors in inspection mode - they should always be loaded
     // Only clear when switching away from inspection/anchor-naming modes
-    if (activeMode !== 'anchor-naming' && activeMode !== 'inspection') {
+    if (!showAnchors) {
       setAnchorNodes([]);
     }
 
@@ -2253,8 +2181,8 @@ export function MapView({
       return;
     }
 
-    // Reset toggles while loading new data
-    setShowSegments(false);
+    // Reset segment layer while loading new route data
+    onShowSegmentsChange(false);
 
     const segmentsController = new AbortController();
     const linksController = new AbortController();
@@ -2341,8 +2269,8 @@ export function MapView({
         notificationManager.warning(`Kunne ikke laste lenker: ${appError.message}`);
       });
 
-    // Load anchor nodes for the route (always in inspection and anchor-naming modes)
-    if (activeMode === 'anchor-naming' || activeMode === 'inspection') {
+    // Load anchor nodes for the route when anchors layer is on
+    if (showAnchors) {
       api.getRouteAnchors(routeNumber, { signal: linksController.signal })
         .then((data) => {
           const anchors: AnchorNodeInfo[] = (data.anchors || []).map((anchor) => ({
@@ -2363,12 +2291,12 @@ export function MapView({
       segmentsController.abort();
       linksController.abort();
     };
-  }, [routeNumber, mapReady, activeMode]);
+  }, [routeNumber, mapReady, showAnchors, onShowSegmentsChange]);
 
-  // Reload links by bbox when map moves/zooms in inspection mode without route
+  // Reload links by bbox when map moves/zooms when links layer on and no route selected
   useEffect(() => {
-    if (!mapReady || !mapRef.current || activeMode !== 'inspection' || routeNumber) {
-      return; // Only reload on map changes if in inspection mode without route
+    if (!mapReady || !mapRef.current || !showLinks || routeNumber) {
+      return;
     }
 
     let debounceTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -2463,12 +2391,12 @@ export function MapView({
         mapRef.current.off('zoomend', debouncedLoadLinks);
       }
     };
-  }, [mapReady, activeMode, routeNumber, selectedArea]);
+  }, [mapReady, showLinks, routeNumber, selectedArea, editMode, onShowSegmentsChange, onShowLinksChange]);
 
-  // Reload anchors by bbox when map moves/zooms in inspection or anchor-naming mode
+  // Reload anchors by bbox when map moves/zooms when anchors layer on and no route selected
   useEffect(() => {
-    if (!mapReady || !mapRef.current || (activeMode !== 'anchor-naming' && activeMode !== 'inspection') || routeNumber) {
-      return; // Only reload on map changes if in inspection or anchor-naming mode without route
+    if (!mapReady || !mapRef.current || !showAnchors || routeNumber) {
+      return;
     }
 
     let debounceTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -2578,16 +2506,18 @@ export function MapView({
         mapRef.current.off('zoomend', debouncedLoadAnchors);
       }
     };
-  }, [mapReady, activeMode, routeNumber]);
+  }, [mapReady, showAnchors, routeNumber]);
 
-  // Load anchor nodes for selected route
-  // Only load when route is selected - in inspection mode without route, anchors are loaded by bbox
+  // Load anchor nodes for selected route when anchors layer on
   useEffect(() => {
     if (!routeNumber || !mapReady) {
-      // Only clear anchors if not in inspection mode (inspection mode loads by bbox)
-      if (activeMode !== 'inspection' && activeMode !== 'anchor-naming') {
+      if (!showAnchors) {
         setAnchorNodes([]);
       }
+      return;
+    }
+    if (!showAnchors) {
+      setAnchorNodes([]);
       return;
     }
 
@@ -2605,31 +2535,31 @@ export function MapView({
     return () => {
       controller.abort();
     };
-  }, [routeNumber, mapReady, activeMode]);
+  }, [routeNumber, mapReady, showAnchors]);
 
-  // Load signs data when layer is enabled - based on map viewport or route/prefix
-  // In signs mode, always load by viewport
+  // Load signs data when layer is enabled - based on route, area/prefix, or map viewport (bbox)
   useEffect(() => {
     if (!showSigns || !mapReady || !mapRef.current) {
-      setSignsData(null);
+      if (!showSigns) {
+        setSignsData(null);
+      }
       return;
     }
 
     const controller = new AbortController();
+    const map = mapRef.current;
 
-    // Priority: route > prefix > bbox (map viewport)
-    // In signs mode, prefer bbox unless route/prefix is explicitly provided
-    let loadPromise: Promise<SignsReportResponse | null> = Promise.resolve(null);
+    // Priority: route > selectedArea/signsPrefix > bbox (map viewport)
+    const areaOrPrefix = selectedArea ?? signsPrefix;
+    const usePrefix = areaOrPrefix && areaOrPrefix.trim().length >= 2;
+    let loadPromise: Promise<SignsReportResponse | null>;
 
-    if (routeNumber && activeMode !== 'signs') {
-      // Load by route if available (unless in signs mode)
+    if (routeNumber) {
       loadPromise = api.getRouteSigns(routeNumber, { signal: controller.signal });
-    } else if (signsPrefix && signsPrefix.trim().length >= 2 && activeMode !== 'signs') {
-      // Load by prefix if provided (unless in signs mode)
-      loadPromise = api.getSignsByPrefix(signsPrefix.trim(), { signal: controller.signal });
+    } else if (usePrefix) {
+      loadPromise = api.getSignsByPrefix(areaOrPrefix!.trim(), { signal: controller.signal });
     } else {
-      // Load by map viewport (bbox) - default for signs mode
-      const bounds = mapRef.current.getBounds();
+      const bounds = map.getBounds();
       const bbox = {
         xmin: bounds.getWest(),
         ymin: bounds.getSouth(),
@@ -2654,39 +2584,38 @@ export function MapView({
     return () => {
       controller.abort();
     };
-  }, [showSigns, mapReady, routeNumber, signsPrefix, activeMode]);
+  }, [showSigns, mapReady, routeNumber, selectedArea, signsPrefix, setSignsData]);
 
-  // Reload signs when map moves/zooms (if using bbox mode or in signs mode)
+  // Reload signs when map moves/zooms (debounced) - only when NOT using area/prefix (bbox mode)
   useEffect(() => {
     if (!showSigns || !mapReady || !mapRef.current) {
       return;
     }
 
-    // In signs mode, always use bbox. Otherwise, only if no route/prefix
-    const shouldUseBbox = activeMode === 'signs' || (!routeNumber && (!signsPrefix || signsPrefix.trim().length < 2));
-    if (!shouldUseBbox) {
+    // When area or prefix is selected, signs are loaded by prefix once; do not overwrite with bbox on pan/zoom
+    const areaOrPrefix = selectedArea ?? signsPrefix;
+    const usePrefix = areaOrPrefix && areaOrPrefix.trim().length >= 2;
+    if (routeNumber || usePrefix) {
       return;
     }
 
-    let timeoutId: ReturnType<typeof setTimeout>;
+    const DEBOUNCE_MS = 300;
+    let debounceId: ReturnType<typeof setTimeout> | null = null;
     let activeController: AbortController | null = null;
 
     const loadSignsInView = () => {
+      const bounds = mapRef.current?.getBounds();
+      if (!bounds) return;
       if (activeController) {
         activeController.abort();
       }
       activeController = new AbortController();
-
-      const bounds = mapRef.current?.getBounds();
-      if (!bounds) return;
-
       const bbox = {
         xmin: bounds.getWest(),
         ymin: bounds.getSouth(),
         xmax: bounds.getEast(),
         ymax: bounds.getNorth(),
       };
-
       api.getSignsByBbox(bbox, { signal: activeController.signal })
         .then((data) => {
           if (data) {
@@ -2697,30 +2626,42 @@ export function MapView({
           if (isAbortError(error)) return;
           const appError = handleApiError(error, 'Load Signs');
           notificationManager.warning(`Kunne ikke laste skilt: ${appError.message}`);
+        })
+        .finally(() => {
+          activeController = null;
         });
     };
 
-    mapRef.current.on('moveend', loadSignsInView);
-    mapRef.current.on('zoomend', loadSignsInView);
-
-    // Initial load with a small delay
-    timeoutId = setTimeout(() => {
-      loadSignsInView();
-    }, 300);
-
-    return () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-      }
+    const debouncedLoad = () => {
+      if (debounceId) clearTimeout(debounceId);
       if (activeController) {
         activeController.abort();
+        activeController = null;
       }
+      debounceId = setTimeout(() => {
+        debounceId = null;
+        loadSignsInView();
+      }, DEBOUNCE_MS);
+    };
+
+    mapRef.current.on('moveend', debouncedLoad);
+    mapRef.current.on('zoomend', debouncedLoad);
+
+    // Initial load after a short delay
+    debounceId = setTimeout(() => {
+      debounceId = null;
+      loadSignsInView();
+    }, DEBOUNCE_MS);
+
+    return () => {
+      if (debounceId) clearTimeout(debounceId);
+      if (activeController) activeController.abort();
       if (mapRef.current) {
-        mapRef.current.off('moveend', loadSignsInView);
-        mapRef.current.off('zoomend', loadSignsInView);
+        mapRef.current.off('moveend', debouncedLoad);
+        mapRef.current.off('zoomend', debouncedLoad);
       }
     };
-  }, [showSigns, mapReady, routeNumber, signsPrefix, activeMode]);
+  }, [showSigns, mapReady, routeNumber, selectedArea, signsPrefix, setSignsData]);
 
   // Display selected route geometry on map (highlighted)
   useEffect(() => {
@@ -2792,9 +2733,8 @@ export function MapView({
       return;
     }
 
-    // Always show endpoints layer in inspection mode (for anchor markers)
-    // In other modes, only show if segments or links are shown
-    if (activeMode !== 'inspection' && !showSegments && !showLinks) {
+    // Show endpoints layer when anchors layer on, or when segments/links are shown
+    if (!showAnchors && !showSegments && !showLinks) {
       if (endpointsLayerRef.current) {
         mapRef.current.removeLayer(endpointsLayerRef.current);
         endpointsLayerRef.current = null;
@@ -2816,8 +2756,8 @@ export function MapView({
 
     // Create a map of anchor coordinates for quick lookup (key: "lon,lat", value: anchor)
     const anchorCoordMap = new Map<string, AnchorNodeInfo>();
-    if (anchorNodes.length > 0) {
-      anchorNodes.forEach((anchor) => {
+    if (visibleAnchorNodes.length > 0) {
+      visibleAnchorNodes.forEach((anchor) => {
         const [lon, lat] = anchor.coordinates;
         const key = `${lon},${lat}`;
         anchorCoordMap.set(key, anchor);
@@ -2885,30 +2825,25 @@ export function MapView({
     }
 
 
-    // Add anchor node markers (always show in inspection and anchor-naming modes)
-    // Always use small markers in inspection mode, larger in anchor-naming mode
-    if ((activeMode === 'anchor-naming' || activeMode === 'inspection') && anchorNodes.length > 0) {
-      anchorNodes.forEach((anchor) => {
+    // Add anchor node markers when anchors layer is on (visibleAnchorNodes filters by selected area)
+    if (showAnchors && visibleAnchorNodes.length > 0) {
+      visibleAnchorNodes.forEach((anchor) => {
         const [lon, lat] = anchor.coordinates;
         const nameLabel = anchor.name?.name || `Anchor ${anchor.anchor_node_id}`;
         const hasName = !!anchor.name?.name;
 
-        // Always use small markers in inspection mode, larger in anchor-naming mode
         const marker = L.circleMarker([lat, lon], {
-          radius: activeMode === 'anchor-naming' ? 10 : 6, // Small (6) in inspection, larger (10) in anchor-naming
-          fillColor: '#6b7280', // Always gray
+          radius: 8,
+          fillColor: '#6b7280',
           color: '#ffffff',
-          weight: activeMode === 'anchor-naming' ? 3 : 1.5,
+          weight: 2,
           opacity: 1,
           fillOpacity: 0.8,
           pane: 'link-endpoints',
         }).addTo(endpointsGroup);
 
-        // Tooltip shows on hover (permanent: false) with anchor name
         marker.bindTooltip(
-          activeMode === 'anchor-naming' && !hasName
-            ? `${nameLabel} (mangler navn)`
-            : nameLabel,
+          !hasName ? `${nameLabel} (mangler navn)` : nameLabel,
           {
             permanent: false,
             direction: 'top',
@@ -2928,7 +2863,7 @@ export function MapView({
     endpointsLayerRef.current = endpointsGroup;
     // Note: openAnchorDialog is intentionally not in dependencies as it's stable (uses stable state setters and constant anchorSearchRadius)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showSegments, showLinks, segmentsData, linksData, mapReady, anchorNodes, activeMode]);
+  }, [showSegments, showLinks, showAnchors, segmentsData, linksData, mapReady, visibleAnchorNodes]);
 
   // Signs markers are now handled by the SignsLayer component in LayersControl
 
@@ -3366,7 +3301,7 @@ export function MapView({
       }
 
       // Property ownership mode: fetch ownership for selected geometry
-      if (activeMode === 'property-ownership' && onGeometrySelectForOwnership && feature.geometry) {
+      if (showOwnership && onGeometrySelectForOwnership && feature.geometry) {
         if (feature.geometry.type === 'LineString') {
           onGeometrySelectForOwnership(feature.geometry);
           // Fetch ownership data
@@ -3429,6 +3364,21 @@ export function MapView({
               maxZoom={19}
             />
           </LayersControl.BaseLayer>
+          <LayersControl.Overlay checked={showLinks} name="Lenker">
+            <LinksLayer
+              linksData={linksData}
+              linksLayerRef={linksLayerRef}
+              selectedFeatureId={selectedFeatureId}
+              selectedFeatureIds={selectedFeatureIds}
+              onFeatureSelect={onFeatureSelect}
+              showOwnership={showOwnership}
+              onGeometrySelectForOwnership={onGeometrySelectForOwnership}
+              onOwnershipDataChange={onOwnershipDataChange}
+              selectedRouteNumber={selectedRouteNumber}
+              onRouteSelect={onRouteSelect}
+              onCacheInvalidateRef={linksLayerCacheInvalidateRef}
+            />
+          </LayersControl.Overlay>
           <LayersControl.Overlay checked={showSegments} name="Segmenter">
             <SegmentsLayer
               segmentsData={segmentsData}
@@ -3441,43 +3391,33 @@ export function MapView({
               onSegmentHoverEnd={handleSegmentHoverEnd}
             />
           </LayersControl.Overlay>
+          <LayersControl.Overlay checked={showAnchors} name="Ankerpunkter">
+            <LayerGroup />
+          </LayersControl.Overlay>
           <LayersControl.Overlay checked={showSigns} name="Skilt">
-            <SignsLayer
-              signsData={signsData}
-              selectedSignDestinations={selectedSignDestinations}
-              onSignDestinationSelect={onSignDestinationSelect}
-              signsLayerRef={signsLayerRef}
-            />
+            <LayerGroup />
+          </LayersControl.Overlay>
+          <LayersControl.Overlay checked={showOwnership} name="Grunneier">
+            <LayerGroup />
           </LayersControl.Overlay>
         </LayersControl>
 
-        {/* Links layer - always visible when showLinks is true, not in LayersControl */}
-        {showLinks && (
-          <LinksLayer
-            linksData={linksData}
-            linksLayerRef={linksLayerRef}
-            selectedFeatureId={selectedFeatureId}
-            selectedFeatureIds={selectedFeatureIds}
-            onFeatureSelect={onFeatureSelect}
-            activeMode={activeMode}
-            onGeometrySelectForOwnership={onGeometrySelectForOwnership}
-            onOwnershipDataChange={onOwnershipDataChange}
-            selectedRouteNumber={selectedRouteNumber}
-            onRouteSelect={onRouteSelect}
-            onCacheInvalidateRef={linksLayerCacheInvalidateRef}
-          />
-        )}
-
         <SegmentsLinksLayerControl
-          onSegmentsToggle={setShowSegments}
-          onLinksToggle={setShowLinks}
+          onSegmentsToggle={onShowSegmentsChange}
+          onLinksToggle={onShowLinksChange}
         />
-        <SignsLayerControl onToggle={setShowSigns} />
+        <LinksLayerControl onToggle={onShowLinksChange} />
+        <AnkerpunkterLayerControl onToggle={onShowAnchorsChange} />
+        <SignsLayerControl onToggle={onShowSignsChange} />
+        <GrunneierLayerControl onToggle={onShowOwnershipChange} />
 
-        <ModeControl
-          activeMode={activeMode}
-          onModeChange={onModeChange}
-          onEditModeChange={setEditMode}
+        {/* Signs layer: outside Overlay so it always has map context and can add/remove its layer by showSigns */}
+        <SignsLayer
+          showSigns={showSigns}
+          signsData={signsData}
+          selectedSignDestinations={selectedSignDestinations}
+          onSignDestinationSelect={onSignDestinationSelect}
+          signsLayerRef={signsLayerRef}
         />
 
         <MapInitializer
@@ -3488,7 +3428,7 @@ export function MapView({
           }}
         />
 
-        {activeMode === 'edit' && editMode && (
+        {editMode && (
           <GeomanControl
             onDrawComplete={handleDrawComplete}
             onEditComplete={handleEditComplete}
@@ -3541,8 +3481,8 @@ export function MapView({
       )}
 
 
-      {/* Toolbar - show when route is selected or in edit mode */}
-      {(routeNumber || activeMode === 'edit') && (
+      {/* Toolbar - show when route is selected: Edit button and tools */}
+      {routeNumber && (
         <div style={{
           position: 'absolute',
           top: 80,
@@ -3556,10 +3496,9 @@ export function MapView({
           flexDirection: 'column',
           gap: '4px',
         }}>
-          {/* Edit Mode Toggle - only in edit mode */}
-          {activeMode === 'edit' && (
-            <button
-              onClick={() => setEditMode(!editMode)}
+          {/* Edit route toggle */}
+          <button
+            onClick={() => onEditModeChange(!editMode)}
               style={{
                 padding: '12px',
                 border: 'none',
@@ -3578,9 +3517,8 @@ export function MapView({
               }}
               title={editMode ? 'Deaktiver redigeringsverktøy' : 'Aktiver redigeringsverktøy'}
             >
-              {editMode ? '🔧 Verktøy På' : '🔧 Verktøy Av'}
+              {editMode ? '✏️ Rediger På' : '✏️ Rediger Rute'}
             </button>
-          )}
 
           {/* Divider */}
           {editMode && (
@@ -3591,8 +3529,8 @@ export function MapView({
             }} />
           )}
 
-          {/* Edit tools - only show in edit mode and when edit mode is active */}
-          {activeMode === 'edit' && editMode && (
+          {/* Edit tools - only show when edit mode is active */}
+          {editMode && (
             <>
               {/* Draw new segment */}
               <button

@@ -1,4 +1,4 @@
-.PHONY: help install install-dev backend backend-prod frontend clean test lint format perf-test
+.PHONY: help install install-dev backend backend-noreload backend-prod frontend clean test lint format perf-test
 
 # Default values
 DB_USER ?= $(shell whoami)
@@ -19,12 +19,20 @@ install-dev: ## Install project with dev dependencies
 	$(PYTHON) -m venv $(VENV)
 	. $(VENV)/bin/activate && pip install --upgrade pip && pip install -e ".[dev]"
 
-backend: ## Start FastAPI backend server
+backend: ## Start FastAPI backend server (with reload). Use Ctrl+C twice to stop.
 	@echo "Starting backend on http://localhost:$(BACKEND_PORT)"
 	@echo "API docs: http://localhost:$(BACKEND_PORT)/docs"
+	@echo "Tip: With --reload you may need to press Ctrl+C twice to stop."
 	@export DB_USER=$(DB_USER) && \
 	. $(VENV)/bin/activate && \
 	uvicorn main:app --reload --host 127.0.0.1 --port $(BACKEND_PORT)
+
+backend-noreload: ## Start backend without reload; single Ctrl+C stops the server
+	@echo "Starting backend (no reload) on http://localhost:$(BACKEND_PORT)"
+	@echo "API docs: http://localhost:$(BACKEND_PORT)/docs"
+	@export DB_USER=$(DB_USER) && \
+	. $(VENV)/bin/activate && \
+	uvicorn main:app --host 127.0.0.1 --port $(BACKEND_PORT)
 
 backend-prod: ## Start FastAPI backend server in production mode
 	@echo "Starting backend in production mode on http://localhost:$(BACKEND_PORT)"

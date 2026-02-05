@@ -42,7 +42,13 @@ interface InfoPanelProps {
   selectedSignDestinations?: Set<string>; // Selected sign destination keys
   onSignDestinationSelect?: (destKey: string, selected: boolean) => void; // Callback for destination selection
   onSignsPrefixChange?: (prefix: string) => void; // Callback when signs prefix changes
-  activeMode?: 'inspection' | 'edit' | 'anchor-naming' | 'signs' | 'property-ownership';
+  signsReportFromMap?: SignsReportResponse | null; // Shared signs data from MapView
+  showLinks?: boolean;
+  showSegments?: boolean;
+  showAnchors?: boolean;
+  showSigns?: boolean;
+  showOwnership?: boolean;
+  editMode?: boolean;
   ownershipData?: any;
   selectedGeometryForOwnership?: GeoJSON.Geometry | null;
   onOwnershipDataChange?: (data: any) => void;
@@ -68,7 +74,11 @@ export function InfoPanel({
   selectedSignDestinations = new Set(),
   onSignDestinationSelect,
   onSignsPrefixChange,
-  activeMode = 'inspection',
+  signsReportFromMap,
+  showSigns = false,
+  showAnchors = false,
+  showOwnership = false,
+  editMode = false,
   ownershipData,
   selectedGeometryForOwnership,
   onOwnershipDataChange,
@@ -81,12 +91,12 @@ export function InfoPanel({
   const [showEditForm, setShowEditForm] = useState(false);
   const [showBulkEditForm, setShowBulkEditForm] = useState(false);
   const [showRouteEditForm, setShowRouteEditForm] = useState(false);
-  
+
   // Debug logging for form visibility
   useEffect(() => {
-    console.log('InfoPanel render state:', { 
-      showEditForm, 
-      selectedFeatureId, 
+    console.log('InfoPanel render state:', {
+      showEditForm,
+      selectedFeatureId,
       selectedFeatureIdsSize: selectedFeatureIds.size,
       selectedFeatureIdsArray: Array.from(selectedFeatureIds),
       isOpen,
@@ -99,12 +109,14 @@ export function InfoPanel({
   const [isLoadingRouteValidation, setIsLoadingRouteValidation] = useState(false);
   const [signsPrefix, setSignsPrefix] = useState('');
   const [signsReport, setSignsReport] = useState<SignsReportResponse | null>(null);
+  // In signs mode use shared data from map; otherwise use locally loaded signsReport
+  const effectiveSignsReport = showSigns && signsReportFromMap != null ? signsReportFromMap : signsReport;
   const [signsMissing, setSignsMissing] = useState<SignsMissingReport | null>(null);
   const [isLoadingOwnership, setIsLoadingOwnership] = useState(false);
 
   // Load ownership data when geometry is selected in property-ownership mode
   useEffect(() => {
-    if (activeMode === 'property-ownership' && selectedGeometryForOwnership && selectedGeometryForOwnership.type === 'LineString') {
+    if (showOwnership && selectedGeometryForOwnership && selectedGeometryForOwnership.type === 'LineString') {
       setIsLoadingOwnership(true);
       api.getGeometryOwners(selectedGeometryForOwnership)
         .then((data) => {
@@ -120,7 +132,7 @@ export function InfoPanel({
           setIsLoadingOwnership(false);
         });
     }
-  }, [activeMode, selectedGeometryForOwnership, onOwnershipDataChange]);
+  }, [showOwnership, selectedGeometryForOwnership, onOwnershipDataChange]);
   const [isLoadingSigns, setIsLoadingSigns] = useState(false);
   const [isLoadingMissingSigns, setIsLoadingMissingSigns] = useState(false);
   const [signsError, setSignsError] = useState<string | null>(null);
@@ -128,17 +140,17 @@ export function InfoPanel({
   // Open edit form when requested from MapView
   useEffect(() => {
     if (shouldOpenEditForm) {
-      console.log('Opening edit form:', { 
-        selectedFeatureIdsSize: selectedFeatureIds.size, 
-        selectedFeatureId, 
+      console.log('Opening edit form:', {
+        selectedFeatureIdsSize: selectedFeatureIds.size,
+        selectedFeatureId,
         routeNumber,
         hasChangeset: !!changeset,
-        isOpen 
+        isOpen
       });
-      
+
       // Ensure panel is open when opening edit form
       setIsOpen(true);
-      
+
       if (selectedFeatureIds.size > 1) {
         // Multiple segments selected - show bulk edit
         console.log('Opening bulk edit form');
@@ -247,7 +259,7 @@ export function InfoPanel({
 
   const handleValidate = async () => {
     if (!changeset) return;
-    
+
     setIsValidating(true);
     try {
       const result = await api.validate(changeset.id);
@@ -269,7 +281,7 @@ export function InfoPanel({
 
   const handleValidateRoute = async () => {
     if (!routeNumber) return;
-    
+
     setIsLoadingRouteValidation(true);
     try {
       const result = await api.validateRoute(routeNumber);
@@ -291,7 +303,7 @@ export function InfoPanel({
 
   const handlePublish = async () => {
     if (!changeset && !onPublish) return;
-    
+
     if (!confirm('Send changeset to review? This will create a GitHub PR.')) {
       return;
     }
@@ -312,7 +324,7 @@ export function InfoPanel({
 
     // Fallback: handle publish locally if no onPublish prop (shouldn't happen normally)
     if (!changeset) return;
-    
+
     setIsPublishing(true);
     try {
       const result = await api.publish(changeset.id);
@@ -323,21 +335,21 @@ export function InfoPanel({
       onChangesetUpdate();
     } catch (error: unknown) {
       const appError = handleApiError(error, 'Publish');
-      
+
       // Try to extract validation errors from response
       if (error && typeof error === 'object' && 'response' in error) {
         try {
           const errorWithResponse = error as { response?: { json: () => Promise<unknown> } };
-          const errorData = errorWithResponse.response 
+          const errorData = errorWithResponse.response
             ? await errorWithResponse.response.json().catch(() => null)
             : null;
-          
+
           if (errorData && typeof errorData === 'object' && errorData !== null) {
             const validationData = errorData as { errors?: ValidationIssue[]; warnings?: ValidationIssue[] };
             if (validationData.errors) {
-              setValidation({ 
-                errors: validationData.errors, 
-                warnings: validationData.warnings || [] 
+              setValidation({
+                errors: validationData.errors,
+                warnings: validationData.warnings || []
               });
               notificationManager.error(
                 `Publisering feilet: ${validationData.errors.length} feil funnet. Se valideringspanel.`,
@@ -350,7 +362,7 @@ export function InfoPanel({
           // Ignore JSON parse errors
         }
       }
-      
+
       notificationManager.error(`Publisering feilet: ${appError.message}`, 0);
     } finally {
       setIsPublishing(false);
@@ -641,10 +653,10 @@ export function InfoPanel({
       ts: event.ts,
     })),
   ];
-  
+
   // Extract segment attributes from properties
   // Properties from effective/diff layer contain the current attributes
-  const segmentAttributes = selectedFeatureProperties 
+  const segmentAttributes = selectedFeatureProperties
     ? {
         rutenummer: selectedFeatureProperties.rutenummer || selectedFeatureProperties.route_ref,
         rutenavn: selectedFeatureProperties.rutenavn || selectedFeatureProperties.name,
@@ -658,20 +670,20 @@ export function InfoPanel({
   // Calculate common attributes for bulk edit (attributes that are the same across all selected segments)
   const getCommonAttributes = (): Record<string, unknown> => {
     if (selectedFeaturesMap.size === 0) return {};
-    
+
     const allAttributes = Array.from(selectedFeaturesMap.values());
     if (allAttributes.length === 0) return {};
-    
+
     // Find attributes that are the same across all selected segments
     const commonAttrs: Record<string, unknown> = {};
     const firstAttrs = allAttributes[0];
-    
+
     for (const key of Object.keys(firstAttrs)) {
       // Skip internal fields
       if (key === 'op' || key === 'id' || key === 'objid' || key === 'segment_objid' || key === 'link_id') {
         continue;
       }
-      
+
       const value = firstAttrs[key];
       // Check if all segments have the same value for this attribute
       const allSame = allAttributes.every(attrs => {
@@ -685,7 +697,7 @@ export function InfoPanel({
         }
         return normalizedValue === value;
       });
-      
+
       if (allSame && value !== undefined && value !== null && value !== '') {
         // Normalize field names
         if (key === 'route_ref') {
@@ -697,10 +709,10 @@ export function InfoPanel({
         }
       }
     }
-    
+
     return commonAttrs;
   };
-  
+
   const commonAttributes = selectedFeatureIds.size > 1 ? getCommonAttributes() : {};
 
   return (
@@ -721,10 +733,10 @@ export function InfoPanel({
       <div className={`info-panel ${isOpen ? 'info-panel-open' : ''}`}>
         <div className="info-panel-header">
           <h2 className="info-panel-title">
-            {changeset 
-              ? `Redigering: ${routeNumber || 'Rute'}` 
-              : routeNumber 
-                ? `Rute: ${routeNumber}` 
+            {changeset
+              ? `Redigering: ${routeNumber || 'Rute'}`
+              : routeNumber
+                ? `Rute: ${routeNumber}`
                 : 'Informasjon'}
           </h2>
           <button
@@ -738,7 +750,7 @@ export function InfoPanel({
 
         <div className="info-panel-content">
           {/* Mode-specific content */}
-          {activeMode === 'property-ownership' && (
+          {showOwnership && (
             <div className="info-panel-section">
               <h3>🏠 Grunneierinformasjon</h3>
               {selectedGeometryForOwnership ? (
@@ -798,7 +810,7 @@ export function InfoPanel({
             </div>
           )}
 
-          {activeMode === 'anchor-naming' && (
+          {showAnchors && (
             <div className="info-panel-section">
               <h3>Anker Navngiving</h3>
               <div className="info-panel-item" style={{ color: '#666' }}>
@@ -807,20 +819,20 @@ export function InfoPanel({
             </div>
           )}
 
-          {activeMode === 'signs' && (
+          {showSigns && (
             <div className="info-panel-section">
               <h3>Skilt</h3>
               <div className="info-panel-actions" style={{ marginBottom: '0.75rem' }}>
                 <button
                   onClick={async () => {
-                    if (!signsReport) {
+                    if (!effectiveSignsReport) {
                       notificationManager.warning('Ingen skilt-data å eksportere');
                       return;
                     }
                     try {
                       await downloadExcel(
                         'alle-skilt.xlsx',
-                        signsReport,
+                        effectiveSignsReport,
                         undefined // Export all
                       );
                     } catch (error) {
@@ -828,26 +840,26 @@ export function InfoPanel({
                       notificationManager.error(`Kunne ikke eksportere Excel: ${appError.message}`);
                     }
                   }}
-                  disabled={!signsReport}
+                  disabled={!effectiveSignsReport}
                   className="btn btn-primary"
                   style={{ fontSize: '1em', padding: '8px 16px' }}
                 >
                   📥 Last ned alle skilt (Excel)
                 </button>
               </div>
-              {signsReport && (
+              {effectiveSignsReport && (
                 <div style={{ marginTop: '0.75rem' }}>
                   <div className="info-panel-item">
                     <span className="info-label">Skilt:</span>
-                    <span>{signsReport.totals.sign_count ?? signsReport.signs.length}</span>
+                    <span>{effectiveSignsReport.totals.sign_count ?? effectiveSignsReport.signs.length}</span>
                   </div>
                   <div className="info-panel-item">
                     <span className="info-label">Destinasjoner:</span>
-                    <span>{signsReport.totals.destination_count ?? '-'}</span>
+                    <span>{effectiveSignsReport.totals.destination_count ?? '-'}</span>
                   </div>
                 </div>
               )}
-              {selectedSignDestinations.size > 0 && signsReport && (
+              {selectedSignDestinations.size > 0 && effectiveSignsReport && (
                 <div style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #ddd' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                     <h4 style={{ margin: 0 }}>
@@ -855,11 +867,11 @@ export function InfoPanel({
                     </h4>
                     <button
                       onClick={async () => {
-                        if (!signsReport) return;
+                        if (!effectiveSignsReport) return;
                         try {
                           await downloadExcel(
                             'valgte-skilt.xlsx',
-                            signsReport,
+                            effectiveSignsReport,
                             selectedSignDestinations
                           );
                         } catch (error) {
@@ -879,7 +891,7 @@ export function InfoPanel({
                       const [signIdStr, destIdStr] = destKey.split('-');
                       const signId = parseInt(signIdStr, 10);
                       const destId = parseInt(destIdStr, 10);
-                      const sign = signsReport.signs.find((s) => s.anchor_node_id === signId);
+                      const sign = effectiveSignsReport.signs.find((s) => s.anchor_node_id === signId);
                       const destination = sign?.destinations.find((d) => d.anchor_node_id === destId);
 
                       if (!sign || !destination) return null;
@@ -936,7 +948,7 @@ export function InfoPanel({
           )}
 
           {/* Route information - shown in inspection and edit modes */}
-          {(activeMode === 'inspection' || activeMode === 'edit') && routeNumber && (
+          {routeNumber && (
             <>
               {/* Route information - always shown when route is selected */}
               {routeNumber && (
@@ -1139,7 +1151,7 @@ export function InfoPanel({
                         <span className="info-label">Linker:</span>
                         <span>{routeValidation.link_count}</span>
                       </div>
-                      
+
                       {routeValidation.errors.length > 0 && (
                         <div className="validation-errors" style={{ marginTop: '1rem' }}>
                           <strong style={{ color: '#e74c3c' }}>
@@ -1159,7 +1171,7 @@ export function InfoPanel({
                           </ul>
                         </div>
                       )}
-                      
+
                       {routeValidation.warnings.length > 0 && (
                         <div className="validation-warnings" style={{ marginTop: '1rem' }}>
                           <strong style={{ color: '#f39c12' }}>
@@ -1179,7 +1191,7 @@ export function InfoPanel({
                           </ul>
                         </div>
                       )}
-                      
+
                       {routeValidation.errors.length === 0 && routeValidation.warnings.length === 0 && (
                         <div style={{ color: '#2ecc71', marginTop: '1rem' }}>✓ Ingen problemer funnet</div>
                       )}
@@ -1189,7 +1201,7 @@ export function InfoPanel({
               )}
 
                   {/* Signs report - only in inspection mode */}
-                  {activeMode === 'inspection' && (
+                  {!editMode && (
                     <div className="info-panel-section">
                       <h3>Skilt</h3>
                 <div className="info-panel-item">
@@ -1404,10 +1416,10 @@ export function InfoPanel({
               )}
 
               {/* Route editing (when route is selected but no segment) - only in edit mode */}
-              {activeMode === 'edit' && !selectedFeatureId && routeNumber && (
+              {editMode && !selectedFeatureId && routeNumber && (
                 <div className="info-panel-section">
                   <h3 style={{ margin: 0, marginBottom: '0.75rem' }}>Rediger Rute</h3>
-                  
+
                   {showRouteEditForm ? (
                     <RouteEditForm
                       changeset={changeset}
@@ -1452,12 +1464,12 @@ export function InfoPanel({
               )}
 
               {/* Selected features - Multi-select - only in edit mode */}
-              {activeMode === 'edit' && selectedFeatureIds.size > 1 && (
+              {editMode && selectedFeatureIds.size > 1 && (
                 <div className="info-panel-section">
                   <h3 style={{ margin: 0, marginBottom: '0.75rem' }}>
                     {selectedFeatureIds.size} valgte elementer
                   </h3>
-                  
+
                   {showBulkEditForm ? (
                     <BulkSegmentEditForm
                       changeset={changeset}
@@ -1566,10 +1578,10 @@ export function InfoPanel({
               )}
 
               {/* Selected feature - Single select - only in edit mode */}
-              {activeMode === 'edit' && selectedFeatureId && selectedFeatureIds.size <= 1 && (
+              {editMode && selectedFeatureId && selectedFeatureIds.size <= 1 && (
                 <div className="info-panel-section">
                   <h3 style={{ margin: 0, marginBottom: '0.75rem' }}>Valgt element</h3>
-              
+
                   {showEditForm ? (
                     <div style={{ border: '2px solid #007bff', padding: '1rem', marginTop: '0.5rem', borderRadius: '4px', backgroundColor: '#f0f8ff' }}>
                       <div style={{ marginBottom: '0.5rem', fontWeight: 'bold', color: '#007bff' }}>📝 Redigerer metadata...</div>

@@ -8,7 +8,7 @@ import { api } from './api/client';
 import { handleApiError } from './utils/errorHandler';
 import { notificationManager } from './utils/notifications';
 import { saveChangesetToFile, loadChangesetFromFile } from './utils/fileStorage';
-import type { Changeset, LocalEvent, RouteResponse } from './types';
+import type { Changeset, LocalEvent, RouteResponse, SignsReportResponse } from './types';
 import './App.css';
 
 function App() {
@@ -28,14 +28,19 @@ function App() {
   // Local changes (before changeset is created)
   const [localEvents, setLocalEvents] = useState<LocalEvent[]>([]);
 
-  // Signs state
+  // Signs state (lifted so MapView and InfoPanel share the same data)
   const [signsPrefix, setSignsPrefix] = useState<string>('');
   const [selectedSignDestinations, setSelectedSignDestinations] = useState<Set<string>>(new Set());
+  const [signsData, setSignsData] = useState<SignsReportResponse | null>(null);
 
-  // Mode management
-  type AppMode = 'inspection' | 'edit' | 'anchor-naming' | 'signs' | 'property-ownership';
-  const [activeMode, setActiveMode] = useState<AppMode>('inspection');
-  
+  // Layer visibility (replaces Modus panel)
+  const [showLinks, setShowLinks] = useState(true);
+  const [showSegments, setShowSegments] = useState(false);
+  const [showAnchors, setShowAnchors] = useState(true);
+  const [showSigns, setShowSigns] = useState(false);
+  const [showOwnership, setShowOwnership] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+
   // Property ownership state
   const [selectedGeometryForOwnership, setSelectedGeometryForOwnership] = useState<GeoJSON.Geometry | null>(null);
   const [ownershipData, setOwnershipData] = useState<any>(null);
@@ -329,10 +334,22 @@ function App() {
             selectedFeatureId={selectedFeatureId}
             selectedFeatureIds={selectedFeatureIds}
             signsPrefix={signsPrefix}
+            signsData={signsData}
+            onSignsDataLoad={setSignsData}
             onSignDestinationSelect={handleSignDestinationSelect}
             selectedSignDestinations={selectedSignDestinations}
-            activeMode={activeMode}
-            onModeChange={setActiveMode}
+            showLinks={showLinks}
+            onShowLinksChange={setShowLinks}
+            showSegments={showSegments}
+            onShowSegmentsChange={setShowSegments}
+            showAnchors={showAnchors}
+            onShowAnchorsChange={setShowAnchors}
+            showSigns={showSigns}
+            onShowSignsChange={setShowSigns}
+            showOwnership={showOwnership}
+            onShowOwnershipChange={setShowOwnership}
+            editMode={editMode}
+            onEditModeChange={setEditMode}
             selectedGeometryForOwnership={selectedGeometryForOwnership}
             onGeometrySelectForOwnership={setSelectedGeometryForOwnership}
             ownershipData={ownershipData}
@@ -405,7 +422,13 @@ function App() {
             selectedSignDestinations={selectedSignDestinations}
             onSignDestinationSelect={handleSignDestinationSelect}
             onSignsPrefixChange={handleSignsPrefixChange}
-            activeMode={activeMode}
+            signsReportFromMap={signsData}
+            showLinks={showLinks}
+            showSegments={showSegments}
+            showAnchors={showAnchors}
+            showSigns={showSigns}
+            showOwnership={showOwnership}
+            editMode={editMode}
             ownershipData={ownershipData}
             selectedGeometryForOwnership={selectedGeometryForOwnership}
             onOwnershipDataChange={setOwnershipData}
