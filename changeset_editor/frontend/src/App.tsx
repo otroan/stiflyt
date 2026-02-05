@@ -8,7 +8,7 @@ import { api } from './api/client';
 import { handleApiError } from './utils/errorHandler';
 import { notificationManager } from './utils/notifications';
 import { saveChangesetToFile, loadChangesetFromFile } from './utils/fileStorage';
-import type { Changeset, LocalEvent, RouteResponse, SignsReportResponse } from './types';
+import type { Changeset, LocalEvent, RouteResponse, SignsReportResponse, RouteViewMode } from './types';
 import './App.css';
 
 function App() {
@@ -32,9 +32,10 @@ function App() {
   const [selectedSignDestinations, setSelectedSignDestinations] = useState<Set<string>>(new Set());
   const [signsData, setSignsData] = useState<SignsReportResponse | null>(null);
 
-  // Layer visibility (replaces Modus panel)
+  // Route view mode: one of route / segments / links (only one drawn at a time)
+  const [routeViewMode, setRouteViewMode] = useState<RouteViewMode>('route');
+  // Layer visibility: showLinks used for bbox links when no route selected
   const [showLinks, setShowLinks] = useState(true);
-  const [showSegments, setShowSegments] = useState(false);
   const [segmentsData, setSegmentsData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [showAnchors, setShowAnchors] = useState(true);
   const [showSigns, setShowSigns] = useState(false);
@@ -61,14 +62,12 @@ function App() {
     setSignsPrefix(prefix);
   };
 
-  // Segments and links are mutually exclusive; toggling one turns off the other
-  const handleShowSegmentsChange = (v: boolean) => {
-    setShowSegments(v);
-    if (v) setShowLinks(false);
+  const handleRouteViewModeChange = (mode: RouteViewMode) => {
+    setRouteViewMode(mode);
   };
   const handleShowLinksChange = (v: boolean) => {
     setShowLinks(v);
-    if (v) setShowSegments(false);
+    if (selectedRouteNumber) setRouteViewMode(v ? 'links' : 'route');
   };
 
   const handleSegmentSelect = (segmentId: string, properties?: Record<string, unknown>) => {
@@ -139,6 +138,7 @@ function App() {
       setRouteGeometry(routeData.route_geometry || null);
       setRouteNumber(rutenummer);
       setSelectedRouteNumber(rutenummer);
+      setRouteViewMode('route');
       // Update URL (without changeset yet)
       window.history.replaceState({}, '', `?route=${rutenummer}`);
     } catch (error: unknown) {
@@ -357,8 +357,8 @@ function App() {
             selectedSignDestinations={selectedSignDestinations}
             showLinks={showLinks}
             onShowLinksChange={handleShowLinksChange}
-            showSegments={showSegments}
-            onShowSegmentsChange={handleShowSegmentsChange}
+            routeViewMode={routeViewMode}
+            onRouteViewModeChange={handleRouteViewModeChange}
             segmentsData={segmentsData}
             onSegmentsDataChange={setSegmentsData}
             showAnchors={showAnchors}
@@ -437,8 +437,8 @@ function App() {
             onSignsPrefixChange={handleSignsPrefixChange}
             signsReportFromMap={signsData}
             showLinks={showLinks}
-            showSegments={showSegments}
-            onShowSegmentsChange={handleShowSegmentsChange}
+            routeViewMode={routeViewMode}
+            onRouteViewModeChange={handleRouteViewModeChange}
             segmentsData={segmentsData}
             onSegmentSelect={handleSegmentSelect}
             showAnchors={showAnchors}

@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentRoutesItem, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest, FacilityCandidate, SignsReportResponse } from '../types';
+import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentRoutesItem, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest, FacilityCandidate, SignsReportResponse, RouteViewMode } from '../types';
 import type { GeoJSON } from 'geojson';
 import { SnapManager } from '../utils/snap';
 import { api, isAbortError } from '../api/client';
@@ -54,8 +54,8 @@ interface MapViewProps {
   selectedSignDestinations?: Set<string>; // Selected destination keys
   showLinks: boolean;
   onShowLinksChange: (v: boolean) => void;
-  showSegments: boolean;
-  onShowSegmentsChange: (v: boolean) => void;
+  routeViewMode: RouteViewMode;
+  onRouteViewModeChange: (mode: RouteViewMode) => void;
   segmentsData?: GeoJSON.FeatureCollection | null;
   onSegmentsDataChange?: (data: GeoJSON.FeatureCollection | null) => void;
   showAnchors: boolean;
@@ -1270,42 +1270,6 @@ function SignsLayer({
   return null;
 }
 
-// Sync layer control "Lenker" with state; when Lenker is turned on, turn off segments (mutually exclusive)
-function SegmentsLinksLayerControl({
-  onSegmentsToggle,
-  onLinksToggle
-}: {
-  onSegmentsToggle: (enabled: boolean) => void;
-  onLinksToggle: (enabled: boolean) => void;
-}) {
-  const map = useMap();
-
-  useEffect(() => {
-    const handleOverlayAdd = (e: L.LayersControlEvent) => {
-      if (e.name === 'Lenker') {
-        onLinksToggle(true);
-        onSegmentsToggle(false);
-      }
-    };
-
-    const handleOverlayRemove = (e: L.LayersControlEvent) => {
-      if (e.name === 'Lenker') {
-        onLinksToggle(false);
-      }
-    };
-
-    map.on('overlayadd', handleOverlayAdd);
-    map.on('overlayremove', handleOverlayRemove);
-
-    return () => {
-      map.off('overlayadd', handleOverlayAdd);
-      map.off('overlayremove', handleOverlayRemove);
-    };
-  }, [map, onSegmentsToggle, onLinksToggle]);
-
-  return null;
-}
-
 // Sync LayersControl overlay toggles with React state
 function SignsLayerControl({
   onToggle
@@ -1530,8 +1494,8 @@ export function MapView({
   selectedSignDestinations = new Set(),
   showLinks,
   onShowLinksChange,
-  showSegments,
-  onShowSegmentsChange,
+  routeViewMode,
+  onRouteViewModeChange,
   segmentsData: segmentsDataProp,
   onSegmentsDataChange,
   showAnchors,
@@ -2114,7 +2078,7 @@ export function MapView({
     if (editMode && !routeNumber) {
       setSegmentsData(null);
       setLinksData(null);
-      onShowSegmentsChange(false);
+      onRouteViewModeChange('route');
       onShowLinksChange(false);
       setAnchorNodes([]);
       return;
@@ -2394,7 +2358,7 @@ export function MapView({
         mapRef.current.off('zoomend', debouncedLoadLinks);
       }
     };
-  }, [mapReady, showLinks, routeNumber, selectedArea, editMode, onShowSegmentsChange, onShowLinksChange]);
+  }, [mapReady, showLinks, routeNumber, selectedArea, editMode, onRouteViewModeChange, onShowLinksChange]);
 
   // Reload anchors by bbox when map moves/zooms when anchors layer on and no route selected
   useEffect(() => {
@@ -2686,8 +2650,8 @@ export function MapView({
       routeLayerRef.current = null;
     }
 
-    // Display selected route geometry if available
-    if (routeGeometry && routeNumber === selectedRouteNumber) {
+    // Display selected route geometry only when view mode is 'route'
+    if (routeGeometry && routeNumber === selectedRouteNumber && routeViewMode === 'route') {
       const routeLayer = L.geoJSON(routeGeometry, {
         pane: ROUTE_PANE,
         style: {
@@ -2710,7 +2674,7 @@ export function MapView({
 
       routeLayerRef.current = routeLayer;
     }
-  }, [routeGeometry, routeNumber, selectedRouteNumber, mapReady]);
+  }, [routeGeometry, routeNumber, selectedRouteNumber, routeViewMode, mapReady]);
 
   // Segments and links are now handled by SegmentsLayer and LinksLayer components in LayersControl
   // Style updates are handled within those components when selection changes
@@ -2747,8 +2711,9 @@ export function MapView({
       return;
     }
 
-    // Show endpoints layer when anchors layer on, or when segments/links are shown
-    if (!showAnchors && !showSegments && !showLinks) {
+    const showSegmentsMode = routeViewMode === 'segments';
+    const showLinksMode = routeViewMode === 'links' || (!selectedRouteNumber && showLinks);
+    if (!showAnchors && !showSegmentsMode && !showLinksMode) {
       if (endpointsLayerRef.current) {
         mapRef.current.removeLayer(endpointsLayerRef.current);
         endpointsLayerRef.current = null;
@@ -2802,7 +2767,7 @@ export function MapView({
     }
 
     // Add endpoints from segments
-    if (showSegments && segmentsData) {
+    if (showSegmentsMode && segmentsData) {
       segmentsData.features.forEach((feature) => {
         if (feature.geometry.type === 'LineString') {
           const coords = feature.geometry.coordinates;
@@ -2877,7 +2842,7 @@ export function MapView({
     endpointsLayerRef.current = endpointsGroup;
     // Note: openAnchorDialog is intentionally not in dependencies as it's stable (uses stable state setters and constant anchorSearchRadius)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showSegments, showLinks, showAnchors, segmentsData, linksData, mapReady, visibleAnchorNodes]);
+  }, [routeViewMode, selectedRouteNumber, showLinks, showAnchors, segmentsData, linksData, mapReady, visibleAnchorNodes]);
 
   // Signs markers are now handled by the SignsLayer component in LayersControl
 
@@ -3378,7 +3343,7 @@ export function MapView({
               maxZoom={19}
             />
           </LayersControl.BaseLayer>
-          <LayersControl.Overlay checked={showLinks} name="Lenker">
+          <LayersControl.Overlay checked={selectedRouteNumber ? routeViewMode === 'links' : showLinks} name="Lenker">
             <LinksLayer
               linksData={linksData}
               linksLayerRef={linksLayerRef}
@@ -3404,8 +3369,8 @@ export function MapView({
           </LayersControl.Overlay>
         </LayersControl>
 
-        {/* Segment layer: controlled from sidebar "Vis segmenter", not from layer control */}
-        {showSegments && (
+        {/* Segment layer: shown only when route view mode is segments */}
+        {routeViewMode === 'segments' && (
           <SegmentsLayer
             segmentsData={segmentsData}
             segmentsLayerRef={segmentsLayerRef}
@@ -3418,10 +3383,6 @@ export function MapView({
           />
         )}
 
-        <SegmentsLinksLayerControl
-          onSegmentsToggle={onShowSegmentsChange}
-          onLinksToggle={onShowLinksChange}
-        />
         <LinksLayerControl onToggle={onShowLinksChange} />
         <AnkerpunkterLayerControl onToggle={onShowAnchorsChange} />
         <SignsLayerControl onToggle={onShowSignsChange} />

@@ -1,6 +1,9 @@
 /** Type definitions for changeset editor */
 import type { GeoJSON } from 'geojson';
 
+/** Route map view: single geometry layer - either full route, segments, or links */
+export type RouteViewMode = 'route' | 'segments' | 'links';
+
 export interface Changeset {
   id: string;
   title: string;

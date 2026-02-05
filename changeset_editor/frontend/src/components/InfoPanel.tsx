@@ -4,6 +4,7 @@
  */
 import { useState, useEffect } from 'react';
 import type {
+  RouteViewMode,
   Changeset,
   ChangeEvent,
   ValidationIssue,
@@ -39,8 +40,8 @@ interface InfoPanelProps {
   onSignsPrefixChange?: (prefix: string) => void; // Callback when signs prefix changes
   signsReportFromMap?: SignsReportResponse | null; // Shared signs data from MapView
   showLinks?: boolean;
-  showSegments?: boolean;
-  onShowSegmentsChange?: (v: boolean) => void;
+  routeViewMode?: RouteViewMode;
+  onRouteViewModeChange?: (mode: RouteViewMode) => void;
   segmentsData?: GeoJSON.FeatureCollection | null;
   onSegmentSelect?: (segmentId: string, properties?: Record<string, unknown>) => void;
   showAnchors?: boolean;
@@ -72,8 +73,8 @@ export function InfoPanel({
   onSignsPrefixChange,
   signsReportFromMap,
   showLinks = false,
-  showSegments = false,
-  onShowSegmentsChange,
+  routeViewMode = 'route',
+  onRouteViewModeChange,
   segmentsData = null,
   onSegmentSelect,
   showSigns = false,
@@ -863,23 +864,30 @@ export function InfoPanel({
                 </div>
               )}
 
-              {/* Segment list and "Vis segmenter" - only when route is selected */}
+              {/* Route view mode and segment list - only when route is selected */}
               {routeNumber && (
                 <div className="info-panel-section">
-                  <h3>Segmenter</h3>
-                  {onShowSegmentsChange && (
+                  <h3>Kartvisning</h3>
+                  {onRouteViewModeChange && (
                     <div className="info-panel-item" style={{ marginBottom: '0.5rem' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                        <input
-                          type="checkbox"
-                          checked={!!showSegments}
-                          onChange={(e) => onShowSegmentsChange(e.target.checked)}
-                        />
-                        <span>Vis segmenter på kartet</span>
-                      </label>
+                      <div style={{ display: 'flex', gap: '0.25rem', flexWrap: 'wrap' }}>
+                        {(['route', 'segments', 'links'] as const).map((mode) => (
+                          <label key={mode} style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer' }}>
+                            <input
+                              type="radio"
+                              name="routeViewMode"
+                              checked={routeViewMode === mode}
+                              onChange={() => onRouteViewModeChange(mode)}
+                            />
+                            <span>{mode === 'route' ? 'Rute' : mode === 'segments' ? 'Segmenter' : 'Lenker'}</span>
+                          </label>
+                        ))}
+                      </div>
                     </div>
                   )}
-                  {segmentsData?.features && segmentsData.features.length > 0 ? (
+                  {routeViewMode === 'segments' && segmentsData?.features && segmentsData.features.length > 0 ? (
+                    <>
+                    <h3 style={{ marginTop: '0.5rem' }}>Segmenter</h3>
                     <div style={{ maxHeight: '280px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '4px' }}>
                       <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
                         {segmentsData.features.map((feature, index) => {
@@ -940,11 +948,12 @@ export function InfoPanel({
                         })}
                       </ul>
                     </div>
-                  ) : (
+                    </>
+                  ) : routeViewMode === 'segments' ? (
                     <div className="info-panel-item" style={{ color: '#666', fontStyle: 'italic' }}>
                       {segmentsData === null || segmentsData === undefined ? 'Laster segmenter...' : 'Ingen segmenter funnet for ruten.'}
                     </div>
-                  )}
+                  ) : null}
                 </div>
               )}
 
