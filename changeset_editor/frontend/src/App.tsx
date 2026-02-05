@@ -36,6 +36,7 @@ function App() {
   // Layer visibility (replaces Modus panel)
   const [showLinks, setShowLinks] = useState(true);
   const [showSegments, setShowSegments] = useState(false);
+  const [segmentsData, setSegmentsData] = useState<GeoJSON.FeatureCollection | null>(null);
   const [showAnchors, setShowAnchors] = useState(true);
   const [showSigns, setShowSigns] = useState(false);
   const [showOwnership, setShowOwnership] = useState(false);
@@ -59,6 +60,23 @@ function App() {
 
   const handleSignsPrefixChange = (prefix: string) => {
     setSignsPrefix(prefix);
+  };
+
+  // Segments and links are mutually exclusive; toggling one turns off the other
+  const handleShowSegmentsChange = (v: boolean) => {
+    setShowSegments(v);
+    if (v) setShowLinks(false);
+  };
+  const handleShowLinksChange = (v: boolean) => {
+    setShowLinks(v);
+    if (v) setShowSegments(false);
+  };
+
+  const handleSegmentSelect = (segmentId: string, properties?: Record<string, unknown>) => {
+    setSelectedFeatureId(segmentId);
+    setSelectedFeatureIds(new Set([segmentId]));
+    setSelectedFeaturesMap(new Map(properties ? [[segmentId, properties]] : []));
+    setSelectedFeatureProperties(properties ?? null);
   };
 
   // Get changeset ID or route number from URL
@@ -339,9 +357,11 @@ function App() {
             onSignDestinationSelect={handleSignDestinationSelect}
             selectedSignDestinations={selectedSignDestinations}
             showLinks={showLinks}
-            onShowLinksChange={setShowLinks}
+            onShowLinksChange={handleShowLinksChange}
             showSegments={showSegments}
-            onShowSegmentsChange={setShowSegments}
+            onShowSegmentsChange={handleShowSegmentsChange}
+            segmentsData={segmentsData}
+            onSegmentsDataChange={setSegmentsData}
             showAnchors={showAnchors}
             onShowAnchorsChange={setShowAnchors}
             showSigns={showSigns}
@@ -425,6 +445,9 @@ function App() {
             signsReportFromMap={signsData}
             showLinks={showLinks}
             showSegments={showSegments}
+            onShowSegmentsChange={handleShowSegmentsChange}
+            segmentsData={segmentsData}
+            onSegmentSelect={handleSegmentSelect}
             showAnchors={showAnchors}
             showSigns={showSigns}
             showOwnership={showOwnership}

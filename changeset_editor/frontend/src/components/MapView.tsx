@@ -57,6 +57,8 @@ interface MapViewProps {
   onShowLinksChange: (v: boolean) => void;
   showSegments: boolean;
   onShowSegmentsChange: (v: boolean) => void;
+  segmentsData?: GeoJSON.FeatureCollection | null;
+  onSegmentsDataChange?: (data: GeoJSON.FeatureCollection | null) => void;
   showAnchors: boolean;
   onShowAnchorsChange: (v: boolean) => void;
   showSigns: boolean;
@@ -1269,7 +1271,7 @@ function SignsLayer({
   return null;
 }
 
-// Component to handle layer control changes for segments and links (mutually exclusive)
+// Sync layer control "Lenker" with state; when Lenker is turned on, turn off segments (mutually exclusive)
 function SegmentsLinksLayerControl({
   onSegmentsToggle,
   onLinksToggle
@@ -1281,16 +1283,15 @@ function SegmentsLinksLayerControl({
 
   useEffect(() => {
     const handleOverlayAdd = (e: L.LayersControlEvent) => {
-      if (e.name === 'Segmenter') {
-        onSegmentsToggle(true);
-        // Deactivate links when segments are activated
-        onLinksToggle(false);
+      if (e.name === 'Lenker') {
+        onLinksToggle(true);
+        onSegmentsToggle(false);
       }
     };
 
     const handleOverlayRemove = (e: L.LayersControlEvent) => {
-      if (e.name === 'Segmenter') {
-        onSegmentsToggle(false);
+      if (e.name === 'Lenker') {
+        onLinksToggle(false);
       }
     };
 
@@ -1533,6 +1534,8 @@ export function MapView({
   onShowLinksChange,
   showSegments,
   onShowSegmentsChange,
+  segmentsData: segmentsDataProp,
+  onSegmentsDataChange,
   showAnchors,
   onShowAnchorsChange,
   showSigns,
@@ -1556,7 +1559,9 @@ export function MapView({
   const [mapReady, setMapReady] = useState(false);
   const [routesInView, setRoutesInView] = useState<GeoJSON.FeatureCollection | null>(null);
   const [activeTool, setActiveTool] = useState<string | null>(null);
-  const [segmentsData, setSegmentsData] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [segmentsDataLocal, setSegmentsDataLocal] = useState<GeoJSON.FeatureCollection | null>(null);
+  const segmentsData = segmentsDataProp !== undefined ? segmentsDataProp : segmentsDataLocal;
+  const setSegmentsData = onSegmentsDataChange ?? setSegmentsDataLocal;
   const [linksData, setLinksData] = useState<GeoJSON.FeatureCollection | null>(null);
   // Lifted state from App when onSignsDataLoad provided; otherwise local
   const [signsDataLocal, setSignsDataLocal] = useState<SignsReportResponse | null>(null);
@@ -2117,8 +2122,8 @@ export function MapView({
       return;
     }
 
-    // When links layer is on, load links by bbox (routes are logical layer on top)
-    if (showLinks && mapRef.current) {
+    // When links layer is on and no route selected, load links by bbox (routes are logical layer on top)
+    if (showLinks && mapRef.current && !routeNumber) {
       const bounds = mapRef.current.getBounds();
       const bbox = {
         xmin: bounds.getWest(),
@@ -2176,13 +2181,11 @@ export function MapView({
       setAnchorNodes([]);
     }
 
-    // Load by route if route is selected
+    // Load by route if route is selected; clear segments when no route
     if (!routeNumber) {
+      setSegmentsData(null);
       return;
     }
-
-    // Reset segment layer while loading new route data
-    onShowSegmentsChange(false);
 
     const segmentsController = new AbortController();
     const linksController = new AbortController();
@@ -2209,6 +2212,8 @@ export function MapView({
                 rutenummer: seg.rutenummer,
                 rutenavn: seg.rutenavn || null,
                 length_m: seg.length_meters || seg.length_m || null,
+                vedlikeholdsansvarlig: seg.vedlikeholdsansvarlig ?? null,
+                oppdateringsdato: seg.oppdateringsdato ?? null,
               },
             } as GeoJSON.Feature;
           })
@@ -2291,7 +2296,7 @@ export function MapView({
       segmentsController.abort();
       linksController.abort();
     };
-  }, [routeNumber, mapReady, showAnchors, onShowSegmentsChange]);
+  }, [routeNumber, mapReady, showAnchors, showLinks, setSegmentsData]);
 
   // Reload links by bbox when map moves/zooms when links layer on and no route selected
   useEffect(() => {
@@ -2664,8 +2669,18 @@ export function MapView({
   }, [showSigns, mapReady, routeNumber, selectedArea, signsPrefix, setSignsData]);
 
   // Display selected route geometry on map (highlighted)
+  // Use a dedicated pane with lower z-index so overlay layers (Segmenter, Lenker) receive clicks
+  const ROUTE_PANE = 'routePane';
+  const ROUTE_PANE_ZINDEX = 200;
+
   useEffect(() => {
     if (!mapRef.current || !mapReady) return;
+
+    // Ensure route pane exists below overlay layers (overlayPane is typically 400)
+    if (!mapRef.current.getPane(ROUTE_PANE)) {
+      const pane = mapRef.current.createPane(ROUTE_PANE);
+      pane.style.zIndex = String(ROUTE_PANE_ZINDEX);
+    }
 
     // Clear previous selected route layer
     if (routeLayerRef.current) {
@@ -2676,6 +2691,7 @@ export function MapView({
     // Display selected route geometry if available
     if (routeGeometry && routeNumber === selectedRouteNumber) {
       const routeLayer = L.geoJSON(routeGeometry, {
+        pane: ROUTE_PANE,
         style: {
           color: '#e74c3c',
           weight: 6,
@@ -3379,18 +3395,6 @@ export function MapView({
               onCacheInvalidateRef={linksLayerCacheInvalidateRef}
             />
           </LayersControl.Overlay>
-          <LayersControl.Overlay checked={showSegments} name="Segmenter">
-            <SegmentsLayer
-              segmentsData={segmentsData}
-              segmentsLayerRef={segmentsLayerRef}
-              selectedFeatureId={selectedFeatureId}
-              selectedFeatureIds={selectedFeatureIds}
-              onFeatureSelect={onFeatureSelect}
-              onSegmentHoverStart={handleSegmentHoverStart}
-              onSegmentHoverMove={handleSegmentHoverMove}
-              onSegmentHoverEnd={handleSegmentHoverEnd}
-            />
-          </LayersControl.Overlay>
           <LayersControl.Overlay checked={showAnchors} name="Ankerpunkter">
             <LayerGroup />
           </LayersControl.Overlay>
@@ -3401,6 +3405,20 @@ export function MapView({
             <LayerGroup />
           </LayersControl.Overlay>
         </LayersControl>
+
+        {/* Segment layer: controlled from sidebar "Vis segmenter", not from layer control */}
+        {showSegments && (
+          <SegmentsLayer
+            segmentsData={segmentsData}
+            segmentsLayerRef={segmentsLayerRef}
+            selectedFeatureId={selectedFeatureId}
+            selectedFeatureIds={selectedFeatureIds}
+            onFeatureSelect={onFeatureSelect}
+            onSegmentHoverStart={handleSegmentHoverStart}
+            onSegmentHoverMove={handleSegmentHoverMove}
+            onSegmentHoverEnd={handleSegmentHoverEnd}
+          />
+        )}
 
         <SegmentsLinksLayerControl
           onSegmentsToggle={onShowSegmentsChange}

@@ -177,6 +177,7 @@ export interface RouteSegment {
   length_m?: number | null;
   source_node?: number | null;
   target_node?: number | null;
+  oppdateringsdato?: string | null; // ISO date from turrutebasen (sist oppdatert)
 }
 
 export interface RouteSegmentsResponse {

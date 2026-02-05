@@ -45,6 +45,9 @@ interface InfoPanelProps {
   signsReportFromMap?: SignsReportResponse | null; // Shared signs data from MapView
   showLinks?: boolean;
   showSegments?: boolean;
+  onShowSegmentsChange?: (v: boolean) => void;
+  segmentsData?: GeoJSON.FeatureCollection | null;
+  onSegmentSelect?: (segmentId: string, properties?: Record<string, unknown>) => void;
   showAnchors?: boolean;
   showSigns?: boolean;
   showOwnership?: boolean;
@@ -75,6 +78,11 @@ export function InfoPanel({
   onSignDestinationSelect,
   onSignsPrefixChange,
   signsReportFromMap,
+  showLinks = false,
+  showSegments = false,
+  onShowSegmentsChange,
+  segmentsData = null,
+  onSegmentSelect,
   showSigns = false,
   showAnchors = false,
   showOwnership = false,
@@ -224,31 +232,11 @@ export function InfoPanel({
     setRouteMetadata(null);
   }, [routeNumber]);
 
-  // Load route validation when route is selected (works without changeset)
+  // Clear route validation when route changes (validation is on-demand via "Valider Rute" button)
   useEffect(() => {
-    if (routeNumber) {
-      const controller = new AbortController();
-      setIsLoadingRouteValidation(true);
-      api.validateRoute(routeNumber, { signal: controller.signal })
-        .then((data: RouteValidationResponse) => {
-          setRouteValidation(data);
-        })
-        .catch((error) => {
-          if (isAbortError(error)) return;
-          // Silently fail - route validation is optional
-          console.warn('Could not load route validation:', error);
-          setRouteValidation(null);
-        })
-        .finally(() => {
-          setIsLoadingRouteValidation(false);
-        });
-
-      return () => {
-        controller.abort();
-      };
+    if (!routeNumber) {
+      setRouteValidation(null);
     }
-
-    setRouteValidation(null);
   }, [routeNumber]);
 
   useEffect(() => {
@@ -989,6 +977,91 @@ export function InfoPanel({
                 </div>
               )}
 
+              {/* Segment list and "Vis segmenter" - only when route is selected */}
+              {routeNumber && (
+                <div className="info-panel-section">
+                  <h3>Segmenter</h3>
+                  {onShowSegmentsChange && (
+                    <div className="info-panel-item" style={{ marginBottom: '0.5rem' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={!!showSegments}
+                          onChange={(e) => onShowSegmentsChange(e.target.checked)}
+                        />
+                        <span>Vis segmenter på kartet</span>
+                      </label>
+                    </div>
+                  )}
+                  {segmentsData?.features && segmentsData.features.length > 0 ? (
+                    <div style={{ maxHeight: '280px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '4px' }}>
+                      <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                        {segmentsData.features.map((feature, index) => {
+                          const props = feature.properties as {
+                            objid?: number | string;
+                            rutenummer?: string;
+                            rutenavn?: string | null;
+                            length_m?: number | null;
+                            vedlikeholdsansvarlig?: string | null;
+                            oppdateringsdato?: string | null;
+                          } | null;
+                          const segId = feature.id != null ? String(feature.id) : props?.objid != null ? String(props.objid) : `seg-${index}`;
+                          const isSelected = segId && selectedFeatureId === segId;
+                          const sistOppdatert = props?.oppdateringsdato
+                            ? (() => {
+                                try {
+                                  const d = new Date(props.oppdateringsdato);
+                                  return isNaN(d.getTime()) ? props.oppdateringsdato : d.toLocaleDateString('nb-NO', { day: 'numeric', month: 'short', year: 'numeric' });
+                                } catch {
+                                  return props.oppdateringsdato;
+                                }
+                              })()
+                            : null;
+                          return (
+                            <li
+                              key={segId}
+                              onClick={() => (feature.id != null || props?.objid != null) && onSegmentSelect?.(segId, (feature.properties as Record<string, unknown>) || undefined)}
+                              style={{
+                                padding: '0.5rem 0.75rem',
+                                borderBottom: '1px solid #eee',
+                                cursor: onSegmentSelect ? 'pointer' : 'default',
+                                backgroundColor: isSelected ? '#e3f2fd' : undefined,
+                              }}
+                            >
+                              <strong>Segment {segId || '—'}</strong>
+                              {props?.length_m != null && (
+                                <span style={{ color: '#666', marginLeft: '0.5rem' }}>
+                                  {typeof props.length_m === 'number' ? props.length_m.toFixed(0) : props.length_m} m
+                                </span>
+                              )}
+                              {props?.rutenavn && (
+                                <div style={{ fontSize: '0.9em', color: '#555', marginTop: '0.25rem' }}>
+                                  {String(props.rutenavn)}
+                                </div>
+                              )}
+                              {props?.vedlikeholdsansvarlig && (
+                                <div style={{ fontSize: '0.85em', color: '#666', marginTop: '0.2rem' }}>
+                                  Vedlikeholdsansvarlig: {String(props.vedlikeholdsansvarlig)}
+                                </div>
+                              )}
+                              {sistOppdatert && (
+                                <div style={{ fontSize: '0.85em', color: '#666', marginTop: '0.2rem' }}>
+                                  Sist oppdatert: {sistOppdatert}
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ) : (
+                    <div className="info-panel-item" style={{ color: '#666', fontStyle: 'italic' }}>
+                      {segmentsData === null || segmentsData === undefined ? 'Laster segmenter...' : 'Ingen segmenter funnet for ruten.'}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Changeset section - only when changeset exists */}
               {changeset && (
             <>
@@ -1122,17 +1195,22 @@ export function InfoPanel({
                 </>
               )}
 
-              {/* Route validation (when route is selected - available without changeset) */}
+              {/* Route validation (when route is selected - on demand via button) */}
               {routeNumber && (
                 <div className="info-panel-section">
                   <h3>Rutevalidering</h3>
+                  {!routeValidation && (
+                    <p className="info-panel-item" style={{ color: '#666', fontStyle: 'italic', marginBottom: '0.75rem' }}>
+                      Klikk &quot;Valider&quot; for å kjøre rutevalidering.
+                    </p>
+                  )}
                   <div className="info-panel-actions" style={{ marginBottom: '0.75rem' }}>
                     <button
                       onClick={handleValidateRoute}
                       disabled={isLoadingRouteValidation}
                       className="btn btn-primary"
                     >
-                      {isLoadingRouteValidation ? 'Validerer...' : 'Valider Rute'}
+                      {isLoadingRouteValidation ? 'Validerer...' : routeValidation ? 'Oppdater validering' : 'Valider'}
                     </button>
                   </div>
                   {routeValidation && (
@@ -1648,6 +1726,29 @@ export function InfoPanel({
                           )}
                         </>
                       )}
+                      {routeValidation && selectedFeatureId && (() => {
+                        const segId = String(selectedFeatureId);
+                        const inError = routeValidation.errors.some(
+                          (e) => e.affected_segments && e.affected_segments.includes(segId)
+                        );
+                        const inWarning = routeValidation.warnings.some(
+                          (w) => w.affected_segments && w.affected_segments.includes(segId)
+                        );
+                        const status = inError ? 'Feil' : inWarning ? 'Advarsel' : 'OK';
+                        const statusColor = inError ? '#e74c3c' : inWarning ? '#f39c12' : '#2ecc71';
+                        return (
+                          <div className="info-panel-item" style={{ marginTop: '0.5rem' }}>
+                            <span className="info-label">Validering:</span>
+                            <span style={{ color: statusColor, fontWeight: 500 }}>{status}</span>
+                          </div>
+                        );
+                      })()}
+                      <div className="info-panel-item" style={{ marginTop: '0.75rem' }}>
+                        <span className="info-label">Endringshistorikk:</span>
+                        <span style={{ color: '#999', fontStyle: 'italic' }}>
+                          Ikke tilgjengelig (kommer når endringslogg er implementert)
+                        </span>
+                      </div>
                       <div className="info-panel-actions" style={{ marginTop: '0.75rem' }}>
                         <button
                           onClick={() => setShowEditForm(true)}
