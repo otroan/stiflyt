@@ -16,6 +16,10 @@ import { AnchorNameDialog } from './AnchorNameDialog';
 import { RouteSelectorPanel } from './RouteSelectorPanel';
 import 'leaflet/dist/leaflet.css';
 
+// Stable initial map view (Feil 2B) - same reference each render so MapContainer does not reset zoom/center on re-render
+const INITIAL_MAP_CENTER: [number, number] = [61.5, 8.5];
+const INITIAL_MAP_ZOOM = 7;
+
 // Load Geoman dynamically to avoid Vite resolution issues
 // Import is done in GeomanControl component when needed
 const debugLog = (...args: unknown[]) => {
@@ -1032,6 +1036,11 @@ function LinksLayer({
     layerGroupRef.current.addLayer(linksLayer);
     linksLayerRef.current = linksLayer;
 
+    // When a route is selected and we show bbox links, highlight that route's links (Feil 1A)
+    if (selectedRouteNumber && linksData?.features?.length) {
+      highlightRouteLinks(selectedRouteNumber);
+    }
+
     // Cleanup on unmount or data change
     return () => {
       clearRouteHighlight();
@@ -1042,7 +1051,7 @@ function LinksLayer({
         mouseoutTimeoutRef.current = null;
       }
     };
-  }, [linksData, selectedFeatureId, selectedFeatureIds, onFeatureSelect, linksLayerRef, showOwnership, onGeometrySelectForOwnership, onOwnershipDataChange, clearRouteHighlight, highlightRouteLinks, map]);
+  }, [linksData, selectedRouteNumber, selectedFeatureId, selectedFeatureIds, onFeatureSelect, linksLayerRef, showOwnership, onGeometrySelectForOwnership, onOwnershipDataChange, clearRouteHighlight, highlightRouteLinks, map]);
 
   // Handler for route selection from panel
   const handleRouteSelect = useCallback(async (rutenummer: string) => {
@@ -1518,6 +1527,7 @@ export function MapView({
   const [snapManager] = useState(() => new SnapManager());
   const mapRef = useRef<L.Map | null>(null);
   const routeLayerRef = useRef<L.GeoJSON | null>(null);
+  const allRoutesLayerRef = useRef<L.GeoJSON | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [routesInView, setRoutesInView] = useState<GeoJSON.FeatureCollection | null>(null);
   const [activeTool, setActiveTool] = useState<string | null>(null);
@@ -1815,11 +1825,11 @@ export function MapView({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [activateHoverRoute, hoveredSegmentId]);
 
-  // Load routes in viewport - only when Links layer is on (routes are used for link popups / route selector)
+  // Load routes in viewport when Links layer is on or when a route is selected (so all routes stay visible as background)
   useEffect(() => {
-    debugLog('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current, selectedArea, showLinks });
+    debugLog('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current, selectedArea, showLinks, routeNumber });
 
-    if (!showLinks) {
+    if (!showLinks && !routeNumber) {
       setRoutesInView(null);
       return;
     }
@@ -1919,7 +1929,7 @@ export function MapView({
           debugLog('Loading routes by area prefix:', selectedArea);
           data = await api.listRoutes({ prefix: selectedArea, limit: 1000, include_geometry: true }, { signal: activeController.signal });
         } else {
-          // Load routes by bounding box (original behavior)
+          // Bbox: always use current viewport so "all routes in bbox" is consistent (URL or click)
           const bounds = mapRef.current.getBounds();
           const zoom = mapRef.current.getZoom();
           const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
@@ -1988,15 +1998,7 @@ export function MapView({
           features: filteredFeatures,
         });
 
-        // If area is selected, center map on routes
-        if (selectedArea && mapRef.current && filteredFeatures.length > 0) {
-          const bbox = calculateBbox(filteredFeatures);
-          if (bbox) {
-            // Add some padding
-            mapRef.current.fitBounds(bbox, { padding: [50, 50] });
-            debugLog('Centered map on area routes');
-          }
-        }
+        // Do not fitBounds when area is selected (Feil 2A) - avoids zoom override on re-render/hover
       } catch (error) {
         if (isAbortError(error)) {
           debugLog('Request aborted');
@@ -2014,8 +2016,8 @@ export function MapView({
 
     // Debounced version that waits for map movement to stop
     const debouncedLoadRoutes = () => {
-      // If area is selected, don't reload on map movement
-      if (selectedArea) {
+      // If area or a route is selected, don't reload on map movement - keep existing routes visible
+      if (selectedArea || routeNumber) {
         return;
       }
 
@@ -2038,17 +2040,22 @@ export function MapView({
       }, DEBOUNCE_DELAY);
     };
 
-    // Load routes on map move/zoom (with debouncing) - only if no area is selected
-    if (!selectedArea) {
+    // Load routes on map move/zoom (with debouncing) - skip when area or route selected so we don't replace with smaller bbox
+    if (!selectedArea && !routeNumber) {
       mapRef.current.on('moveend', debouncedLoadRoutes);
       mapRef.current.on('zoomend', debouncedLoadRoutes);
     }
 
-    // Initial load with a small delay to ensure map is fully initialized
-    initialLoadTimeoutId = setTimeout(() => {
-      debugLog('Initial routes load');
-      loadRoutesInView();
-    }, 500);
+    // Initial load: when a route is selected and we already have routes, don't reload (keep all visible). When ?route=X and routesInView is null, do load once.
+    const skipLoadBecauseRouteSelected = routeNumber && (routesInView?.features?.length ?? 0) > 0;
+    if (!skipLoadBecauseRouteSelected) {
+      // When a route is selected but we have no routes yet, load immediately (0ms) so other routes appear; otherwise 500ms debounce
+      const delay = routeNumber && !(routesInView?.features?.length) ? 0 : 500;
+      initialLoadTimeoutId = setTimeout(() => {
+        debugLog('Initial routes load');
+        loadRoutesInView();
+      }, delay);
+    }
 
     return () => {
       if (debounceTimeoutId) {
@@ -2065,7 +2072,7 @@ export function MapView({
         mapRef.current.off('zoomend', debouncedLoadRoutes);
       }
     };
-  }, [mapReady, selectedArea, showLinks]);
+  }, [mapReady, selectedArea, showLinks, routeNumber, routesInView]);
 
 
   // Load segments and links - by route if selected, otherwise by bbox in inspection mode
@@ -2196,45 +2203,8 @@ export function MapView({
         notificationManager.warning(`Kunne ikke laste segmenter: ${appError.message}`);
       });
 
-    // Load links
-    api.getRouteLinks(routeNumber, true, { signal: linksController.signal })
-      .then((data: RouteLinksResponse) => {
-        debugLog('Links API response:', data);
-        const features: GeoJSON.Feature[] = (data.links || [])
-          .map((link) => {
-            // API returns geometry as 'geom' not 'geometry'
-            const geometry = link.geom || link.geometry || link.senterlinje;
-            if (!geometry) {
-              return null;
-            }
-            return {
-              type: 'Feature' as const,
-              id: link.link_id,
-              geometry: geometry,
-              properties: {
-                link_id: link.link_id,
-                a_node: link.a_node,
-                b_node: link.b_node,
-                length_m: link.length_m || link.length_meters || null,
-              },
-            } as GeoJSON.Feature;
-          })
-          .filter((f): f is GeoJSON.Feature => f !== null);
-        const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
-        debugLog(`Loaded ${filteredFeatures.length} links with geometry (out of ${features.length} total)`);
-        if (filteredFeatures.length === 0 && features.length > 0) {
-          console.warn('No links with geometry found. First link:', data.links?.[0]);
-        }
-        setLinksData({
-          type: 'FeatureCollection',
-          features: filteredFeatures,
-        });
-      })
-      .catch(error => {
-        if (isAbortError(error)) return;
-        const appError = handleApiError(error, 'Load Links');
-        notificationManager.warning(`Kunne ikke laste lenker: ${appError.message}`);
-      });
+    // When a route is selected, do NOT replace linksData with only that route's links (Feil 1A).
+    // Keep existing bbox-based linksData so all links in view stay visible; LinksLayer highlights the selected route.
 
     // Load anchor nodes for the route when anchors layer is on
     if (showAnchors) {
@@ -2260,11 +2230,11 @@ export function MapView({
     };
   }, [routeNumber, mapReady, showAnchors, showLinks, setSegmentsData]);
 
-  // Reload links by bbox when map moves/zooms when links layer on and no route selected
+  // Load links by bbox: when no route (showLinks) or when route selected but no links yet (e.g. ?route=X)
   useEffect(() => {
-    if (!mapReady || !mapRef.current || !showLinks || routeNumber) {
-      return;
-    }
+    if (!mapReady || !mapRef.current) return;
+    const needBboxLinks = (showLinks && !routeNumber) || (routeNumber && !linksData?.features?.length);
+    if (!needBboxLinks) return;
 
     let debounceTimeoutId: ReturnType<typeof setTimeout> | null = null;
     let initialLoadTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -2630,6 +2600,32 @@ export function MapView({
     };
   }, [showSigns, mapReady, routeNumber, selectedArea, signsPrefix, setSignsData]);
 
+  // Display all routes in view as background (grey) - shown even when a single route is selected
+  const ALL_ROUTES_PANE = 'allRoutesPane';
+  const ALL_ROUTES_PANE_ZINDEX = 150;
+  useEffect(() => {
+    if (!mapRef.current || !mapReady) return;
+    if (!mapRef.current.getPane(ALL_ROUTES_PANE)) {
+      const pane = mapRef.current.createPane(ALL_ROUTES_PANE);
+      pane.style.zIndex = String(ALL_ROUTES_PANE_ZINDEX);
+    }
+    if (allRoutesLayerRef.current) {
+      mapRef.current.removeLayer(allRoutesLayerRef.current);
+      allRoutesLayerRef.current = null;
+    }
+    if (routesInView?.features?.length) {
+      const allRoutesLayer = L.geoJSON(routesInView, {
+        pane: ALL_ROUTES_PANE,
+        style: {
+          color: '#95a5a6',
+          weight: 2,
+          opacity: 0.7,
+        },
+      }).addTo(mapRef.current);
+      allRoutesLayerRef.current = allRoutesLayer;
+    }
+  }, [mapReady, routesInView]);
+
   // Display selected route geometry on map (highlighted)
   // Use a dedicated pane with lower z-index so overlay layers (Segmenter, Lenker) receive clicks
   const ROUTE_PANE = 'routePane';
@@ -2650,26 +2646,20 @@ export function MapView({
       routeLayerRef.current = null;
     }
 
-    // Display selected route geometry only when view mode is 'route'
+    // Display selected route geometry only when view mode is 'route' - green highlight like hover, no zoom
     if (routeGeometry && routeNumber === selectedRouteNumber && routeViewMode === 'route') {
       const routeLayer = L.geoJSON(routeGeometry, {
         pane: ROUTE_PANE,
         style: {
-          color: '#e74c3c',
-          weight: 6,
-          opacity: 1.0,
+          color: '#2ecc71',
+          weight: 5,
+          opacity: 0.9,
+          dashArray: '10, 5',
         },
       }).addTo(mapRef.current);
 
-      // Add popup
       if (routeNumber) {
         routeLayer.bindPopup(`<strong>${routeNumber}</strong>`);
-      }
-
-      // Zoom to route
-      const bounds = routeLayer.getBounds();
-      if (bounds && bounds.isValid()) {
-        mapRef.current.fitBounds(bounds, { padding: [50, 50] });
       }
 
       routeLayerRef.current = routeLayer;
@@ -3325,8 +3315,8 @@ export function MapView({
   return (
     <div className="map-view" style={{ position: 'relative', width: '100%', height: '100%' }}>
       <MapContainer
-        center={[61.5, 8.5]}
-        zoom={7}
+        center={INITIAL_MAP_CENTER}
+        zoom={INITIAL_MAP_ZOOM}
         style={{ width: '100%', height: '100%' }}
       >
         <LayersControl position="topright">
@@ -3454,211 +3444,6 @@ export function MapView({
             />
             {' '}Show effective
           </label>
-        </div>
-      )}
-
-
-      {/* Toolbar - show when route is selected: Edit button and tools */}
-      {routeNumber && (
-        <div style={{
-          position: 'absolute',
-          top: 80,
-          left: 20,
-          zIndex: 1000,
-          background: 'white',
-          borderRadius: '8px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-          padding: '8px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '4px',
-        }}>
-          {/* Edit route toggle */}
-          <button
-            onClick={() => onEditModeChange(!editMode)}
-              style={{
-                padding: '12px',
-                border: 'none',
-                borderRadius: '6px',
-                background: editMode ? '#e74c3c' : '#f8f9fa',
-                color: editMode ? 'white' : '#333',
-                cursor: 'pointer',
-                fontSize: '16px',
-                fontWeight: editMode ? 'bold' : 'normal',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                transition: 'all 0.2s',
-                minWidth: '48px',
-                minHeight: '48px',
-              }}
-              title={editMode ? 'Deaktiver redigeringsverktøy' : 'Aktiver redigeringsverktøy'}
-            >
-              {editMode ? '✏️ Rediger På' : '✏️ Rediger Rute'}
-            </button>
-
-          {/* Divider */}
-          {editMode && (
-            <div style={{
-              height: '1px',
-              background: '#dee2e6',
-              margin: '4px 0',
-            }} />
-          )}
-
-          {/* Edit tools - only show when edit mode is active */}
-          {editMode && (
-            <>
-              {/* Draw new segment */}
-              <button
-                onClick={() => {
-              if (mapRef.current?.pm) {
-                const isActive = activeTool === 'draw';
-                if (isActive) {
-                  mapRef.current.pm.disableDraw();
-                  setActiveTool(null);
-                } else {
-                  mapRef.current.pm.toggleDraw('Line', {
-                    continueDrawing: false,
-                    finishOn: 'dblclick',
-                  });
-                  setActiveTool('draw');
-                }
-              }
-                }}
-                style={{
-                  padding: '12px',
-                  border: 'none',
-                  borderRadius: '6px',
-                  background: activeTool === 'draw' ? '#007bff' : '#f8f9fa',
-                  color: activeTool === 'draw' ? 'white' : '#333',
-                  cursor: 'pointer',
-                  fontSize: '20px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  transition: 'all 0.2s',
-                  minWidth: '48px',
-                  minHeight: '48px',
-                }}
-                title="Tegn nytt segment"
-              >
-                ✏️
-              </button>
-
-              {/* Edit geometry */}
-              <button
-                onClick={() => {
-              if (mapRef.current?.pm) {
-                const isActive = activeTool === 'edit';
-                if (isActive) {
-                  mapRef.current.pm.disableGlobalEditMode();
-                  setActiveTool(null);
-                } else {
-                  mapRef.current.pm.toggleGlobalEditMode();
-                  setActiveTool('edit');
-                }
-              }
-                }}
-                style={{
-                  padding: '12px',
-                  border: 'none',
-                  borderRadius: '6px',
-                  background: activeTool === 'edit' ? '#007bff' : '#f8f9fa',
-                  color: activeTool === 'edit' ? 'white' : '#333',
-                  cursor: 'pointer',
-                  fontSize: '20px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  transition: 'all 0.2s',
-                  minWidth: '48px',
-                  minHeight: '48px',
-                }}
-                title="Rediger geometri"
-              >
-                🔧
-              </button>
-
-              {/* Split segment */}
-              <button
-                onClick={() => {
-              if (activeTool === 'split') {
-                setActiveTool(null);
-                notificationManager.info('Deling av segment avbrutt');
-              } else {
-                notificationManager.info('Del segment: Klikk på et punkt på segmentet for å dele det');
-                setActiveTool('split');
-              }
-                }}
-                style={{
-                  padding: '12px',
-                  border: 'none',
-                  borderRadius: '6px',
-                  background: activeTool === 'split' ? '#ffc107' : '#f8f9fa',
-                  color: activeTool === 'split' ? 'white' : '#333',
-                  cursor: 'pointer',
-                  fontSize: '20px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  transition: 'all 0.2s',
-                  minWidth: '48px',
-                  minHeight: '48px',
-                }}
-                title="Del segment"
-              >
-                ✂️
-              </button>
-
-              {/* Delete segment */}
-              <button
-                onClick={() => {
-              if (!selectedFeatureId) {
-                notificationManager.warning('Velg et segment først for å slette det');
-                return;
-              }
-
-              const isNew = isNewSegment(selectedFeatureId);
-              setConfirmDialog({
-                isOpen: true,
-                title: isNew ? 'Slett segment' : 'Pensjoner segment',
-                message: isNew
-                  ? 'Er du sikker på at du vil slette dette segmentet? Dette kan ikke angres.'
-                  : 'Er du sikker på at du vil pensjonere dette segmentet? Dette kan ikke angres.',
-                confirmLabel: isNew ? 'Slett' : 'Pensjoner',
-                cancelLabel: 'Avbryt',
-                variant: 'danger',
-                onConfirm: () => {
-                  handleDeleteSegment(selectedFeatureId);
-                  setConfirmDialog(null);
-                },
-              });
-                }}
-                style={{
-                  padding: '12px',
-                  border: 'none',
-                  borderRadius: '6px',
-                  background: activeTool === 'delete' ? '#dc3545' : '#f8f9fa',
-                  color: activeTool === 'delete' ? 'white' : '#333',
-                  cursor: 'pointer',
-                  fontSize: '20px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  transition: 'all 0.2s',
-                  minWidth: '48px',
-                  minHeight: '48px',
-                }}
-                title="Slett segment"
-              >
-                🗑️
-              </button>
-            </>
-          )}
-
-          {/* Divider between edit tools and inspection tools */}
-
         </div>
       )}
 
