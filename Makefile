@@ -1,4 +1,4 @@
-.PHONY: help install install-dev backend backend-noreload backend-prod frontend clean test lint format perf-test
+.PHONY: help install install-dev backend backend-noreload backend-prod frontend mcp clean test lint format perf-test
 
 # Default values
 DB_USER ?= $(shell whoami)
@@ -39,6 +39,12 @@ backend-prod: ## Start FastAPI backend server in production mode
 	@export DB_USER=$(DB_USER) && \
 	. $(VENV)/bin/activate && \
 	uvicorn main:app --host 127.0.0.1 --port $(BACKEND_PORT) --workers 4
+
+mcp: ## Start Stiflyt MCP server (stdio). For Cursor MCP; backend should be running on BACKEND_PORT.
+	@echo "Starting MCP server (stdio). Backend should be at http://localhost:$(BACKEND_PORT)."
+	@echo "Use Ctrl+C to stop."
+	@export STIFLYT_BASE_URL=$${STIFLYT_BASE_URL:-http://localhost:$(BACKEND_PORT)} && \
+	. $(VENV)/bin/activate && stiflyt-mcp
 
 frontend: ## Start changeset editor frontend (React/Vite)
 	@echo "Starting changeset editor frontend on http://localhost:3000"
