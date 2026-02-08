@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { Changeset, LocalEvent, RoutesResponse, RouteSegmentsResponse, RouteLinksResponse, RouteInfo, SegmentRoutesItem, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest, FacilityCandidate, SignsReportResponse, RouteViewMode } from '../types';
+import type { Changeset, LocalEvent, RouteSegmentsResponse, SegmentRoutesItem, SegmentAddEvent, SegmentDeleteNewEvent, SegmentRetireEvent, AnchorNodeInfo, PlacenameCandidate, AnchorNameUpsertRequest, FacilityCandidate, SignsReportResponse, RouteViewMode } from '../types';
 import type { GeoJSON } from 'geojson';
 import { SnapManager } from '../utils/snap';
 import { api, isAbortError } from '../api/client';
@@ -1527,9 +1527,7 @@ export function MapView({
   const [snapManager] = useState(() => new SnapManager());
   const mapRef = useRef<L.Map | null>(null);
   const routeLayerRef = useRef<L.GeoJSON | null>(null);
-  const allRoutesLayerRef = useRef<L.GeoJSON | null>(null);
   const [mapReady, setMapReady] = useState(false);
-  const [routesInView, setRoutesInView] = useState<GeoJSON.FeatureCollection | null>(null);
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [segmentsDataLocal, setSegmentsDataLocal] = useState<GeoJSON.FeatureCollection | null>(null);
   const segmentsData = segmentsDataProp !== undefined ? segmentsDataProp : segmentsDataLocal;
@@ -1601,24 +1599,9 @@ export function MapView({
     hoverRouteIndexRef.current = hoverRouteIndex;
   }, [hoverRouteIndex]);
 
-  const getRouteLengthKm = useCallback(
-    (rutenummer: string): number | null => {
-      if (routeLengthKmCacheRef.current.has(rutenummer)) {
-        return routeLengthKmCacheRef.current.get(rutenummer) ?? null;
-      }
-      const match = routesInView?.features?.find((f) => {
-        const props = f.properties as { rutenummer?: string; total_length_km?: number | null } | null;
-        return props?.rutenummer === rutenummer;
-      });
-      const km =
-        match && typeof (match.properties as any)?.total_length_km === 'number'
-          ? ((match.properties as any).total_length_km as number)
-          : null;
-      routeLengthKmCacheRef.current.set(rutenummer, km);
-      return km;
-    },
-    [routesInView]
-  );
+  const getRouteLengthKm = useCallback((rutenummer: string): number | null => {
+    return routeLengthKmCacheRef.current.get(rutenummer) ?? null;
+  }, []);
 
   const getRouteGeometryCached = useCallback(
     async (rutenummer: string): Promise<GeoJSON.Geometry | null> => {
@@ -1642,30 +1625,6 @@ export function MapView({
         return cached;
       }
 
-      const match = routesInView?.features?.find((f) => {
-        const props = f.properties as { rutenummer?: string } | null;
-        return props?.rutenummer === rutenummer;
-      });
-      if (match?.geometry) {
-        routeGeometryCacheRef.current.set(rutenummer, match.geometry as GeoJSON.Geometry);
-        // Try to fetch endpoint names if not cached
-        if (!routeEndpointsCacheRef.current.has(rutenummer)) {
-          try {
-            const routeData = await api.getRoute(rutenummer, false);
-            if (routeData.from_name !== undefined || routeData.to_name !== undefined) {
-              routeEndpointsCacheRef.current.set(rutenummer, {
-                from_name: routeData.from_name || null,
-                to_name: routeData.to_name || null,
-              });
-            }
-          } catch (error) {
-            // Silent failure - endpoints are optional
-            debugLog('Failed to fetch endpoint names for', rutenummer, error);
-          }
-        }
-        return match.geometry as GeoJSON.Geometry;
-      }
-
       const routeData = await api.getRoute(rutenummer, true);
       const geom = routeData.route_geometry || null;
       if (geom) routeGeometryCacheRef.current.set(rutenummer, geom);
@@ -1683,7 +1642,7 @@ export function MapView({
       }
       return geom;
     },
-    [routesInView]
+    []
   );
 
   const ensureHoverTooltip = useCallback((layer: L.Layer) => {
@@ -1824,258 +1783,6 @@ export function MapView({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [activateHoverRoute, hoveredSegmentId]);
-
-  // Load routes in viewport when Links layer is on or when a route is selected (so all routes stay visible as background)
-  useEffect(() => {
-    debugLog('Routes useEffect triggered:', { mapReady, mapRef: !!mapRef.current, selectedArea, showLinks, routeNumber });
-
-    if (!showLinks && !routeNumber) {
-      setRoutesInView(null);
-      return;
-    }
-    if (!mapRef.current || !mapReady) {
-      debugLog('Skipping routes load - map not ready');
-      return;
-    }
-
-    let requestId = 0;
-    let activeController: AbortController | null = null;
-    let debounceTimeoutId: ReturnType<typeof setTimeout> | null = null;
-    let initialLoadTimeoutId: ReturnType<typeof setTimeout> | null = null;
-    let lastBbox: string | null = null;
-    const DEBOUNCE_DELAY = 300; // ms - delay before making API call after map movement stops
-
-    // Helper to calculate bounding box from GeoJSON features
-    const calculateBbox = (features: GeoJSON.Feature[]): L.LatLngBounds | null => {
-      if (features.length === 0) return null;
-
-      let minLat = Infinity;
-      let minLng = Infinity;
-      let maxLat = -Infinity;
-      let maxLng = -Infinity;
-
-      const processGeometry = (geom: GeoJSON.Geometry) => {
-        if (geom.type === 'Point') {
-          const [lng, lat] = geom.coordinates;
-          minLat = Math.min(minLat, lat);
-          minLng = Math.min(minLng, lng);
-          maxLat = Math.max(maxLat, lat);
-          maxLng = Math.max(maxLng, lng);
-        } else if (geom.type === 'LineString' || geom.type === 'MultiPoint') {
-          for (const coord of geom.coordinates) {
-            const [lng, lat] = coord;
-            minLat = Math.min(minLat, lat);
-            minLng = Math.min(minLng, lng);
-            maxLat = Math.max(maxLat, lat);
-            maxLng = Math.max(maxLng, lng);
-          }
-        } else if (geom.type === 'Polygon' || geom.type === 'MultiLineString') {
-          for (const ring of geom.coordinates) {
-            for (const coord of ring) {
-              const [lng, lat] = coord;
-              minLat = Math.min(minLat, lat);
-              minLng = Math.min(minLng, lng);
-              maxLat = Math.max(maxLat, lat);
-              maxLng = Math.max(maxLng, lng);
-            }
-          }
-        } else if (geom.type === 'MultiPolygon') {
-          for (const polygon of geom.coordinates) {
-            for (const ring of polygon) {
-              for (const coord of ring) {
-                const [lng, lat] = coord;
-                minLat = Math.min(minLat, lat);
-                minLng = Math.min(minLng, lng);
-                maxLat = Math.max(maxLat, lat);
-                maxLng = Math.max(maxLng, lng);
-              }
-            }
-          }
-        }
-      };
-
-      for (const feature of features) {
-        if (feature.geometry) {
-          processGeometry(feature.geometry);
-        }
-      }
-
-      if (minLat === Infinity) return null;
-
-      return L.latLngBounds([minLat, minLng], [maxLat, maxLng]);
-    };
-
-    const loadRoutesInView = async () => {
-      if (!mapRef.current) {
-        debugLog('mapRef.current is null in loadRoutesInView');
-        return;
-      }
-
-      requestId += 1;
-      const currentRequestId = requestId;
-
-      // Abort any pending request
-      if (activeController) {
-        activeController.abort();
-        activeController = null;
-      }
-      activeController = new AbortController();
-
-      try {
-        let data: RoutesResponse;
-
-        if (selectedArea) {
-          // Load routes by area prefix
-          debugLog('Loading routes by area prefix:', selectedArea);
-          data = await api.listRoutes({ prefix: selectedArea, limit: 1000, include_geometry: true }, { signal: activeController.signal });
-        } else {
-          // Bbox: always use current viewport so "all routes in bbox" is consistent (URL or click)
-          const bounds = mapRef.current.getBounds();
-          const zoom = mapRef.current.getZoom();
-          const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
-
-          // Request deduplication: skip if bbox hasn't changed
-          if (bbox === lastBbox) {
-            debugLog('Skipping duplicate bbox request:', bbox);
-            return;
-          }
-          lastBbox = bbox;
-
-          debugLog('Loading routes in bbox:', { bbox, zoom });
-          data = await api.getRoutesInBbox(bbox, { signal: activeController.signal });
-        }
-
-        // Ignore response if it's outdated (newer request was made)
-        if (currentRequestId !== requestId) {
-          debugLog('Ignoring outdated response for request', currentRequestId);
-          return;
-        }
-
-        const totalRoutes = data.total ?? 0;
-        const returnedRoutes = data.routes?.length || 0;
-
-        debugLog('Routes API response:', {
-          total: totalRoutes,
-          returned: returnedRoutes,
-          selectedArea,
-        });
-
-        // Convert routes to GeoJSON FeatureCollection
-        const features: GeoJSON.Feature[] = (data.routes || [])
-          .map((route) => {
-            // Type assertion: routes from API may have route_geometry and total_length_m
-            const routeWithGeometry = route as RouteInfo & {
-              route_geometry?: GeoJSON.Geometry | null;
-              total_length_m?: number;
-              total_length_km?: number;
-            };
-            const geometry = routeWithGeometry.route_geometry;
-            if (!geometry) {
-              return null;
-            }
-            // Calculate length in km if available
-            const lengthKm = routeWithGeometry.total_length_km
-              ?? (routeWithGeometry.total_length_m ? routeWithGeometry.total_length_m / 1000 : null);
-            return {
-              type: 'Feature' as const,
-              id: route.rutenummer,
-              geometry: geometry,
-              properties: {
-                rutenummer: route.rutenummer,
-                rutenavn: route.rutenavn,
-                vedlikeholdsansvarlig: route.vedlikeholdsansvarlig,
-                total_length_km: lengthKm,
-              },
-            } as GeoJSON.Feature;
-          })
-          .filter((f): f is GeoJSON.Feature => f !== null);
-
-        const filteredFeatures = features.filter((f) => f.geometry !== null && f.geometry !== undefined);
-        debugLog(`Loaded ${filteredFeatures.length} routes with geometry (out of ${totalRoutes} total)`);
-
-        setRoutesInView({
-          type: 'FeatureCollection',
-          features: filteredFeatures,
-        });
-
-        // Do not fitBounds when area is selected (Feil 2A) - avoids zoom override on re-render/hover
-      } catch (error) {
-        if (isAbortError(error)) {
-          debugLog('Request aborted');
-          return;
-        }
-        // Don't show notification for background route loading - just log silently
-        // Errors are logged by handleApiError
-      } finally {
-        // Clear controller after request completes
-        if (currentRequestId === requestId) {
-          activeController = null;
-        }
-      }
-    };
-
-    // Debounced version that waits for map movement to stop
-    const debouncedLoadRoutes = () => {
-      // If area or a route is selected, don't reload on map movement - keep existing routes visible
-      if (selectedArea || routeNumber) {
-        return;
-      }
-
-      // Clear any existing debounce timer
-      if (debounceTimeoutId) {
-        clearTimeout(debounceTimeoutId);
-        debounceTimeoutId = null;
-      }
-
-      // Abort any pending request when new movement starts
-      if (activeController) {
-        activeController.abort();
-        activeController = null;
-      }
-
-      // Set new debounce timer
-      debounceTimeoutId = setTimeout(() => {
-        debounceTimeoutId = null;
-        loadRoutesInView();
-      }, DEBOUNCE_DELAY);
-    };
-
-    // Load routes on map move/zoom (with debouncing) - skip when area or route selected so we don't replace with smaller bbox
-    if (!selectedArea && !routeNumber) {
-      mapRef.current.on('moveend', debouncedLoadRoutes);
-      mapRef.current.on('zoomend', debouncedLoadRoutes);
-    }
-
-    // Initial load: when a route is selected and we already have routes, don't reload (keep all visible). When ?route=X and routesInView is null, do load once.
-    // IMPORTANT: routesInView is intentionally NOT in the dependency array. Including it would re-run this effect every time we set routesInView (after a load), which would schedule another load and either overwrite surrounding routes or race with the next user action (e.g. selecting a route). See doc/ROUTE_VIEW_BUGS_REVIEW.md 1B.
-    const skipLoadBecauseRouteSelected = routeNumber && (routesInView?.features?.length ?? 0) > 0;
-    if (!skipLoadBecauseRouteSelected) {
-      // When a route is selected but we have no routes yet, load immediately (0ms) so other routes appear; otherwise 500ms debounce
-      const delay = routeNumber && !(routesInView?.features?.length) ? 0 : 500;
-      initialLoadTimeoutId = setTimeout(() => {
-        debugLog('Initial routes load');
-        loadRoutesInView();
-      }, delay);
-    }
-
-    return () => {
-      if (debounceTimeoutId) {
-        clearTimeout(debounceTimeoutId);
-      }
-      if (initialLoadTimeoutId) {
-        clearTimeout(initialLoadTimeoutId);
-      }
-      if (activeController) {
-        activeController.abort();
-      }
-      if (mapRef.current) {
-        mapRef.current.off('moveend', debouncedLoadRoutes);
-        mapRef.current.off('zoomend', debouncedLoadRoutes);
-      }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- routesInView intentionally omitted: re-running when it changes would schedule another load and overwrite/race; we only need to read its current value when routeNumber/showLinks change.
-  }, [mapReady, selectedArea, showLinks, routeNumber]);
-
 
   // Load segments and links - by route if selected, otherwise by bbox in inspection mode
   useEffect(() => {
@@ -2601,32 +2308,6 @@ export function MapView({
       }
     };
   }, [showSigns, mapReady, routeNumber, selectedArea, signsPrefix, setSignsData]);
-
-  // Display all routes in view as background (grey) - shown even when a single route is selected
-  const ALL_ROUTES_PANE = 'allRoutesPane';
-  const ALL_ROUTES_PANE_ZINDEX = 150;
-  useEffect(() => {
-    if (!mapRef.current || !mapReady) return;
-    if (!mapRef.current.getPane(ALL_ROUTES_PANE)) {
-      const pane = mapRef.current.createPane(ALL_ROUTES_PANE);
-      pane.style.zIndex = String(ALL_ROUTES_PANE_ZINDEX);
-    }
-    if (allRoutesLayerRef.current) {
-      mapRef.current.removeLayer(allRoutesLayerRef.current);
-      allRoutesLayerRef.current = null;
-    }
-    if (routesInView?.features?.length) {
-      const allRoutesLayer = L.geoJSON(routesInView, {
-        pane: ALL_ROUTES_PANE,
-        style: {
-          color: '#95a5a6',
-          weight: 2,
-          opacity: 0.7,
-        },
-      }).addTo(mapRef.current);
-      allRoutesLayerRef.current = allRoutesLayer;
-    }
-  }, [mapReady, routesInView]);
 
   // Display selected route geometry on map (highlighted)
   // Use a dedicated pane with lower z-index so overlay layers (Segmenter, Lenker) receive clicks
@@ -3335,7 +3016,7 @@ export function MapView({
               maxZoom={19}
             />
           </LayersControl.BaseLayer>
-          <LayersControl.Overlay checked={selectedRouteNumber ? routeViewMode === 'links' : showLinks} name="Lenker">
+          <LayersControl.Overlay checked={selectedRouteNumber ? (routeViewMode === 'links' || showLinks) : showLinks} name="Lenker">
             <LinksLayer
               linksData={linksData}
               linksLayerRef={linksLayerRef}
