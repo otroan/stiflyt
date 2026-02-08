@@ -2034,6 +2034,30 @@ async def validate_route(
                         link_count_row = cur.fetchone()
                         link_count = link_count_row.get('link_count', 0) if link_count_row else 0
 
+            # Latest oppdateringsdato among segments of this route
+            route_last_updated = None
+            for fotruteinfo_rows in segments_dict.values():
+                for row in fotruteinfo_rows:
+                    oppd = row.get('oppdateringsdato')
+                    if oppd is not None:
+                        oppd_str = oppd.isoformat() if hasattr(oppd, 'isoformat') else str(oppd)
+                        if route_last_updated is None or (oppd_str and oppd_str > route_last_updated):
+                            route_last_updated = oppd_str
+
+            # Latest oppdateringsdato in turrutebasen (whole fotrute table)
+            database_last_updated = None
+            try:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        f"SELECT MAX(oppdateringsdato) as database_last_updated FROM {schema_quoted}.fotrute"
+                    )
+                    row = cur.fetchone()
+                    if row and row.get('database_last_updated') is not None:
+                        oppd = row['database_last_updated']
+                        database_last_updated = oppd.isoformat() if hasattr(oppd, 'isoformat') else str(oppd)
+            except Exception:
+                pass
+
             # Extract summary values
             all_rutenavn = []
             all_vedlikeholdsansvarlig = []
@@ -2112,6 +2136,8 @@ async def validate_route(
                     'vedlikeholdsansvarlig_values': sorted(set(all_vedlikeholdsansvarlig)) if all_vedlikeholdsansvarlig else None,
                     'rutetype_values': sorted(set(all_rutetype)) if all_rutetype else None,
                     'gradering_values': sorted(set(all_gradering)) if all_gradering else None,
+                    'route_last_updated': route_last_updated,
+                    'database_last_updated': database_last_updated,
                 }
             )
 

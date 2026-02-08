@@ -2047,6 +2047,7 @@ export function MapView({
     }
 
     // Initial load: when a route is selected and we already have routes, don't reload (keep all visible). When ?route=X and routesInView is null, do load once.
+    // IMPORTANT: routesInView is intentionally NOT in the dependency array. Including it would re-run this effect every time we set routesInView (after a load), which would schedule another load and either overwrite surrounding routes or race with the next user action (e.g. selecting a route). See doc/ROUTE_VIEW_BUGS_REVIEW.md 1B.
     const skipLoadBecauseRouteSelected = routeNumber && (routesInView?.features?.length ?? 0) > 0;
     if (!skipLoadBecauseRouteSelected) {
       // When a route is selected but we have no routes yet, load immediately (0ms) so other routes appear; otherwise 500ms debounce
@@ -2072,7 +2073,8 @@ export function MapView({
         mapRef.current.off('zoomend', debouncedLoadRoutes);
       }
     };
-  }, [mapReady, selectedArea, showLinks, routeNumber, routesInView]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- routesInView intentionally omitted: re-running when it changes would schedule another load and overwrite/race; we only need to read its current value when routeNumber/showLinks change.
+  }, [mapReady, selectedArea, showLinks, routeNumber]);
 
 
   // Load segments and links - by route if selected, otherwise by bbox in inspection mode

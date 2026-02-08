@@ -949,6 +949,13 @@ Examples:
                 print(f"Total segments: {validation_report.get('segment_count', 0)}")
                 print(f"Total links: {validation_report.get('link_count', 0)}")
                 print(f"Status: {validation_report.get('status')}")
+                route_last = summary.get("route_last_updated")
+                db_last = summary.get("database_last_updated")
+                if route_last or db_last:
+                    if route_last:
+                        print(f"Last updated (this route): {route_last}")
+                    if db_last:
+                        print(f"Turrutebasen database last updated: {db_last}")
                 print()
 
                 print("SEGMENT METADATA DUMP:")
@@ -956,7 +963,8 @@ Examples:
                 for seg_meta in segment_metadata:
                     length_str = f"{seg_meta.get('length_meters', 0.0):.1f} m" if seg_meta.get('length_meters') is not None else "N/A"
                     segment_lokalid = seg_meta.get("segment_lokalid") or "(missing lokalid)"
-                    print(f"Segment {segment_lokalid} (length: {length_str}, {seg_meta['fotruteinfo_count']} fotruteinfo row(s)):")
+                    last_updated = seg_meta.get("oppdateringsdato") or "N/A"
+                    print(f"Segment {segment_lokalid} (length: {length_str}, {seg_meta['fotruteinfo_count']} fotruteinfo row(s), last_updated: {last_updated}):")
                     for i, row in enumerate(seg_meta.get('fotruteinfo_rows', []), 1):
                         print(f"  Row {i} (fotruteinfo_objid: {row['fotruteinfo_objid']}):")
                         print(f"    rutenummer: {row['rutenummer']}")

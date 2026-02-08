@@ -394,6 +394,8 @@ class ValidationSummary(BaseModel):
     vedlikeholdsansvarlig_values: Optional[List[str]] = None
     rutetype_values: Optional[List[str]] = None
     gradering_values: Optional[List[str]] = None
+    route_last_updated: Optional[str] = None  # Latest oppdateringsdato among segments of this route (ISO)
+    database_last_updated: Optional[str] = None  # Latest oppdateringsdato in turrutebasen fotrute (ISO)
 
 
 class RouteValidationResponse(BaseModel):
