@@ -1,6 +1,7 @@
 /** Map view component with Leaflet and Geoman */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { createRoot } from 'react-dom/client';
 import { MapContainer, TileLayer, GeoJSON as ReactLeafletGeoJSON, useMap, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
@@ -14,11 +15,23 @@ import { findClosestPointOnLine, splitLineStringAtPoint, isNewSegment } from '..
 import { ConfirmDialog } from './ConfirmDialog';
 import { AnchorNameDialog } from './AnchorNameDialog';
 import { RouteSelectorPanel } from './RouteSelectorPanel';
+import { SignPopupContent } from './SignPopupContent';
 import 'leaflet/dist/leaflet.css';
 
 // Stable initial map view (Feil 2B) - same reference each render so MapContainer does not reset zoom/center on re-render
 const INITIAL_MAP_CENTER: [number, number] = [61.5, 8.5];
 const INITIAL_MAP_ZOOM = 7;
+
+/** Gray anchor/sign site marker on map (shared by anchor nodes and standalone sign sites). */
+const LINK_ANCHOR_CIRCLE_STYLE: L.CircleMarkerOptions = {
+  radius: 8,
+  fillColor: '#6b7280',
+  color: '#ffffff',
+  weight: 2,
+  opacity: 1,
+  fillOpacity: 0.8,
+  pane: 'link-endpoints',
+};
 
 // Load Geoman dynamically to avoid Vite resolution issues
 // Import is done in GeomanControl component when needed
@@ -75,6 +88,10 @@ interface MapViewProps {
   ownershipData?: any;
   onOwnershipDataChange?: (data: any) => void;
   selectedArea?: string | null; // Area prefix (e.g., 'bre', 'jot')
+  signRefetchKey?: number;
+  onSignsReload?: () => void;
+  addSignSiteMode?: boolean;
+  onAddSignSiteModeChange?: (active: boolean) => void;
 }
 
 // Component to render the segments layer for LayersControl
@@ -1119,22 +1136,31 @@ function LinksLayer({
   );
 }
 
-// Component to render the signs layer for LayersControl
+// Component to render the signs layer for LayersControl. Gray circles; popup on hover. Signs tied to visible anchors are drawn on the anchor layer only.
 function SignsLayer({
   showSigns,
   signsData,
   selectedSignDestinations,
   onSignDestinationSelect,
-  signsLayerRef
+  signsLayerRef,
+  routeNumber,
+  onSignsReload,
+  mergeWithAnchors,
+  anchorNodeIdsOnMap,
 }: {
   showSigns: boolean;
   signsData: SignsReportResponse | null;
   selectedSignDestinations: Set<string>;
   onSignDestinationSelect?: (destKey: string, selected: boolean) => void;
   signsLayerRef: React.MutableRefObject<L.LayerGroup | null>;
+  routeNumber: string | null;
+  onSignsReload?: () => void;
+  mergeWithAnchors: boolean;
+  anchorNodeIdsOnMap: Set<number>;
 }) {
   const map = useMap();
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
+  const popupRootsRef = useRef<Map<L.CircleMarker, ReturnType<typeof createRoot>>>(new Map());
 
   // Create our own layer and add/remove from map when overlay is on/off
   useEffect(() => {
@@ -1144,6 +1170,8 @@ function SignsLayer({
         layerGroupRef.current = null;
         signsLayerRef.current = null;
       }
+      popupRootsRef.current.forEach((root) => root.unmount());
+      popupRootsRef.current.clear();
       return;
     }
     const lg = L.layerGroup();
@@ -1151,6 +1179,8 @@ function SignsLayer({
     signsLayerRef.current = lg;
     map.addLayer(lg);
     return () => {
+      popupRootsRef.current.forEach((root) => root.unmount());
+      popupRootsRef.current.clear();
       if (layerGroupRef.current) {
         map.removeLayer(layerGroupRef.current);
         layerGroupRef.current = null;
@@ -1167,114 +1197,77 @@ function SignsLayer({
     }
 
     group.clearLayers();
+    popupRootsRef.current.forEach((root) => root.unmount());
+    popupRootsRef.current.clear();
 
-    // Create flag icon for endpoints (blue)
-    const endpointFlagIcon = L.divIcon({
-      className: 'sign-marker',
-      html: '<div style="font-size: 20px; line-height: 1;">🚩</div>',
-      iconSize: [20, 20],
-      iconAnchor: [10, 20],
-    });
-
-    // Create flag icon for junctions (orange/red)
-    const junctionFlagIcon = L.divIcon({
-      className: 'sign-marker',
-      html: '<div style="font-size: 20px; line-height: 1; filter: hue-rotate(20deg) saturate(1.5);">🚩</div>',
-      iconSize: [20, 20],
-      iconAnchor: [10, 20],
-    });
-
-    const formatDistanceKm = (distanceMeters?: number | null) => {
-      if (distanceMeters === undefined || distanceMeters === null) return '';
-      const km = distanceMeters / 1000;
-      if (km > 5) {
-        return `${Math.round(km)}km`;
-      }
-      return `${(Math.round(km * 2) / 2).toFixed(1)}km`;
-    };
+    if (!map.getPane('link-endpoints')) {
+      const pane = map.createPane('link-endpoints');
+      pane.style.zIndex = '650';
+    }
 
     signsData.signs.forEach((sign) => {
       const [lon, lat] = sign.coordinates || [null, null];
       if (lon === null || lat === null) return;
 
-      const icon = sign.is_endpoint ? endpointFlagIcon : junctionFlagIcon;
-      const marker = L.marker([lat, lon], { icon });
+      if (
+        mergeWithAnchors &&
+        sign.anchor_node_id != null &&
+        anchorNodeIdsOnMap.has(sign.anchor_node_id)
+      ) {
+        return;
+      }
+
+      const marker = L.circleMarker([lat, lon], LINK_ANCHOR_CIRCLE_STYLE);
       group.addLayer(marker);
 
-      // Create popup content with destinations
-      const createDestinationPopup = (sign: typeof signsData.signs[0]) => {
-        const signName = sign.name || `Anchor ${sign.anchor_node_id}`;
-        const signType = sign.is_endpoint ? 'Endepunkt' : sign.is_junction ? 'Kryss' : 'Node';
+      const container = document.createElement('div');
+      container.style.minWidth = '200px';
+      marker.bindPopup(container, { maxWidth: 340, closeOnClick: false });
 
-        const destinationsHtml = sign.destinations.length > 0
-          ? sign.destinations
-              .map((dest) => {
-                const destKey = `${sign.anchor_node_id}-${dest.anchor_node_id}`;
-                const isSelected = selectedSignDestinations.has(destKey);
-                return `
-                  <div
-                    class="sign-destination-item ${isSelected ? 'selected' : ''}"
-                    data-dest-key="${destKey}"
-                    style="
-                      padding: 4px 8px;
-                      margin: 2px 0;
-                      cursor: pointer;
-                      border-radius: 4px;
-                      background: ${isSelected ? '#e3f2fd' : '#f5f5f5'};
-                      border: 1px solid ${isSelected ? '#2196f3' : '#ddd'};
-                    "
-                    onmouseover="this.style.background='${isSelected ? '#bbdefb' : '#e0e0e0'}'"
-                    onmouseout="this.style.background='${isSelected ? '#e3f2fd' : '#f5f5f5'}'"
-                  >
-                    ${isSelected ? '✓ ' : ''}${dest.name} (${formatDistanceKm(dest.distance_meters)})
-                  </div>
-                `;
-              })
-              .join('')
-          : '<div style="padding: 4px; color: #999;">Ingen destinasjoner</div>';
-
-        return `
-          <div style="min-width: 200px;">
-            <strong>${signName}</strong><br>
-            <small>${signType} (${sign.anchor_node_id})</small><br>
-            <br>
-            <strong>Destinasjoner:</strong><br>
-            ${destinationsHtml}
-          </div>
-        `;
-      };
-
-      marker.bindPopup(createDestinationPopup(sign), {
-        maxWidth: 250,
+      marker.on('mouseover', () => {
+        marker.openPopup();
+      });
+      marker.on('click', () => {
+        marker.openPopup();
       });
 
-      // Handle click on destination items in popup
       marker.on('popupopen', () => {
         const popup = marker.getPopup();
-        if (!popup) return;
+        const el = popup?.getElement();
+        if (!el || !container.parentNode) return;
+        const root = createRoot(container);
+        popupRootsRef.current.set(marker, root);
+        root.render(
+          <SignPopupContent
+            sign={sign}
+            routeNumber={routeNumber}
+            onSignsReload={onSignsReload}
+            onClose={() => marker.closePopup()}
+            selectedSignDestinations={selectedSignDestinations}
+            onSignDestinationSelect={onSignDestinationSelect}
+          />
+        );
+      });
 
-        const popupElement = popup.getElement();
-        if (!popupElement) return;
-
-        // Add click handlers to destination items
-        const destItems = popupElement.querySelectorAll('.sign-destination-item');
-        destItems.forEach((item) => {
-          const destKey = item.getAttribute('data-dest-key');
-          if (!destKey) return;
-
-          item.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const isCurrentlySelected = selectedSignDestinations.has(destKey);
-            if (onSignDestinationSelect) {
-              onSignDestinationSelect(destKey, !isCurrentlySelected);
-            }
-            // Refresh popup to show updated selection
-            marker.openPopup();
-          });
-        });
+      marker.on('popupclose', () => {
+        const root = popupRootsRef.current.get(marker);
+        if (root) {
+          root.unmount();
+          popupRootsRef.current.delete(marker);
+        }
       });
     });
-  }, [signsData, selectedSignDestinations, onSignDestinationSelect, showSigns]);
+  }, [
+    signsData,
+    selectedSignDestinations,
+    onSignDestinationSelect,
+    showSigns,
+    routeNumber,
+    onSignsReload,
+    mergeWithAnchors,
+    anchorNodeIdsOnMap,
+    map,
+  ]);
 
   return null;
 }
@@ -1520,6 +1513,10 @@ export function MapView({
   ownershipData,
   onOwnershipDataChange,
   selectedArea,
+  signRefetchKey = 0,
+  onSignsReload,
+  addSignSiteMode = false,
+  onAddSignSiteModeChange,
 }: MapViewProps) {
   const [diffLayer, setDiffLayer] = useState<GeoJSON.FeatureCollection | null>(null);
   const [effectiveLayer, setEffectiveLayer] = useState<GeoJSON.FeatureCollection | null>(null);
@@ -1541,6 +1538,7 @@ export function MapView({
   const linksLayerRef = useRef<L.GeoJSON | null>(null);
   const endpointsLayerRef = useRef<L.LayerGroup | null>(null);
   const signsLayerRef = useRef<L.LayerGroup | null>(null);
+  const anchorSignPopupRootsRef = useRef<Map<L.CircleMarker, ReturnType<typeof createRoot>>>(new Map());
   const [anchorNodes, setAnchorNodes] = useState<AnchorNodeInfo[]>([]);
   const [anchorCandidates, setAnchorCandidates] = useState<PlacenameCandidate[]>([]);
   const [anchorFacilities, setAnchorFacilities] = useState<FacilityCandidate[]>([]);
@@ -1565,6 +1563,11 @@ export function MapView({
     });
     return anchorNodes.filter((a) => nodeIdsInArea.has(a.anchor_node_id));
   }, [anchorNodes, linksData, selectedArea]);
+
+  const visibleAnchorNodeIds = useMemo(
+    () => new Set(visibleAnchorNodes.map((a) => a.anchor_node_id)),
+    [visibleAnchorNodes]
+  );
 
   // Segment hover -> route highlight (architecture A)
   const segmentRoutesCacheRef = useRef<Map<string, SegmentRoutesItem[]>>(new Map());
@@ -2230,7 +2233,33 @@ export function MapView({
     return () => {
       controller.abort();
     };
-  }, [showSigns, mapReady, routeNumber, selectedArea, signsPrefix, setSignsData]);
+  }, [showSigns, mapReady, routeNumber, selectedArea, signsPrefix, setSignsData, signRefetchKey]);
+
+  // Add sign site on map click when addSignSiteMode is active
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !addSignSiteMode || !routeNumber) {
+      return;
+    }
+    const map = mapRef.current;
+    const handler = (e: L.LeafletMouseEvent) => {
+      const latlng = e.latlng;
+      api
+        .createSignSite(routeNumber!, { lon: latlng.lng, lat: latlng.lat })
+        .then(() => {
+          notificationManager.success('Skiltsted lagt til');
+          onAddSignSiteModeChange?.(false);
+          onSignsReload?.();
+        })
+        .catch((err) => {
+          const appError = handleApiError(err, 'Legg til skiltsted');
+          notificationManager.error(appError.message);
+        });
+    };
+    map.on('click', handler);
+    return () => {
+      map.off('click', handler);
+    };
+  }, [mapReady, addSignSiteMode, routeNumber, onAddSignSiteModeChange, onSignsReload]);
 
   // Reload signs when map moves/zooms (debounced) - only when NOT using area/prefix (bbox mode)
   useEffect(() => {
@@ -2376,7 +2405,13 @@ export function MapView({
 
   // Display endpoints (for segments and links)
   useEffect(() => {
+    const unmountAnchorSignPopups = () => {
+      anchorSignPopupRootsRef.current.forEach((r) => r.unmount());
+      anchorSignPopupRootsRef.current.clear();
+    };
+
     if (!mapRef.current || !mapReady) {
+      unmountAnchorSignPopups();
       if (endpointsLayerRef.current && mapRef.current) {
         mapRef.current.removeLayer(endpointsLayerRef.current);
         endpointsLayerRef.current = null;
@@ -2387,6 +2422,7 @@ export function MapView({
     const showSegmentsMode = routeViewMode === 'segments';
     const showLinksMode = routeViewMode === 'links' || (!selectedRouteNumber && showLinks);
     if (!showAnchors && !showSegmentsMode && !showLinksMode) {
+      unmountAnchorSignPopups();
       if (endpointsLayerRef.current) {
         mapRef.current.removeLayer(endpointsLayerRef.current);
         endpointsLayerRef.current = null;
@@ -2395,6 +2431,7 @@ export function MapView({
     }
 
     // Clear previous endpoints
+    unmountAnchorSignPopups();
     if (endpointsLayerRef.current) {
       mapRef.current.removeLayer(endpointsLayerRef.current);
       endpointsLayerRef.current = null;
@@ -2477,22 +2514,15 @@ export function MapView({
     }
 
 
-    // Add anchor node markers when anchors layer is on (visibleAnchorNodes filters by selected area)
+    // Add anchor node markers when anchors layer is on (visibleAnchorNodes filters by selected area).
+    // When Skilt is also on, the same gray circle shows sign details on hover (no duplicate marker).
     if (showAnchors && visibleAnchorNodes.length > 0) {
       visibleAnchorNodes.forEach((anchor) => {
         const [lon, lat] = anchor.coordinates;
         const nameLabel = anchor.name?.name || `Anchor ${anchor.anchor_node_id}`;
         const hasName = !!anchor.name?.name;
 
-        const marker = L.circleMarker([lat, lon], {
-          radius: 8,
-          fillColor: '#6b7280',
-          color: '#ffffff',
-          weight: 2,
-          opacity: 1,
-          fillOpacity: 0.8,
-          pane: 'link-endpoints',
-        }).addTo(endpointsGroup);
+        const marker = L.circleMarker([lat, lon], LINK_ANCHOR_CIRCLE_STYLE).addTo(endpointsGroup);
 
         marker.bindTooltip(
           !hasName ? `${nameLabel} (mangler navn)` : nameLabel,
@@ -2506,16 +2536,83 @@ export function MapView({
           }
         );
 
-        // Click handler for anchor naming dialog
-        marker.on('click', () => openAnchorDialog(anchor));
+        const matchingSign =
+          showSigns && signsData
+            ? signsData.signs.find(
+                (s) => s.anchor_node_id != null && s.anchor_node_id === anchor.anchor_node_id
+              )
+            : undefined;
+
+        if (matchingSign) {
+          const container = document.createElement('div');
+          container.style.minWidth = '200px';
+          marker.bindPopup(container, { maxWidth: 340, closeOnClick: false });
+          marker.on('mouseover', () => {
+            marker.openPopup();
+          });
+          marker.on('popupopen', () => {
+            const popup = marker.getPopup();
+            const el = popup?.getElement();
+            if (!el || !container.parentNode) return;
+            const root = createRoot(container);
+            anchorSignPopupRootsRef.current.set(marker, root);
+            root.render(
+              <SignPopupContent
+                sign={matchingSign}
+                routeNumber={routeNumber ?? null}
+                onSignsReload={onSignsReload}
+                onClose={() => marker.closePopup()}
+                selectedSignDestinations={selectedSignDestinations}
+                onSignDestinationSelect={onSignDestinationSelect}
+                onEditAnchorName={() => openAnchorDialog(anchor)}
+              />
+            );
+          });
+          marker.on('popupclose', () => {
+            const root = anchorSignPopupRootsRef.current.get(marker);
+            if (root) {
+              root.unmount();
+              anchorSignPopupRootsRef.current.delete(marker);
+            }
+          });
+        }
+
+        // Klikk: åpne skilt-popup når Skilt er på og punktet har skiltdata; ellers ankernavn-dialog.
+        marker.on('click', (e: L.LeafletMouseEvent) => {
+          if (matchingSign && showSigns) {
+            if (e.originalEvent) {
+              L.DomEvent.stopPropagation(e.originalEvent);
+            }
+            marker.openPopup();
+            return;
+          }
+          openAnchorDialog(anchor);
+        });
       });
     }
 
-
     endpointsLayerRef.current = endpointsGroup;
-    // Note: openAnchorDialog is intentionally not in dependencies as it's stable (uses stable state setters and constant anchorSearchRadius)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeViewMode, selectedRouteNumber, showLinks, showAnchors, segmentsData, linksData, mapReady, visibleAnchorNodes]);
+
+    return () => {
+      unmountAnchorSignPopups();
+    };
+  }, [
+    routeViewMode,
+    selectedRouteNumber,
+    showLinks,
+    showAnchors,
+    showSigns,
+    segmentsData,
+    linksData,
+    mapReady,
+    visibleAnchorNodes,
+    signsData,
+    routeNumber,
+    onSignsReload,
+    selectedSignDestinations,
+    onSignDestinationSelect,
+    openAnchorDialog,
+  ]);
 
   // Signs markers are now handled by the SignsLayer component in LayersControl
 
@@ -3061,13 +3158,17 @@ export function MapView({
         <SignsLayerControl onToggle={onShowSignsChange} />
         <GrunneierLayerControl onToggle={onShowOwnershipChange} />
 
-        {/* Signs layer: outside Overlay so it always has map context and can add/remove its layer by showSigns */}
+        {/* Signs layer: outside Overlay so it always has map context and can add/remove its layer by showSigns. Popup on hover; edit in popup. */}
         <SignsLayer
           showSigns={showSigns}
           signsData={signsData}
           selectedSignDestinations={selectedSignDestinations}
           onSignDestinationSelect={onSignDestinationSelect}
           signsLayerRef={signsLayerRef}
+          routeNumber={routeNumber ?? null}
+          onSignsReload={onSignsReload}
+          mergeWithAnchors={showAnchors}
+          anchorNodeIdsOnMap={visibleAnchorNodeIds}
         />
 
         <MapInitializer

@@ -231,13 +231,26 @@ export interface RouteAnchorsResponse {
   total: number;
 }
 
+/** Operational fields for one physical skilt toward this destination. */
+export interface DestinationSkilt {
+  id?: number | null;
+  direction?: string | null;
+  status?: string | null;
+  skiltfarge?: string | null;
+  /** When set, overrides topology `distance_meters` for display/production. */
+  distance_meters?: number | null;
+  updated_at?: string | null;
+}
+
 export interface SignDestination {
   anchor_node_id: number;
   name: string;
-  distance_meters: number;
+  distance_meters?: number | null;
+  skilt?: DestinationSkilt | null;
 }
 
 export interface SignStatus {
+  id?: number | null;
   direction?: string | null;
   status?: string | null;
   last_inspected?: string | null;
@@ -251,14 +264,23 @@ export interface SignStatus {
 }
 
 export interface SignReportItem {
-  anchor_node_id: number;
+  anchor_node_id?: number | null;
+  sign_site_id?: number | null;
+  skiltstedidentifikator?: string | null;
   coordinates?: [number | null, number | null] | null;
-  link_count: number;
-  is_endpoint: boolean;
-  is_junction: boolean;
+  link_count?: number;
+  is_endpoint?: boolean;
+  is_junction?: boolean;
   name?: string | null;
   destinations: SignDestination[];
   status?: SignStatus[];
+  route_km?: number | null;
+  back_text?: string | null;
+  send_to_name?: string | null;
+  send_to_address?: string | null;
+  utm_coords?: string | null;
+  skiltfarge?: string | null; // 'grønn' | 'trehvit'
+  rutenummer_list?: string[] | null; // ruter skiltet tilhører
 }
 
 export interface SignsMissingItem {
@@ -271,6 +293,22 @@ export interface SignsMissingReport {
   missing_signs: SignsMissingItem[];
   missing_destinations: SignsMissingItem[];
   missing_anchor_names: SignsMissingItem[];
+}
+
+export interface SignSiteResponse {
+  id: number;
+  rutenummer?: string | null;
+  route_km?: number | null;
+  lon?: number | null;
+  lat?: number | null;
+  anchor_node_id?: number | null;
+  name?: string | null;
+  back_text?: string | null;
+  send_to_name?: string | null;
+  send_to_address?: string | null;
+  skiltfarge?: string | null; // 'grønn' | 'trehvit'
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface SignsReportResponse {

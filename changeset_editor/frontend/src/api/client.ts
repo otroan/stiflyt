@@ -19,6 +19,7 @@ import type {
   SignsReportResponse,
   SignsMissingReport,
   SignsProductionResponse,
+  SignSiteResponse,
 } from '../types';
 import { isRetryableError } from '../utils/errorHandler';
 
@@ -411,4 +412,100 @@ export const api = {
       body: JSON.stringify({ lat, lon }),
       ...options,
     }),
+
+  upsertSignStatusSite: (
+    rutenummer: string,
+    signSiteId: number,
+    payload: {
+      direction: string;
+      status?: string;
+      last_inspected?: string;
+      notes?: string;
+      updated_by?: string;
+      status_id?: number;
+    },
+    options: RequestOptions = {}
+  ): Promise<Record<string, unknown>> =>
+    requestWithAbort<Record<string, unknown>>(
+      `/v1/routes/${encodeURIComponent(rutenummer)}/signs/sites/${signSiteId}/status`,
+      { method: 'PATCH', body: JSON.stringify(payload), ...options }
+    ),
+
+  /** Update sign status (direction, status) for a sign site by ID. No route required. */
+  upsertSignStatusSiteById: (
+    signSiteId: number,
+    payload: {
+      direction: string;
+      status?: string;
+      last_inspected?: string;
+      notes?: string;
+      updated_by?: string;
+      status_id?: number;
+    },
+    options: RequestOptions = {}
+  ): Promise<Record<string, unknown>> =>
+    requestWithAbort<Record<string, unknown>>(
+      `/v1/signs/sites/${signSiteId}/status`,
+      { method: 'PATCH', body: JSON.stringify(payload), ...options }
+    ),
+
+  updateSignSite: (
+    signSiteId: number,
+    payload: { name?: string; back_text?: string; send_to_name?: string; send_to_address?: string; skiltfarge?: string; updated_by?: string },
+    options: RequestOptions = {}
+  ): Promise<SignSiteResponse> =>
+    requestWithAbort<SignSiteResponse>(`/v1/signs/sites/${signSiteId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+      ...options,
+    }),
+
+  createSignSite: (
+    rutenummer: string,
+    payload: { lon: number; lat: number },
+    options: RequestOptions = {}
+  ): Promise<SignSiteResponse> =>
+    requestWithAbort<SignSiteResponse>(
+      `/v1/routes/${encodeURIComponent(rutenummer)}/signs/sites`,
+      { method: 'POST', body: JSON.stringify(payload), ...options }
+    ),
+
+  getSignSiteDestinations: (
+    signSiteId: number,
+    options: RequestOptions = {}
+  ): Promise<{ sign_site_id: number; destinations: Array<{ anchor_node_id: number; display_order: number }> }> =>
+    requestWithAbort(
+      `/v1/signs/sites/${signSiteId}/destinations`,
+      { method: 'GET', ...options }
+    ),
+
+  setSignSiteDestinations: (
+    signSiteId: number,
+    payload: { destinations: Array<{ anchor_node_id: number; display_order?: number }> },
+    options: RequestOptions = {}
+  ): Promise<{ sign_site_id: number; destinations: Array<{ anchor_node_id: number; display_order: number }> }> =>
+    requestWithAbort(
+      `/v1/signs/sites/${signSiteId}/destinations`,
+      { method: 'PUT', body: JSON.stringify(payload), ...options }
+    ),
+
+  patchSignDestinationSkilt: (
+    signSiteId: number,
+    anchorNodeId: number,
+    payload: {
+      direction?: string | null;
+      status?: string | null;
+      skiltfarge?: string | null;
+      distance_meters?: number | null;
+    },
+    options: RequestOptions = {}
+  ): Promise<{
+    sign_site_id: number;
+    anchor_node_id: number;
+    skilt: Record<string, unknown>;
+  }> =>
+    requestWithAbort(
+      `/v1/signs/sites/${signSiteId}/destinations/${anchorNodeId}/skilt`,
+      { method: 'PATCH', body: JSON.stringify(payload), ...options }
+    ),
 };

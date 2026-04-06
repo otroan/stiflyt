@@ -14,14 +14,17 @@ from .operational_store import get_endpoint_names_for_anchors
 
 def format_utm_shortform(name: str) -> str:
     """
-    Convert UTM25833 fallback name to Norwegian shortform label with full coords.
+    Convert UTM fallback name to zone+letter shortform with full coords.
+    Accepts both UTM25833 and UTM33N (or similar zone+letter) input.
 
     Example:
-        "UTM25833 341443 6902893" -> "UTM32V 341443 6902893"
+        "UTM25833 341443 6902893" -> "UTM33N 341443 6902893"
     """
     if not name:
         return name
-    match = re.match(r'^UTM25833\s+(\d+)\s+(\d+)$', str(name).strip())
+    s = str(name).strip()
+    # UTM25833 easting northing, or already UTM<zone><letter> easting northing
+    match = re.match(r'^UTM(?:25833|\d{2}[A-Z])\s+(\d+)\s+(\d+)$', s, re.IGNORECASE)
     if not match:
         return name
     try:
@@ -29,8 +32,10 @@ def format_utm_shortform(name: str) -> str:
         northing = int(match.group(2))
     except ValueError:
         return name
-
-    return f"UTM32V {easting} {northing}"
+    # 25833 = zone 33N; output zone + letter
+    if s.upper().startswith('UTM25833'):
+        return f"UTM33N {easting} {northing}"
+    return name
 
 
 STEDSNAVN_CACHE_TTL_SECONDS = 600

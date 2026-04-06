@@ -31,6 +31,8 @@ function App() {
   const [signsPrefix, setSignsPrefix] = useState<string>('');
   const [selectedSignDestinations, setSelectedSignDestinations] = useState<Set<string>>(new Set());
   const [signsData, setSignsData] = useState<SignsReportResponse | null>(null);
+  const [signRefetchKey, setSignRefetchKey] = useState(0);
+  const [addSignSiteMode, setAddSignSiteMode] = useState(false);
 
   // Route view mode: one of route / segments / links (only one drawn at a time)
   const [routeViewMode, setRouteViewMode] = useState<RouteViewMode>('route');
@@ -77,13 +79,30 @@ function App() {
     setSelectedFeatureProperties(properties ?? null);
   };
 
-  // Get changeset ID or route number from URL
+  const handleAreaChange = (areaPrefix: string | null) => {
+    setSelectedArea(areaPrefix);
+    const urlParams = new URLSearchParams(window.location.search);
+    if (areaPrefix) {
+      urlParams.set('area', areaPrefix);
+    } else {
+      urlParams.delete('area');
+    }
+    const newUrl = urlParams.toString() ? `?${urlParams.toString()}` : window.location.pathname;
+    window.history.replaceState({}, '', newUrl);
+  };
+
+  // Get changeset ID, route number or area from URL
   useEffect(() => {
     const loadInitialData = async () => {
       const urlParams = new URLSearchParams(window.location.search);
       const changesetId = urlParams.get('changeset');
       const route = urlParams.get('route');
+      const area = urlParams.get('area');
       const tasks: Promise<unknown>[] = [];
+
+      if (area != null && area.trim() !== '') {
+        setSelectedArea(area.trim());
+      }
 
       if (route && route.trim() !== '') {
         setRouteNumber(route);
@@ -327,7 +346,7 @@ function App() {
           onLoadFromFile={handleLoadFromFile}
           onPublish={handlePublish}
           selectedArea={selectedArea}
-          onAreaChange={setSelectedArea}
+          onAreaChange={handleAreaChange}
         />
 
         {/* Main Content Area - Below header */}
@@ -374,6 +393,10 @@ function App() {
             ownershipData={ownershipData}
             onOwnershipDataChange={setOwnershipData}
             selectedArea={selectedArea}
+            signRefetchKey={signRefetchKey}
+            onSignsReload={() => setSignRefetchKey(k => k + 1)}
+            addSignSiteMode={addSignSiteMode}
+            onAddSignSiteModeChange={setAddSignSiteMode}
             onFeatureSelect={(id, properties, isMultiSelect) => {
               if (isMultiSelect) {
                 // Multi-select mode: toggle selection
@@ -448,6 +471,9 @@ function App() {
             ownershipData={ownershipData}
             selectedGeometryForOwnership={selectedGeometryForOwnership}
             onOwnershipDataChange={setOwnershipData}
+            onSignsReload={() => setSignRefetchKey(k => k + 1)}
+            addSignSiteMode={addSignSiteMode}
+            onAddSignSiteModeChange={setAddSignSiteMode}
           />
         </div>
       </div>

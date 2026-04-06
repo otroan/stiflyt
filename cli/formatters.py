@@ -161,7 +161,7 @@ def format_csv(segments: List[Dict[str, Any]], include_geometry: bool = False) -
 
 
 def format_signs_table(signs: List[Dict[str, Any]]) -> str:
-    """Format signs report as a table."""
+    """Format signs report as a table (id, type, name, km, pilretning, status, destinations)."""
     if not signs:
         return "No signs found."
 
@@ -179,42 +179,73 @@ def format_signs_table(signs: List[Dict[str, Any]]) -> str:
         parts = []
         for dest in destinations:
             name = dest.get("name") or "Unknown"
-            dist = dest.get("distance_meters")
+            sk = dest.get("skilt") or {}
+            dist = sk.get("distance_meters")
             if dist is None:
-                parts.append(f"{name}")
+                dist = dest.get("distance_meters")
+            dir_s = sk.get("direction") or ""
+            if dist is None:
+                parts.append(f"{name}" + (f" [{dir_s}]" if dir_s else ""))
             else:
-                parts.append(f"{name} ({format_distance_km(dist)})")
+                parts.append(f"{name} ({format_distance_km(dist)})" + (f" [{dir_s}]" if dir_s else ""))
         return ", ".join(parts)
 
     rows = []
     for sign in signs:
         sign_type = "endpoint" if sign.get("is_endpoint") else "junction" if sign.get("is_junction") else "node"
+        sid = sign.get("skiltstedidentifikator") or str(sign.get("sign_site_id") or sign.get("anchor_node_id") or "?")
+        dests = sign.get("destinations") or []
+        first_sk = (dests[0].get("skilt") or {}) if dests else {}
+        route_km = sign.get("route_km")
+        km_str = f"{route_km:.2f}" if route_km is not None else ""
+        utm = sign.get("utm_coords") or ""
+        skiltfarge = first_sk.get("skiltfarge") or sign.get("skiltfarge") or ""
         rows.append({
-            "anchor_node_id": str(sign.get("anchor_node_id", "")),
+            "id": sid,
             "type": sign_type,
             "name": sign.get("name") or "N/A",
-            "destinations": destinations_str(sign.get("destinations", [])),
+            "km": km_str,
+            "pilretning": first_sk.get("direction") or "",
+            "status": first_sk.get("status") or "",
+            "skiltfarge": skiltfarge,
+            "utm": utm,
+            "destinations": destinations_str(dests),
         })
 
     col_widths = {
-        "anchor_node_id": max(len("anchor"), max(len(r["anchor_node_id"]) for r in rows)),
+        "id": max(len("id"), max(len(r["id"]) for r in rows)),
         "type": max(len("type"), max(len(r["type"]) for r in rows)),
         "name": max(len("name"), max(len(r["name"]) for r in rows)),
+        "km": max(2, max(len(r["km"]) for r in rows)),
+        "pilretning": max(len("pilretning"), max(len(r["pilretning"]) for r in rows)),
+        "status": max(len("status"), max(len(r["status"]) for r in rows)),
+        "skiltfarge": max(len("skiltfarge"), max(len(r["skiltfarge"]) for r in rows)),
+        "utm": max(len("utm"), max(len(r["utm"]) for r in rows)),
         "destinations": max(len("destinations"), max(len(r["destinations"]) for r in rows)),
     }
 
     header = (
-        f"{'anchor':<{col_widths['anchor_node_id']}} | "
+        f"{'id':<{col_widths['id']}} | "
         f"{'type':<{col_widths['type']}} | "
         f"{'name':<{col_widths['name']}} | "
+        f"{'km':<{col_widths['km']}} | "
+        f"{'pilretning':<{col_widths['pilretning']}} | "
+        f"{'status':<{col_widths['status']}} | "
+        f"{'skiltfarge':<{col_widths['skiltfarge']}} | "
+        f"{'utm':<{col_widths['utm']}} | "
         f"{'destinations':<{col_widths['destinations']}}"
     )
     lines = [header, "-" * len(header)]
     for row in rows:
         lines.append(
-            f"{row['anchor_node_id']:<{col_widths['anchor_node_id']}} | "
+            f"{row['id']:<{col_widths['id']}} | "
             f"{row['type']:<{col_widths['type']}} | "
             f"{row['name']:<{col_widths['name']}} | "
+            f"{row['km']:<{col_widths['km']}} | "
+            f"{row['pilretning']:<{col_widths['pilretning']}} | "
+            f"{row['status']:<{col_widths['status']}} | "
+            f"{row['skiltfarge']:<{col_widths['skiltfarge']}} | "
+            f"{row['utm']:<{col_widths['utm']}} | "
             f"{row['destinations']:<{col_widths['destinations']}}"
         )
     return "\n".join(lines)
@@ -244,10 +275,21 @@ def format_signs_missing_table(missing: Dict[str, Any]) -> str:
 
 
 def format_signs_production_csv(rows: List[Dict[str, Any]]) -> str:
-    """Format production signs rows as CSV."""
+    """Format production signs rows as CSV (Norwegian + legacy columns)."""
     output = StringIO()
     fieldnames = [
+        "skiltstedidentifikator",
+        "tekst_paa_skiltet_destinasjon",
+        "km",
+        "pilretning",
+        "sendes_til_navn",
+        "sendes_til_adresse",
+        "skiltstednavn",
+        "utm_koordinater",
+        "baksidetekst",
+        "skiltfarge",
         "anchor_node_id",
+        "sign_site_id",
         "sign_name",
         "direction",
         "status",
@@ -262,7 +304,7 @@ def format_signs_production_csv(rows: List[Dict[str, Any]]) -> str:
         "notes",
         "updated_by",
     ]
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for row in rows:
         writer.writerow({key: row.get(key) for key in fieldnames})

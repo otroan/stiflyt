@@ -51,6 +51,9 @@ interface InfoPanelProps {
   ownershipData?: any;
   selectedGeometryForOwnership?: GeoJSON.Geometry | null;
   onOwnershipDataChange?: (data: any) => void;
+  onSignsReload?: () => void;
+  addSignSiteMode?: boolean;
+  onAddSignSiteModeChange?: (active: boolean) => void;
 }
 
 export function InfoPanel({
@@ -84,6 +87,9 @@ export function InfoPanel({
   ownershipData,
   selectedGeometryForOwnership,
   onOwnershipDataChange,
+  onSignsReload,
+  addSignSiteMode = false,
+  onAddSignSiteModeChange,
 }: InfoPanelProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [events, setEvents] = useState<ChangeEvent[]>([]);
@@ -344,78 +350,84 @@ export function InfoPanel({
 
   const downloadExcel = async (filename: string, data: SignsReportResponse, selectedDestinations?: Set<string>) => {
     try {
-      // Dynamic import to avoid loading xlsx in initial bundle
       const XLSX = await import('xlsx');
-
-      // Prepare rows - use selected destinations if any, otherwise all
       const rows: Record<string, unknown>[] = [];
+      const defaultBackText = 'Stier er merket av DNT Oslo og Omegn';
+
+      const toRow = (
+        sign: SignsReportResponse['signs'][0],
+        destination: {
+          name: string;
+          anchor_node_id: number;
+          distance_meters?: number | null;
+          skilt?: {
+            direction?: string | null;
+            status?: string | null;
+            skiltfarge?: string | null;
+            distance_meters?: number | null;
+          } | null;
+        } | null
+      ) => {
+        const sk = destination?.skilt;
+        const distM =
+          sk?.distance_meters != null && sk.distance_meters !== undefined
+            ? sk.distance_meters
+            : destination?.distance_meters;
+        return {
+          Skiltstedidentifikator: sign.skiltstedidentifikator ?? sign.sign_site_id ?? sign.anchor_node_id ?? '',
+          'Tekst på skiltet (destinasjon)': destination?.name ?? '',
+          Km: sign.route_km != null && sign.route_km !== undefined ? Number(sign.route_km) : '',
+          Pilretning: sk?.direction ?? '',
+          Status: sk?.status ?? '',
+          'Avstand dest. (m)': distM != null && distM !== undefined ? Math.round(distM) : '',
+          'Sendes til (navn)': sign.send_to_name ?? '',
+          'Sendes til (adresse)': sign.send_to_address ?? '',
+          Skiltstednavn: sign.name ?? '',
+          'UTM-koordinater': sign.utm_coords ?? '',
+          Skiltfarge: sk?.skiltfarge ?? sign.skiltfarge ?? '',
+          Tekst: sign.back_text ?? defaultBackText,
+        };
+      };
 
       if (selectedDestinations && selectedDestinations.size > 0 && data.signs) {
-        // Export only selected destinations
         selectedDestinations.forEach((destKey) => {
           const [signIdStr, destIdStr] = destKey.split('-');
           const signId = parseInt(signIdStr, 10);
           const destId = parseInt(destIdStr, 10);
-          const sign = data.signs.find((s) => s.anchor_node_id === signId);
+          const sign = data.signs.find(
+            (s) => (s.anchor_node_id != null && s.anchor_node_id === signId) || s.sign_site_id === signId
+          );
           const destination = sign?.destinations.find((d) => d.anchor_node_id === destId);
-
-          if (sign && destination) {
-            const [lon, lat] = sign.coordinates || [null, null];
-            const status = sign.status && sign.status.length > 0 ? sign.status[0] : null;
-
-            rows.push({
-              'Sign Anchor ID': sign.anchor_node_id,
-              'Sign Navn': sign.name || '',
-              'Sign Type': sign.is_endpoint ? 'Endepunkt' : sign.is_junction ? 'Kryss' : 'Node',
-              'Sign Latitude': lat,
-              'Sign Longitude': lon,
-              'Destination Anchor ID': destination.anchor_node_id,
-              'Destination Navn': destination.name,
-              'Distance (m)': destination.distance_meters,
-              'Distance (km)': destination.distance_meters ? (destination.distance_meters / 1000).toFixed(2) : '',
-              'Direction': status?.direction || '',
-              'Status': status?.status || '',
-              'Last Inspected': status?.last_inspected || '',
-              'Notes': status?.notes || '',
-              'Updated By': status?.updated_by || '',
-              'Updated At': status?.updated_at || '',
-            });
-          }
+          if (sign && destination) rows.push(toRow(sign, destination));
         });
-      } else {
-        // Export all destinations from all signs
+      } else if (data.signs) {
         data.signs.forEach((sign) => {
-          const [lon, lat] = sign.coordinates || [null, null];
-          const status = sign.status && sign.status.length > 0 ? sign.status[0] : null;
-
-          sign.destinations.forEach((destination) => {
-            rows.push({
-              'Sign Anchor ID': sign.anchor_node_id,
-              'Sign Navn': sign.name || '',
-              'Sign Type': sign.is_endpoint ? 'Endepunkt' : sign.is_junction ? 'Kryss' : 'Node',
-              'Sign Latitude': lat,
-              'Sign Longitude': lon,
-              'Destination Anchor ID': destination.anchor_node_id,
-              'Destination Navn': destination.name,
-              'Distance (m)': destination.distance_meters,
-              'Distance (km)': destination.distance_meters ? (destination.distance_meters / 1000).toFixed(2) : '',
-              'Direction': status?.direction || '',
-              'Status': status?.status || '',
-              'Last Inspected': status?.last_inspected || '',
-              'Notes': status?.notes || '',
-              'Updated By': status?.updated_by || '',
-              'Updated At': status?.updated_at || '',
-            });
-          });
+          if (sign.destinations.length > 0) {
+            sign.destinations.forEach((d) => rows.push(toRow(sign, d)));
+          } else {
+            rows.push(toRow(sign, null));
+          }
         });
       }
 
-      // Create workbook and worksheet
       const worksheet = XLSX.utils.json_to_sheet(rows);
+      // Column widths: fit header and typical content (wch = character width)
+      worksheet['!cols'] = [
+        { wch: 22 }, // Skiltstedidentifikator
+        { wch: 28 }, // Tekst på skiltet (destinasjon)
+        { wch: 8 },  // Km
+        { wch: 12 }, // Pilretning
+        { wch: 10 }, // Status
+        { wch: 14 }, // Avstand dest.
+        { wch: 18 }, // Sendes til (navn)
+        { wch: 22 }, // Sendes til (adresse)
+        { wch: 18 }, // Skiltstednavn
+        { wch: 24 }, // UTM-koordinater
+        { wch: 10 }, // Skiltfarge
+        { wch: 42 }, // Tekst
+      ];
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, 'Skilt');
-
-      // Write file
       XLSX.writeFile(workbook, filename);
       notificationManager.success('Excel-fil eksportert');
     } catch (error) {
@@ -721,6 +733,17 @@ export function InfoPanel({
                 >
                   📥 Last ned alle skilt (Excel)
                 </button>
+                {routeNumber && (
+                  <button
+                    type="button"
+                    onClick={() => onAddSignSiteModeChange?.(!addSignSiteMode)}
+                    className={addSignSiteMode ? 'btn' : 'btn btn-primary'}
+                    style={{ fontSize: '1em', padding: '8px 16px', marginTop: '0.5rem' }}
+                    title={addSignSiteMode ? 'Klikk på kartet for å plassere skiltsted (avbryt: klikk igjen)' : 'Legg til skiltsted på ruten – klikk på kartet'}
+                  >
+                    {addSignSiteMode ? '✕ Avbryt plassering' : '➕ Legg til skiltsted på kartet'}
+                  </button>
+                )}
               </div>
               {effectiveSignsReport && (
                 <div style={{ marginTop: '0.75rem' }}>
@@ -766,7 +789,9 @@ export function InfoPanel({
                       const [signIdStr, destIdStr] = destKey.split('-');
                       const signId = parseInt(signIdStr, 10);
                       const destId = parseInt(destIdStr, 10);
-                      const sign = effectiveSignsReport.signs.find((s) => s.anchor_node_id === signId);
+                      const sign = effectiveSignsReport.signs.find(
+                        (s) => (s.anchor_node_id != null && s.anchor_node_id === signId) || s.sign_site_id === signId
+                      );
                       const destination = sign?.destinations.find((d) => d.anchor_node_id === destId);
 
                       if (!sign || !destination) return null;
@@ -793,13 +818,14 @@ export function InfoPanel({
                               </div>
                             </div>
                             <button
+                              type="button"
                               onClick={() => {
                                 if (onSignDestinationSelect) {
                                   onSignDestinationSelect(destKey, false);
                                 }
                               }}
                               style={{
-                                marginLeft: '0.5rem',
+                                marginLeft: '0.25rem',
                                 padding: '0.25rem 0.5rem',
                                 fontSize: '0.85em',
                                 backgroundColor: '#e74c3c',
@@ -1330,7 +1356,9 @@ export function InfoPanel({
                         const [signIdStr, destIdStr] = destKey.split('-');
                         const signId = parseInt(signIdStr, 10);
                         const destId = parseInt(destIdStr, 10);
-                        const sign = signsReport.signs.find((s) => s.anchor_node_id === signId);
+                        const sign = signsReport.signs.find(
+                          (s) => (s.anchor_node_id != null && s.anchor_node_id === signId) || s.sign_site_id === signId
+                        );
                         const destination = sign?.destinations.find((d) => d.anchor_node_id === destId);
 
                         if (!sign || !destination) return null;

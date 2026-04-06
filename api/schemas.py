@@ -1,6 +1,8 @@
 """Pydantic schemas for API request/response."""
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Literal, Optional, Dict, Any
+
+SkiltfargeOption = Literal["grønn", "trehvit"]
 
 
 class MatrikkelenhetItem(BaseModel):
@@ -181,15 +183,28 @@ class RouteAnchorsResponse(BaseModel):
     total: int
 
 
+class DestinationSkilt(BaseModel):
+    """Operational fields per destination (physical skilt) on a sign site."""
+
+    id: Optional[int] = None
+    direction: Optional[str] = None
+    status: Optional[str] = None
+    skiltfarge: Optional[str] = None
+    distance_meters: Optional[float] = None  # overrides topology distance for this skilt when set
+    updated_at: Optional[str] = None
+
+
 class SignDestination(BaseModel):
     """Destination entry for a sign report."""
     anchor_node_id: int
     name: str
-    distance_meters: float
+    distance_meters: Optional[float] = None
+    skilt: Optional[DestinationSkilt] = None
 
 
 class SignStatus(BaseModel):
     """Operational sign status metadata."""
+    id: Optional[int] = None
     direction: Optional[str] = None
     status: Optional[str] = None
     last_inspected: Optional[str] = None
@@ -204,14 +219,23 @@ class SignStatus(BaseModel):
 
 class SignReportItem(BaseModel):
     """Computed sign report item."""
-    anchor_node_id: int
+    anchor_node_id: Optional[int] = None
+    sign_site_id: Optional[int] = None
+    skiltstedidentifikator: Optional[str] = None
     coordinates: Optional[List[float]] = None  # [lon, lat]
-    link_count: int
-    is_endpoint: bool
-    is_junction: bool
+    link_count: int = 0
+    is_endpoint: bool = False
+    is_junction: bool = False
     name: Optional[str] = None
-    destinations: List[SignDestination]
+    destinations: List[SignDestination] = []
     status: List[SignStatus] = []
+    route_km: Optional[float] = None
+    back_text: Optional[str] = None
+    send_to_name: Optional[str] = None
+    send_to_address: Optional[str] = None
+    utm_coords: Optional[str] = None
+    skiltfarge: Optional[str] = None  # 'grønn' or 'trehvit'
+    rutenummer_list: Optional[List[str]] = None  # routes this sign belongs to
 
 
 class SignsMissingItem(BaseModel):
@@ -261,6 +285,76 @@ class AnchorNameUpsertResponse(BaseModel):
     distance_meters: Optional[float] = None
     validated_by: Optional[str] = None
     validated_at: Optional[str] = None
+
+
+class SignStatusUpsertRequest(BaseModel):
+    """Request to upsert sign status (pilretning, status/tilstand).
+
+    If status_id is set, that row is updated (same sign_site); use when changing pilretning for an existing skilt.
+    If status_id is omitted, row is upserted on (sign_site_id, direction) as before.
+    """
+
+    direction: str
+    status: Optional[str] = None
+    last_inspected: Optional[str] = None
+    notes: Optional[str] = None
+    updated_by: Optional[str] = None
+    status_id: Optional[int] = None
+
+
+class SignSiteSkiltPatchRequest(BaseModel):
+    """Partial update for one skilt (one destination) on a sign site. Omitted fields are left unchanged."""
+
+    direction: Optional[str] = None
+    status: Optional[str] = None
+    skiltfarge: Optional[str] = None
+    distance_meters: Optional[float] = None  # null in JSON clears override (use topology distance)
+    updated_by: Optional[str] = None
+
+
+class SignSiteCreateRequest(BaseModel):
+    """Request to create a sign site at a point on the route."""
+    lon: float
+    lat: float
+    skiltfarge: Optional[SkiltfargeOption] = None
+
+
+class SignSiteUpdateRequest(BaseModel):
+    """Request to update sign site (name, back_text, send_to, skiltfarge)."""
+    name: Optional[str] = None
+    back_text: Optional[str] = None
+    send_to_name: Optional[str] = None
+    send_to_address: Optional[str] = None
+    skiltfarge: Optional[SkiltfargeOption] = None
+    updated_by: Optional[str] = None
+
+
+class SignSiteResponse(BaseModel):
+    """Sign site response."""
+    id: int
+    rutenummer: Optional[str] = None
+    route_km: Optional[float] = None
+    lon: Optional[float] = None
+    lat: Optional[float] = None
+    anchor_node_id: Optional[int] = None
+    name: Optional[str] = None
+    back_text: Optional[str] = None
+    send_to_name: Optional[str] = None
+    send_to_address: Optional[str] = None
+    skiltfarge: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class SignSiteDestinationItem(BaseModel):
+    """Single destination (pil) at a sign site."""
+    anchor_node_id: int
+    display_order: int = 0
+
+
+class SignSiteDestinationsUpdateRequest(BaseModel):
+    """Request to set custom destinations for a sign site. Empty list = use default (endpoints/topology)."""
+    destinations: List[SignSiteDestinationItem] = []
 
 
 class RouteComponent(BaseModel):

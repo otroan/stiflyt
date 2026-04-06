@@ -42,6 +42,12 @@ from .schemas import (
     SignsReportResponse,
     SignsMissingReport,
     SignsProductionResponse,
+    SignStatusUpsertRequest,
+    SignSiteSkiltPatchRequest,
+    SignSiteCreateRequest,
+    SignSiteDestinationsUpdateRequest,
+    SignSiteUpdateRequest,
+    SignSiteResponse,
 )
 from services.route_service import (
     search_places,
@@ -58,8 +64,21 @@ from services.route_service import (
 )
 from services.route_endpoints import list_placename_candidates, list_ruteinfopunkt_facilities, lookup_name_in_stedsnavn_cached, lookup_named_anchor_within_radius, CLUSTER_RADIUS_METERS
 from services.operational_database import op_db_connection
-from services.operational_store import upsert_endpoint_name, get_endpoint_names_for_anchors, get_endpoint_names_for_anchor_routes
+from services.operational_store import (
+    upsert_endpoint_name,
+    get_endpoint_names_for_anchors,
+    get_endpoint_names_for_anchor_routes,
+    upsert_sign_status,
+    update_sign_status_row_by_id,
+    create_sign_site,
+    get_sign_site_by_id,
+    get_sign_site_destinations,
+    set_sign_site_destinations,
+    update_sign_site,
+    patch_sign_site_skilt,
+)
 from services.signs import get_signs_for_route, get_signs_for_prefix, get_signs_for_bbox, build_sign_production_rows
+from services.route_service import point_on_route_km_and_geom
 from services.validators import get_validator_registry
 from collections import defaultdict
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
@@ -1908,6 +1927,274 @@ async def get_route_signs_production(
     except Exception as e:
         print(f"Error getting route signs production rows: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting route signs production rows: {str(e)}")
+
+
+@router.patch("/routes/{rutenummer}/signs/sites/{sign_site_id}/status")
+async def upsert_sign_status_site(
+    rutenummer: str,
+    sign_site_id: int,
+    request: SignStatusUpsertRequest,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Upsert sign status (pilretning, status/tilstand) for a sign_site."""
+    with db_connection() as check_conn:
+        routes, _ = get_routes_from_view(check_conn, rutenummer=rutenummer, limit=1, offset=0)
+        if not routes:
+            raise HTTPException(status_code=404, detail=f"Route '{rutenummer}' not found")
+    with op_db_connection() as conn:
+        site = get_sign_site_by_id(conn, sign_site_id)
+        if not site or site.get("rutenummer") != rutenummer:
+            raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found for route {rutenummer}")
+    updated_by = x_user or "anonymous"
+    last_inspected = None
+    if request.last_inspected:
+        try:
+            last_inspected = datetime.fromisoformat(request.last_inspected.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pass
+    ub = request.updated_by or updated_by
+    with op_db_connection() as conn:
+        if request.status_id is not None:
+            row = update_sign_status_row_by_id(
+                conn,
+                request.status_id,
+                sign_site_id,
+                direction=request.direction,
+                status=request.status,
+                last_inspected=last_inspected,
+                notes=request.notes,
+                updated_by=ub,
+            )
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Sign status id {request.status_id} not found for sign site {sign_site_id}",
+                )
+        else:
+            row = upsert_sign_status(
+                conn,
+                direction=request.direction,
+                status=request.status,
+                last_inspected=last_inspected,
+                notes=request.notes,
+                updated_by=ub,
+                sign_site_id=sign_site_id,
+            )
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to upsert sign status")
+    return row
+
+
+@router.patch("/signs/sites/{sign_site_id}", response_model=SignSiteResponse)
+async def update_sign_site_endpoint(
+    sign_site_id: int,
+    request: SignSiteUpdateRequest,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Update sign site (name, back_text, send_to)."""
+    updated_by = x_user or "anonymous"
+    with op_db_connection() as conn:
+        row = update_sign_site(
+            conn,
+            sign_site_id,
+            name=request.name,
+            back_text=request.back_text,
+            send_to_name=request.send_to_name,
+            send_to_address=request.send_to_address,
+            skiltfarge=request.skiltfarge,
+            updated_by=request.updated_by or updated_by,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found")
+    return SignSiteResponse(
+        id=row["id"],
+        rutenummer=row.get("rutenummer"),
+        route_km=row.get("route_km"),
+        lon=row.get("lon"),
+        lat=row.get("lat"),
+        anchor_node_id=row.get("anchor_node_id"),
+        name=row.get("name"),
+        back_text=row.get("back_text"),
+        send_to_name=row.get("send_to_name"),
+        send_to_address=row.get("send_to_address"),
+        skiltfarge=row.get("skiltfarge"),
+        created_at=row.get("created_at").isoformat() if row.get("created_at") else None,
+        updated_at=row.get("updated_at").isoformat() if row.get("updated_at") else None,
+    )
+
+
+@router.patch("/signs/sites/{sign_site_id}/status")
+async def upsert_sign_status_site_by_id(
+    sign_site_id: int,
+    request: SignStatusUpsertRequest,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Upsert sign status (pilretning, status) for a sign_site by ID. No route required; sign sites can belong to multiple routes."""
+    updated_by = x_user or "anonymous"
+    last_inspected = None
+    if request.last_inspected:
+        try:
+            last_inspected = datetime.fromisoformat(request.last_inspected.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pass
+    ub = request.updated_by or updated_by
+    with op_db_connection() as conn:
+        site = get_sign_site_by_id(conn, sign_site_id)
+        if not site:
+            raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found")
+        if request.status_id is not None:
+            row = update_sign_status_row_by_id(
+                conn,
+                request.status_id,
+                sign_site_id,
+                direction=request.direction,
+                status=request.status,
+                last_inspected=last_inspected,
+                notes=request.notes,
+                updated_by=ub,
+            )
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Sign status id {request.status_id} not found for sign site {sign_site_id}",
+                )
+        else:
+            row = upsert_sign_status(
+                conn,
+                direction=request.direction,
+                status=request.status,
+                last_inspected=last_inspected,
+                notes=request.notes,
+                updated_by=ub,
+                sign_site_id=sign_site_id,
+            )
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to upsert sign status")
+    return row
+
+
+@router.get("/signs/sites/{sign_site_id}/destinations")
+async def get_sign_site_destinations_endpoint(sign_site_id: int):
+    """Get custom destinations (pil/skilt) for a sign site. Empty = use default."""
+    with op_db_connection() as conn:
+        site = get_sign_site_by_id(conn, sign_site_id)
+        if not site:
+            raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found")
+        rows = get_sign_site_destinations(conn, sign_site_id)
+    return {"sign_site_id": sign_site_id, "destinations": [{"anchor_node_id": r["anchor_node_id"], "display_order": r["display_order"]} for r in rows]}
+
+
+@router.put("/signs/sites/{sign_site_id}/destinations")
+async def set_sign_site_destinations_endpoint(
+    sign_site_id: int,
+    request: SignSiteDestinationsUpdateRequest,
+):
+    """Set custom destinations for a sign site. Empty list = use default (endpoints/topology)."""
+    with op_db_connection() as conn:
+        site = get_sign_site_by_id(conn, sign_site_id)
+        if not site:
+            raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found")
+        dest_list = [{"anchor_node_id": d.anchor_node_id, "display_order": d.display_order} for d in request.destinations]
+        rows = set_sign_site_destinations(conn, sign_site_id, dest_list)
+    return {"sign_site_id": sign_site_id, "destinations": [{"anchor_node_id": r["anchor_node_id"], "display_order": r["display_order"]} for r in rows]}
+
+
+@router.patch("/signs/sites/{sign_site_id}/destinations/{anchor_node_id}/skilt")
+async def patch_sign_destination_skilt(
+    sign_site_id: int,
+    anchor_node_id: int,
+    request: SignSiteSkiltPatchRequest,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Update skilt (retning, status, farge, avstand) for one destination on a sign site."""
+    payload = request.model_dump(exclude_unset=True)
+    manual_ub = payload.pop("updated_by", None)
+    allowed = frozenset({"direction", "status", "skiltfarge", "distance_meters"})
+    updates = {k: v for k, v in payload.items() if k in allowed}
+    if not updates:
+        raise HTTPException(
+            status_code=400,
+            detail="Send minst ett felt: direction, status, skiltfarge eller distance_meters.",
+        )
+    updated_by = manual_ub or x_user or "anonymous"
+    with op_db_connection() as conn:
+        site = get_sign_site_by_id(conn, sign_site_id)
+        if not site:
+            raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found")
+        row = patch_sign_site_skilt(conn, sign_site_id, anchor_node_id, updates, updated_by=updated_by)
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to update skilt")
+    ua = row.get("updated_at")
+    return {
+        "sign_site_id": sign_site_id,
+        "anchor_node_id": anchor_node_id,
+        "skilt": {
+            "id": row.get("id"),
+            "direction": row.get("direction"),
+            "status": row.get("status"),
+            "skiltfarge": row.get("skiltfarge"),
+            "distance_meters": row.get("distance_meters"),
+            "updated_at": ua.isoformat() if ua is not None and hasattr(ua, "isoformat") else ua,
+        },
+    }
+
+
+@router.post("/routes/{rutenummer}/signs/sites", response_model=SignSiteResponse, status_code=status.HTTP_201_CREATED)
+async def create_sign_site_endpoint(
+    rutenummer: str,
+    request: SignSiteCreateRequest,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Create a sign site at a point on the route (projected to nearest point on route)."""
+    with db_connection() as check_conn:
+        routes, _ = get_routes_from_view(check_conn, rutenummer=rutenummer, limit=1, offset=0)
+        if not routes:
+            raise HTTPException(status_code=404, detail=f"Route '{rutenummer}' not found")
+
+    with db_connection() as conn:
+        result = point_on_route_km_and_geom(conn, rutenummer, request.lon, request.lat)
+        if not result:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not project point onto route (route has no geometry or point too far)."
+            )
+        route_km, geom_wkt = result
+
+    updated_by = x_user or "anonymous"
+    with op_db_connection() as conn:
+        row = create_sign_site(
+            conn,
+            rutenummer=rutenummer,
+            route_km=route_km,
+            geom_wkt=geom_wkt,
+            anchor_node_id=None,
+            name=None,
+            back_text=None,
+            send_to_name=None,
+            send_to_address=None,
+            skiltfarge=request.skiltfarge,
+            updated_by=updated_by,
+        )
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to create sign site")
+    with op_db_connection() as conn:
+        full = get_sign_site_by_id(conn, row["id"])
+    full = full or row
+    return SignSiteResponse(
+        id=full["id"],
+        rutenummer=full.get("rutenummer"),
+        route_km=full.get("route_km"),
+        lon=full.get("lon"),
+        lat=full.get("lat"),
+        anchor_node_id=full.get("anchor_node_id"),
+        name=full.get("name"),
+        back_text=full.get("back_text"),
+        send_to_name=full.get("send_to_name"),
+        send_to_address=full.get("send_to_address"),
+        skiltfarge=full.get("skiltfarge"),
+        created_at=full.get("created_at").isoformat() if full.get("created_at") else None,
+        updated_at=full.get("updated_at").isoformat() if full.get("updated_at") else None,
+    )
 
 
 @router.get("/routes/{rutenummer}/validate", response_model=RouteValidationResponse, responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})

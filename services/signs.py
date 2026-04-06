@@ -6,14 +6,124 @@ from typing import Dict, List, Optional, Tuple, Any
 from psycopg.rows import dict_row
 
 from .database import ROUTE_SCHEMA, validate_schema_name, quote_identifier, db_connection
-from .route_endpoints import format_utm_shortform, lookup_endpoint_name
-from .route_service import get_routes_from_view, get_route_links
+from .route_endpoints import format_utm_shortform
+from .route_service import (
+    get_routes_from_view,
+    get_route_links,
+    get_route_endpoint_nodes_and_length,
+    point_route_km,
+    wgs84_to_utm_display,
+)
 from .operational_database import op_db_connection
 from .operational_store import (
     get_endpoint_names_for_anchors,
     get_endpoint_names_for_anchor_routes,
-    get_sign_status_for_anchors,
+    get_sign_site_destinations_bulk,
+    get_sign_site_skilt_for_sites,
+    get_sign_sites_for_route,
+    DEFAULT_BACK_TEXT,
 )
+
+# Match sign_site to sign by (rutenummer, route_km); anchor_node_id is not used (robust to DB refresh).
+ROUTE_KM_TOLERANCE_KM = 0.01  # 10 m
+
+
+def _serialize_sign_skilt_for_api(row: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "id": row.get("id"),
+        "direction": row.get("direction"),
+        "status": row.get("status"),
+        "skiltfarge": row.get("skiltfarge"),
+        "distance_meters": row.get("distance_meters"),
+    }
+    ua = row.get("updated_at")
+    if ua is not None and hasattr(ua, "isoformat"):
+        out["updated_at"] = ua.isoformat()
+    return out
+
+
+def _empty_sign_skilt() -> Dict[str, Any]:
+    return {"id": None, "direction": None, "status": None, "skiltfarge": None, "distance_meters": None}
+
+
+def _merge_sign_skilt_into_report_signs(signs: List[Dict[str, Any]]) -> None:
+    """Attach per-destination skilt (retning, status, farge, km) for signs with sign_site_id."""
+    site_ids = sorted({int(s["sign_site_id"]) for s in signs if s.get("sign_site_id") is not None})
+    if not site_ids:
+        return
+    with op_db_connection() as op_conn:
+        by_site = get_sign_site_skilt_for_sites(op_conn, site_ids)
+    for sign in signs:
+        sid = sign.get("sign_site_id")
+        if sid is None:
+            continue
+        sign["status"] = []
+        by_anchor = by_site.get(int(sid), {})
+        for d in sign.get("destinations") or []:
+            aid = d.get("anchor_node_id")
+            if aid is None:
+                continue
+            row = by_anchor.get(int(aid))
+            if row:
+                d["skilt"] = _serialize_sign_skilt_for_api(row)
+            else:
+                d["skilt"] = _empty_sign_skilt()
+
+
+def _resolve_custom_destinations(
+    anchor_list: List[Dict],
+    route_km: Optional[float],
+    ep: Optional[Dict],
+    names: Dict[int, Dict],
+) -> List[Dict]:
+    """Build destination list with name and distance_meters from custom anchor list."""
+    if not anchor_list or route_km is None or not ep:
+        result = []
+        for d in anchor_list:
+            aid = d.get("anchor_node_id")
+            if aid is None:
+                continue
+            name = (names.get(aid) or {}).get("name") or (f"Anchor {aid}" if aid else "")
+            result.append({"anchor_node_id": aid, "name": name, "distance_meters": None})
+        return result if result else []
+    length_m = float(ep.get("length_m") or 0)
+    first_id = ep.get("first_a_node")
+    last_id = ep.get("last_b_node")
+    dist_to_start_m = route_km * 1000.0
+    dist_to_end_m = length_m - dist_to_start_m
+    result = []
+    for d in anchor_list:
+        aid = d.get("anchor_node_id")
+        if aid is None:
+            continue
+        name = (names.get(aid) or {}).get("name") or (f"Anchor {aid}" if aid else "")
+        if aid == first_id:
+            dist = round(dist_to_start_m, 0)
+        elif aid == last_id:
+            dist = round(dist_to_end_m, 0)
+        else:
+            dist = None
+        result.append({"anchor_node_id": aid, "name": name, "distance_meters": dist})
+    return result
+
+
+def _match_sign_site_by_location(
+    sign_sites: List[Dict],
+    rutenummer: Optional[str],
+    route_km: Optional[float],
+) -> Optional[Dict]:
+    """Find a sign_site matching (rutenummer, route_km). Uses tolerance for route_km."""
+    if rutenummer is None or route_km is None or not sign_sites:
+        return None
+    for site in sign_sites:
+        if site.get("rutenummer") != rutenummer:
+            continue
+        skm = site.get("route_km")
+        if skm is None:
+            continue
+        if abs(float(skm) - float(route_km)) < ROUTE_KM_TOLERANCE_KM:
+            return site
+    return None
 
 
 def _build_graph(links: List[Dict[str, Any]]) -> Tuple[Dict[int, List[Tuple[int, float]]], Dict[int, int]]:
@@ -96,6 +206,48 @@ def _calculate_route_distance(
     return None
 
 
+def _cumulative_km_along_route(
+    route_links: List[Dict[str, Any]],
+    endpoint_set: set,
+) -> Dict[int, float]:
+    """
+    For each node on the route, return cumulative distance from one endpoint in km.
+    Uses BFS from one endpoint; values are in km (round to 4 decimals).
+    """
+    if not route_links or len(endpoint_set) < 2:
+        return {}
+    route_adjacency: Dict[int, List[Tuple[int, float]]] = {}
+    for link in route_links:
+        a_node = link.get("a_node")
+        b_node = link.get("b_node")
+        length = link.get("length_m") or link.get("length_meters") or 0.0
+        if a_node is None or b_node is None:
+            continue
+        try:
+            a_node = int(a_node)
+            b_node = int(b_node)
+            length_val = float(length)
+        except (TypeError, ValueError):
+            continue
+        route_adjacency.setdefault(a_node, []).append((b_node, length_val))
+        route_adjacency.setdefault(b_node, []).append((a_node, length_val))
+    endpoints = sorted(endpoint_set)
+    start = endpoints[0]
+    visited: set = set()
+    queue: List[Tuple[int, float]] = [(start, 0.0)]
+    out: Dict[int, float] = {}
+    while queue:
+        current_node, current_m = queue.pop(0)
+        if current_node in visited:
+            continue
+        visited.add(current_node)
+        out[current_node] = round(current_m / 1000.0, 4)
+        for neighbor, link_m in route_adjacency.get(current_node, []):
+            if neighbor not in visited:
+                queue.append((neighbor, current_m + link_m))
+    return out
+
+
 def _fetch_anchor_nodes(conn, anchor_ids: List[int]) -> Dict[int, Dict[str, Any]]:
     if not anchor_ids:
         return {}
@@ -175,7 +327,7 @@ def _resolve_anchor_names_for_route(
             }
             continue
         
-        # Check anchor_nodes.name first (fast) before expensive dynamic lookup
+        # Use anchor_nodes.name if present (no extra lookups; names are already given elsewhere)
         anchor_node = anchor_nodes.get(anchor_id, {})
         anchor_name = anchor_node.get("name")
         if anchor_name:
@@ -188,24 +340,14 @@ def _resolve_anchor_names_for_route(
             }
             continue
         
-        # Use dynamic lookup (cluster/stedsnavn) only if no override and no anchor_nodes.name
-        lon = anchor_node.get("lon")
-        lat = anchor_node.get("lat")
-        
-        if lon is not None and lat is not None:
-            try:
-                name_info = lookup_endpoint_name(conn, lon, lat, rutenummer)
-                if name_info and name_info.get("name"):
-                    resolved[anchor_id] = {
-                        "name": name_info.get("name"),
-                        "source_type": name_info.get("source_type", "unknown"),
-                        "source_id": name_info.get("source_id"),
-                        "distance_meters": name_info.get("distance_meters"),
-                        "is_validated": False,  # Dynamic lookup, not validated
-                    }
-            except Exception as e:
-                # If lookup fails, skip this anchor (no name available)
-                pass
+        # No name from ops or anchor_node; use simple fallback without DB lookup
+        resolved[anchor_id] = {
+            "name": f"Anchor {anchor_id}",
+            "source_type": "fallback",
+            "source_id": None,
+            "distance_meters": None,
+            "is_validated": False,
+        }
     return resolved
 
 
@@ -226,9 +368,6 @@ def _resolve_anchor_names_for_prefix(
                 rutenummer_list,
             )
 
-    # Use first route for dynamic lookup (or None if no routes)
-    lookup_rutenummer = rutenummer_list[0] if rutenummer_list else None
-
     for anchor_id in anchor_ids:
         found_override = None
         for rute in rutenummer_list:
@@ -246,7 +385,7 @@ def _resolve_anchor_names_for_prefix(
             }
             continue
         
-        # Check anchor_nodes.name first (fast) before expensive dynamic lookup
+        # Use anchor_nodes.name if present (no extra lookups; names are already given elsewhere)
         anchor_node = anchor_nodes.get(anchor_id, {})
         anchor_name = anchor_node.get("name")
         if anchor_name:
@@ -259,24 +398,14 @@ def _resolve_anchor_names_for_prefix(
             }
             continue
         
-        # Use dynamic lookup (cluster/stedsnavn) only if no override and no anchor_nodes.name
-        lon = anchor_node.get("lon")
-        lat = anchor_node.get("lat")
-        
-        if lon is not None and lat is not None:
-            try:
-                name_info = lookup_endpoint_name(conn, lon, lat, lookup_rutenummer)
-                if name_info and name_info.get("name"):
-                    resolved[anchor_id] = {
-                        "name": name_info.get("name"),
-                        "source_type": name_info.get("source_type", "unknown"),
-                        "source_id": name_info.get("source_id"),
-                        "distance_meters": name_info.get("distance_meters"),
-                        "is_validated": False,  # Dynamic lookup, not validated
-                    }
-            except Exception as e:
-                # If lookup fails, skip this anchor (no name available)
-                pass
+        # No name from ops or anchor_node; use simple fallback without DB lookup
+        resolved[anchor_id] = {
+            "name": f"Anchor {anchor_id}",
+            "source_type": "fallback",
+            "source_id": None,
+            "distance_meters": None,
+            "is_validated": False,
+        }
     return resolved
 
 
@@ -366,6 +495,13 @@ def compute_sign_report_from_links(
     junctions = sorted(node for node, degree in degrees.items() if degree >= 3)
     sign_nodes = sorted(set(endpoints_list + junctions))
 
+    # Cumulative km from route start at each node (from link lengths, no geometry)
+    cumulative_km_per_route: Dict[str, Dict[int, float]] = {}
+    for route, link_list in route_links.items():
+        ep_set = route_endpoints.get(route, set())
+        if len(ep_set) >= 2:
+            cumulative_km_per_route[route] = _cumulative_km_along_route(link_list, ep_set)
+
     signs: List[Dict[str, Any]] = []
     missing_signs: List[Dict[str, Any]] = []
     missing_destinations: List[Dict[str, Any]] = []
@@ -376,32 +512,50 @@ def compute_sign_report_from_links(
         sign_destinations = []
         
         if is_junction:
-            # For junctions, only show directly connected endpoints (one hop away)
+            # All endpoints of every route that passes through this junction, with distance along that route.
             junction_routes = node_routes.get(sign_node, set())
-            direct_neighbors = adjacency.get(sign_node, [])
-            
-            for neighbor_id, link_length in direct_neighbors:
-                # Check if this neighbor is an endpoint
-                if neighbor_id not in endpoints_set:
+            for route in junction_routes:
+                route_link_list = route_links.get(route, [])
+                if not route_link_list:
                     continue
-                
-                # Check if this neighbor is on a route that passes through the junction
-                neighbor_routes = node_routes.get(neighbor_id, set())
-                if not neighbor_routes.intersection(junction_routes):
-                    continue
-                
-                # Check if this endpoint has a name
-                name_info = anchor_names.get(neighbor_id)
-                if not name_info or not name_info.get("name"):
-                    continue
-                
-                sign_destinations.append(
-                    {
-                        "anchor_node_id": neighbor_id,
-                        "name": name_info["name"],
-                        "distance_meters": float(link_length),
-                    }
-                )
+                route_endpoint_set = route_endpoints.get(route, set())
+                for other_endpoint_id in route_endpoint_set:
+                    if other_endpoint_id == sign_node:
+                        continue
+                    route_distance = _calculate_route_distance(
+                        route_link_list,
+                        sign_node,
+                        other_endpoint_id,
+                    )
+                    if route_distance is None:
+                        continue
+                    name_info = anchor_names.get(other_endpoint_id)
+                    if name_info and name_info.get("name"):
+                        destination_name = name_info["name"]
+                    else:
+                        other_anchor = anchor_nodes.get(other_endpoint_id, {})
+                        other_anchor_name = other_anchor.get("name")
+                        if other_anchor_name:
+                            destination_name = format_utm_shortform(other_anchor_name)
+                        else:
+                            destination_name = f"Anchor {other_endpoint_id}"
+                    existing_dest = next(
+                        (d for d in sign_destinations if d["anchor_node_id"] == other_endpoint_id),
+                        None,
+                    )
+                    rd = float(route_distance)
+                    if existing_dest:
+                        if rd < existing_dest["distance_meters"]:
+                            existing_dest["distance_meters"] = rd
+                            existing_dest["name"] = destination_name
+                    else:
+                        sign_destinations.append(
+                            {
+                                "anchor_node_id": other_endpoint_id,
+                                "name": destination_name,
+                                "distance_meters": rd,
+                            }
+                        )
         else:
             # For endpoints, show destinations along each route the endpoint belongs to
             endpoint_route_set = endpoint_routes.get(sign_node, set())
@@ -490,6 +644,12 @@ def compute_sign_report_from_links(
                 "name": anchor_names.get(sign_node, {}).get("name"),
                 "destinations": sign_destinations,
                 "status": serialized_status,
+                "rutenummer_list": sorted(node_routes.get(sign_node, set())),
+                "route_km_by_route": {
+                    r: cumulative_km_per_route[r][sign_node]
+                    for r in node_routes.get(sign_node, set())
+                    if r in cumulative_km_per_route and sign_node in cumulative_km_per_route[r]
+                },
             }
         )
 
@@ -598,6 +758,295 @@ def _get_links_for_route_nodes(conn, rutenummer: str) -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _enrich_signs_with_sign_sites_and_route_km(
+    conn,
+    rutenummer: str,
+    report: Dict[str, Any],
+) -> None:
+    """Enrich report: match sign_sites by (rutenummer, route_km); per-destination skilt from sign_site_skilt. Add custom sign sites (no anchor)."""
+    with op_db_connection() as op_conn:
+        all_sites = get_sign_sites_for_route(op_conn, rutenummer)
+        custom_sites = [s for s in all_sites if s.get("anchor_node_id") is None]
+
+    matched_site_ids: List[int] = []
+    for sign in report["signs"]:
+        coords = sign.get("coordinates") or [None, None]
+        lon, lat = coords[0], coords[1]
+        # Use precomputed route_km from link topology when available (no DB/geometry)
+        route_km = (sign.get("route_km_by_route") or {}).get(rutenummer)
+        if route_km is None and lon is not None and lat is not None:
+            route_km = point_route_km(conn, rutenummer, lon, lat)
+        sign["route_km"] = route_km
+        site = _match_sign_site_by_location(all_sites, rutenummer, route_km)
+        if site:
+            matched_site_ids.append(site["id"])
+        sign["_matched_site"] = site  # temporary for collecting ids
+
+    for sign in report["signs"]:
+        site = sign.pop("_matched_site", None)
+        sign.pop("route_km_by_route", None)  # internal only, not in API response
+        aid = sign.get("anchor_node_id")
+        coords = sign.get("coordinates") or [None, None]
+        lon, lat = coords[0], coords[1]
+
+        if site:
+            sign["sign_site_id"] = site["id"]
+            sign["route_km"] = site.get("route_km")
+            sign["back_text"] = site.get("back_text") or DEFAULT_BACK_TEXT
+            sign["send_to_name"] = site.get("send_to_name")
+            sign["send_to_address"] = site.get("send_to_address")
+            sign["skiltfarge"] = site.get("skiltfarge")
+            sign["status"] = []
+        else:
+            sign["sign_site_id"] = None
+            sign["back_text"] = DEFAULT_BACK_TEXT
+            sign["send_to_name"] = None
+            sign["send_to_address"] = None
+            sign["skiltfarge"] = None
+            sign["status"] = []
+
+        sign["skiltstedidentifikator"] = str(site["id"]) if site else f"{rutenummer}-{aid}"
+        if lon is not None and lat is not None:
+            sign["utm_coords"] = wgs84_to_utm_display(lon, lat)
+        else:
+            sign["utm_coords"] = None
+
+    all_site_ids = list(set(matched_site_ids) | {s["id"] for s in custom_sites})
+    ep_main = get_route_endpoint_nodes_and_length(conn, rutenummer) if rutenummer else None
+
+    # Default destinations for custom sign sites: both route endpoints with distance. Load custom overrides.
+    route_ep_cache: Dict[str, Dict] = {}
+    custom_destinations_by_site: Dict[int, List[Dict]] = {}
+    with op_db_connection() as op_conn:
+        custom_destinations_by_site = get_sign_site_destinations_bulk(op_conn, all_site_ids) if all_site_ids else {}
+        anchor_ids_custom = set()
+        for dests in custom_destinations_by_site.values():
+            for d in dests:
+                anchor_ids_custom.add(d.get("anchor_node_id"))
+        anchor_ids_custom.discard(None)
+        names_custom = get_endpoint_names_for_anchors(op_conn, list(anchor_ids_custom), rutenummer=rutenummer) if anchor_ids_custom and rutenummer else {}
+        for site in custom_sites:
+            rnum = site.get("rutenummer")
+            if rnum not in route_ep_cache and rnum:
+                ep = get_route_endpoint_nodes_and_length(conn, rnum)
+                if ep:
+                    names = get_endpoint_names_for_anchors(op_conn, [ep["first_a_node"], ep["last_b_node"]], rutenummer=rnum) if (ep.get("first_a_node") is not None or ep.get("last_b_node") is not None) else {}
+                    route_ep_cache[rnum] = {**ep, "names": names}
+                else:
+                    route_ep_cache[rnum] = {}
+            elif not rnum:
+                route_ep_cache[rnum] = {}
+
+    for sign in report["signs"]:
+        sid = sign.get("sign_site_id")
+        if sid is not None and sid in custom_destinations_by_site and ep_main:
+            sign["destinations"] = _resolve_custom_destinations(
+                custom_destinations_by_site[sid],
+                sign.get("route_km"),
+                ep_main,
+                names_custom,
+            )
+
+    for site in custom_sites:
+        lon, lat = site.get("lon"), site.get("lat")
+        destinations = []
+        rnum = site.get("rutenummer")
+        route_km_val = site.get("route_km")
+        if site["id"] in custom_destinations_by_site:
+            ep_info = route_ep_cache.get(rnum, {}) if rnum else {}
+            names_site = (ep_info.get("names") or {}) if ep_info else names_custom
+            destinations = _resolve_custom_destinations(
+                custom_destinations_by_site[site["id"]],
+                route_km_val,
+                ep_info or None,
+                names_site,
+            )
+        else:
+            ep_info = route_ep_cache.get(rnum, {}) if rnum else {}
+            if ep_info and route_km_val is not None and ep_info.get("length_m") is not None:
+                length_m = float(ep_info["length_m"])
+                first_id = ep_info.get("first_a_node")
+                last_id = ep_info.get("last_b_node")
+                names = ep_info.get("names") or {}
+                dist_to_start_m = route_km_val * 1000.0
+                dist_to_end_m = length_m - dist_to_start_m
+                if first_id is not None:
+                    name = (names.get(first_id) or {}).get("name") or (f"Anchor {first_id}" if first_id else "")
+                    destinations.append({"anchor_node_id": first_id, "name": name, "distance_meters": round(dist_to_start_m, 0)})
+                if last_id is not None and last_id != first_id:
+                    name = (names.get(last_id) or {}).get("name") or (f"Anchor {last_id}" if last_id else "")
+                    destinations.append({"anchor_node_id": last_id, "name": name, "distance_meters": round(dist_to_end_m, 0)})
+        report["signs"].append({
+            "anchor_node_id": None,
+            "sign_site_id": site["id"],
+            "skiltstedidentifikator": str(site["id"]),
+            "coordinates": [lon, lat],
+            "link_count": 0,
+            "is_endpoint": False,
+            "is_junction": False,
+            "name": site.get("name"),
+            "destinations": destinations,
+            "status": [],
+            "route_km": site.get("route_km"),
+            "back_text": site.get("back_text") or DEFAULT_BACK_TEXT,
+            "send_to_name": site.get("send_to_name"),
+            "send_to_address": site.get("send_to_address"),
+            "skiltfarge": site.get("skiltfarge"),
+            "utm_coords": wgs84_to_utm_display(lon, lat) if (lon is not None and lat is not None) else None,
+            "rutenummer_list": [site.get("rutenummer")] if site.get("rutenummer") else [],
+        })
+    _merge_sign_skilt_into_report_signs(report["signs"])
+    report["totals"]["sign_count"] = len(report["signs"])
+
+
+def _enrich_signs_with_sign_sites_and_route_km_multi(conn, report: Dict[str, Any]) -> None:
+    """Enrich report (prefix/bbox): match sign_sites by (rutenummer, route_km); status only from sign_sites. Add custom sign sites."""
+    routes = report.get("scope", {}).get("routes") or []
+    sign_list = report["signs"]
+    with op_db_connection() as op_conn:
+        all_sites_flat: List[Dict] = []
+        seen_site_ids = set()
+        for r in routes:
+            for s in get_sign_sites_for_route(op_conn, r):
+                if s["id"] not in seen_site_ids:
+                    seen_site_ids.add(s["id"])
+                    all_sites_flat.append(s)
+        custom_sites = [s for s in all_sites_flat if s.get("anchor_node_id") is None]
+
+    matched_site_ids: List[int] = []
+    for sign in sign_list:
+        coords = sign.get("coordinates") or [None, None]
+        lon, lat = coords[0], coords[1]
+        rutenummer_list = sign.get("rutenummer_list") or []
+        route_for_km = rutenummer_list[0] if rutenummer_list else None
+        # Use precomputed route_km from link topology when available (no DB/geometry)
+        route_km = (sign.get("route_km_by_route") or {}).get(route_for_km) if route_for_km else None
+        if route_km is None and route_for_km and lon is not None and lat is not None:
+            route_km = point_route_km(conn, route_for_km, lon, lat)
+        sign["route_km"] = route_km
+        site = _match_sign_site_by_location(all_sites_flat, route_for_km, route_km)
+        if site:
+            matched_site_ids.append(site["id"])
+        sign["_matched_site"] = site
+
+    for sign in sign_list:
+        site = sign.pop("_matched_site", None)
+        sign.pop("route_km_by_route", None)  # internal only, not in API response
+        aid = sign.get("anchor_node_id")
+        coords = sign.get("coordinates") or [None, None]
+        lon, lat = coords[0], coords[1]
+        rutenummer_list = sign.get("rutenummer_list") or []
+        route_for_km = rutenummer_list[0] if rutenummer_list else None
+
+        if site:
+            sign["sign_site_id"] = site["id"]
+            sign["route_km"] = site.get("route_km")
+            sign["back_text"] = site.get("back_text") or DEFAULT_BACK_TEXT
+            sign["send_to_name"] = site.get("send_to_name")
+            sign["send_to_address"] = site.get("send_to_address")
+            sign["skiltfarge"] = site.get("skiltfarge")
+            sign["status"] = []
+        else:
+            sign["sign_site_id"] = None
+            sign["back_text"] = DEFAULT_BACK_TEXT
+            sign["send_to_name"] = None
+            sign["send_to_address"] = None
+            sign["skiltfarge"] = None
+            sign["status"] = []
+
+        sign["skiltstedidentifikator"] = str(site["id"]) if site else (f"{route_for_km}-{aid}" if route_for_km and aid is not None else str(aid) if aid is not None else "?")
+        if lon is not None and lat is not None:
+            sign["utm_coords"] = wgs84_to_utm_display(lon, lat)
+        else:
+            sign["utm_coords"] = None
+
+    all_site_ids_multi = list(set(matched_site_ids) | {s["id"] for s in custom_sites})
+    route_ep_cache_multi: Dict[str, Dict] = {}
+    custom_destinations_by_site_multi: Dict[int, List[Dict]] = {}
+    names_by_route_multi: Dict[str, Dict[int, Dict]] = {}
+    with op_db_connection() as op_conn:
+        custom_destinations_by_site_multi = get_sign_site_destinations_bulk(op_conn, all_site_ids_multi) if all_site_ids_multi else {}
+        anchor_ids_custom_multi = set()
+        for dests in custom_destinations_by_site_multi.values():
+            for d in dests:
+                anchor_ids_custom_multi.add(d.get("anchor_node_id"))
+        anchor_ids_custom_multi.discard(None)
+        if anchor_ids_custom_multi and routes:
+            names_by_route_multi = get_endpoint_names_for_anchor_routes(op_conn, list(anchor_ids_custom_multi), routes)
+        for rnum in routes:
+            if rnum and rnum not in route_ep_cache_multi:
+                ep = get_route_endpoint_nodes_and_length(conn, rnum)
+                if ep:
+                    names = get_endpoint_names_for_anchors(op_conn, [ep["first_a_node"], ep["last_b_node"]], rutenummer=rnum) if (ep.get("first_a_node") is not None or ep.get("last_b_node") is not None) else {}
+                    route_ep_cache_multi[rnum] = {**ep, "names": names}
+                else:
+                    route_ep_cache_multi[rnum] = {}
+
+    for sign in sign_list:
+        sid = sign.get("sign_site_id")
+        if sid is not None and sid in custom_destinations_by_site_multi:
+            route_for_km = (sign.get("rutenummer_list") or [None])[0]
+            ep = route_ep_cache_multi.get(route_for_km, {}) if route_for_km else {}
+            names = names_by_route_multi.get(route_for_km, {}) if route_for_km else (ep.get("names") or {})
+            sign["destinations"] = _resolve_custom_destinations(
+                custom_destinations_by_site_multi[sid],
+                sign.get("route_km"),
+                ep or None,
+                names,
+            )
+
+    for site in custom_sites:
+        lon, lat = site.get("lon"), site.get("lat")
+        destinations = []
+        rnum = site.get("rutenummer")
+        route_km_val = site.get("route_km")
+        if site["id"] in custom_destinations_by_site_multi:
+            ep_info = route_ep_cache_multi.get(rnum, {}) if rnum else {}
+            names_site = (ep_info.get("names") or {}) if ep_info else names_by_route_multi.get(rnum, {})
+            destinations = _resolve_custom_destinations(
+                custom_destinations_by_site_multi[site["id"]],
+                route_km_val,
+                ep_info or None,
+                names_site,
+            )
+        else:
+            ep_info = route_ep_cache_multi.get(rnum, {}) if rnum else {}
+            if ep_info and route_km_val is not None and ep_info.get("length_m") is not None:
+                length_m = float(ep_info["length_m"])
+                first_id = ep_info.get("first_a_node")
+                last_id = ep_info.get("last_b_node")
+                names = ep_info.get("names") or {}
+                dist_to_start_m = route_km_val * 1000.0
+                dist_to_end_m = length_m - dist_to_start_m
+                if first_id is not None:
+                    name = (names.get(first_id) or {}).get("name") or (f"Anchor {first_id}" if first_id else "")
+                    destinations.append({"anchor_node_id": first_id, "name": name, "distance_meters": round(dist_to_start_m, 0)})
+                if last_id is not None and last_id != first_id:
+                    name = (names.get(last_id) or {}).get("name") or (f"Anchor {last_id}" if last_id else "")
+                    destinations.append({"anchor_node_id": last_id, "name": name, "distance_meters": round(dist_to_end_m, 0)})
+        report["signs"].append({
+            "anchor_node_id": None,
+            "sign_site_id": site["id"],
+            "skiltstedidentifikator": str(site["id"]),
+            "coordinates": [lon, lat],
+            "link_count": 0,
+            "is_endpoint": False,
+            "is_junction": False,
+            "name": site.get("name"),
+            "destinations": destinations,
+            "status": [],
+            "route_km": site.get("route_km"),
+            "back_text": site.get("back_text") or DEFAULT_BACK_TEXT,
+            "send_to_name": site.get("send_to_name"),
+            "send_to_address": site.get("send_to_address"),
+            "skiltfarge": site.get("skiltfarge"),
+            "utm_coords": wgs84_to_utm_display(lon, lat) if (lon is not None and lat is not None) else None,
+            "rutenummer_list": [site["rutenummer"]] if site.get("rutenummer") else [],
+        })
+    _merge_sign_skilt_into_report_signs(report["signs"])
+    report["totals"]["sign_count"] = len(report["signs"])
+
+
 def get_signs_for_route(conn, rutenummer: str) -> Dict[str, Any]:
     # Get all links connected to nodes on this route (includes links from other routes at junctions)
     links = _get_links_for_route_nodes(conn, rutenummer)
@@ -612,13 +1061,10 @@ def get_signs_for_route(conn, rutenummer: str) -> Dict[str, Any]:
     anchor_nodes = _fetch_anchor_nodes(conn, anchor_ids)
     anchor_names = _resolve_anchor_names_for_route(conn, anchor_nodes, anchor_ids, rutenummer)
 
-    sign_status = {}
-    if anchor_ids:
-        with op_db_connection() as op_conn:
-            sign_status = get_sign_status_for_anchors(op_conn, anchor_ids)
-
-    report = compute_sign_report_from_links(links, anchor_nodes, anchor_names, sign_status)
+    # Status comes only from sign_sites (matched by location), not from anchor_node_id.
+    report = compute_sign_report_from_links(links, anchor_nodes, anchor_names, sign_status={})
     report["scope"] = {"rutenummer": rutenummer}
+    _enrich_signs_with_sign_sites_and_route_km(conn, rutenummer, report)
     return report
 
 
@@ -751,13 +1197,9 @@ def get_signs_for_bbox(conn, bbox: Tuple[float, float, float, float]) -> Dict[st
     anchor_nodes = _fetch_anchor_nodes(conn, anchor_ids)
     anchor_names = _resolve_anchor_names_for_prefix(conn, anchor_nodes, anchor_ids, routes)
     
-    sign_status = {}
-    if anchor_ids:
-        with op_db_connection() as op_conn:
-            sign_status = get_sign_status_for_anchors(op_conn, anchor_ids)
-    
-    report = compute_sign_report_from_links(links, anchor_nodes, anchor_names, sign_status)
+    report = compute_sign_report_from_links(links, anchor_nodes, anchor_names, sign_status={})
     report["scope"] = {"bbox": bbox, "routes": routes}
+    _enrich_signs_with_sign_sites_and_route_km_multi(conn, report)
     return report
 
 
@@ -797,87 +1239,140 @@ def get_signs_for_prefix(conn, prefix: str) -> Dict[str, Any]:
     anchor_nodes = _fetch_anchor_nodes(conn, anchor_ids)
     anchor_names = _resolve_anchor_names_for_prefix(conn, anchor_nodes, anchor_ids, routes)
 
-    sign_status = {}
-    if anchor_ids:
-        with op_db_connection() as op_conn:
-            sign_status = get_sign_status_for_anchors(op_conn, anchor_ids)
-
-    report = compute_sign_report_from_links(links, anchor_nodes, anchor_names, sign_status)
+    report = compute_sign_report_from_links(links, anchor_nodes, anchor_names, sign_status={})
     report["scope"] = {"prefix": prefix, "routes": routes}
+    _enrich_signs_with_sign_sites_and_route_km_multi(conn, report)
     return report
 
 
 def build_sign_production_rows(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Build production rows: one row per destination skilt (pilretning/status/farge/km per destinasjon)."""
     rows: List[Dict[str, Any]] = []
     for sign in report.get("signs", []):
         destinations = sign.get("destinations") or []
-        status_rows = sign.get("status") or []
-        if not status_rows:
-            status_rows = [
-                {
-                    "direction": None,
-                    "status": None,
-                    "front_lon": None,
-                    "front_lat": None,
-                    "back_lon": None,
-                    "back_lat": None,
+        skiltstedidentifikator = sign.get("skiltstedidentifikator") or str(sign.get("sign_site_id") or sign.get("anchor_node_id"))
+        route_km = sign.get("route_km")
+        back_text = sign.get("back_text") or DEFAULT_BACK_TEXT
+        send_to_name = sign.get("send_to_name")
+        send_to_address = sign.get("send_to_address")
+        sign_name = sign.get("name")
+        utm_coords = sign.get("utm_coords")
+        default_site_farge = sign.get("skiltfarge")
+        coords = sign.get("coordinates") or [None, None]
+        front_lon = coords[0]
+        front_lat = coords[1]
+        back_lon = coords[0]
+        back_lat = coords[1]
+
+        if not destinations:
+            pseudo_status = {
+                "direction": None,
+                "status": None,
+                "last_inspected": None,
+                "notes": None,
+                "updated_by": None,
+            }
+            rows.append(
+                _production_row(
+                    sign,
+                    pseudo_status,
+                    None,
+                    skiltstedidentifikator,
+                    route_km,
+                    back_text,
+                    send_to_name,
+                    send_to_address,
+                    sign_name,
+                    utm_coords,
+                    default_site_farge,
+                    front_lon,
+                    front_lat,
+                    back_lon,
+                    back_lat,
+                )
+            )
+        else:
+            for destination in destinations:
+                sk = destination.get("skilt") or {}
+                pseudo_status = {
+                    "direction": sk.get("direction"),
+                    "status": sk.get("status"),
                     "last_inspected": None,
                     "notes": None,
                     "updated_by": None,
                 }
-            ]
-
-        for status in status_rows:
-            front_lon = status.get("front_lon")
-            front_lat = status.get("front_lat")
-            back_lon = status.get("back_lon")
-            back_lat = status.get("back_lat")
-            if front_lon is None or front_lat is None:
-                coords = sign.get("coordinates") or [None, None]
-                front_lon = coords[0]
-                front_lat = coords[1]
-            if back_lon is None or back_lat is None:
-                coords = sign.get("coordinates") or [None, None]
-                back_lon = coords[0]
-                back_lat = coords[1]
-
-            if not destinations:
+                effective_farge = sk.get("skiltfarge") or default_site_farge
+                dest_row = dict(destination)
+                ov = sk.get("distance_meters")
+                if ov is not None:
+                    dest_row["distance_meters"] = ov
                 rows.append(
-                    {
-                        "anchor_node_id": sign.get("anchor_node_id"),
-                        "sign_name": sign.get("name"),
-                        "direction": status.get("direction"),
-                        "status": status.get("status"),
-                        "destination_name": None,
-                        "destination_anchor_id": None,
-                        "distance_meters": None,
-                        "front_lon": front_lon,
-                        "front_lat": front_lat,
-                        "back_lon": back_lon,
-                        "back_lat": back_lat,
-                        "last_inspected": status.get("last_inspected"),
-                        "notes": status.get("notes"),
-                        "updated_by": status.get("updated_by"),
-                    }
-                )
-            else:
-                for destination in destinations:
-                    rows.append(
-                        {
-                            "anchor_node_id": sign.get("anchor_node_id"),
-                            "sign_name": sign.get("name"),
-                            "direction": status.get("direction"),
-                            "status": status.get("status"),
-                            "destination_name": destination.get("name"),
-                            "destination_anchor_id": destination.get("anchor_node_id"),
-                            "distance_meters": destination.get("distance_meters"),
-                            "front_lon": front_lon,
-                            "front_lat": front_lat,
-                            "back_lon": back_lon,
-                            "back_lat": back_lat,
-                            "last_inspected": status.get("last_inspected"),
-                            "notes": status.get("notes"),
-                            "updated_by": status.get("updated_by"),
-                        }
+                    _production_row(
+                        sign,
+                        pseudo_status,
+                        dest_row,
+                        skiltstedidentifikator,
+                        route_km,
+                        back_text,
+                        send_to_name,
+                        send_to_address,
+                        sign_name,
+                        utm_coords,
+                        effective_farge,
+                        front_lon,
+                        front_lat,
+                        back_lon,
+                        back_lat,
                     )
+                )
     return rows
+
+
+def _production_row(
+    sign: Dict,
+    status: Dict,
+    destination: Optional[Dict],
+    skiltstedidentifikator: str,
+    route_km: Optional[float],
+    back_text: str,
+    send_to_name: Optional[str],
+    send_to_address: Optional[str],
+    sign_name: Optional[str],
+    utm_coords: Optional[str],
+    skiltfarge: Optional[str],
+    front_lon: Optional[float],
+    front_lat: Optional[float],
+    back_lon: Optional[float],
+    back_lat: Optional[float],
+) -> Dict[str, Any]:
+    """Single production row with Norwegian and baksidetekst columns."""
+    dest_name = destination.get("name") if destination else None
+    dest_anchor_id = destination.get("anchor_node_id") if destination else None
+    distance_meters = destination.get("distance_meters") if destination else None
+    return {
+        "anchor_node_id": sign.get("anchor_node_id"),
+        "sign_site_id": sign.get("sign_site_id"),
+        "skiltstedidentifikator": skiltstedidentifikator,
+        "tekst_paa_skiltet_destinasjon": dest_name,
+        "km": route_km,
+        "pilretning": status.get("direction"),
+        "sendes_til_navn": send_to_name,
+        "sendes_til_adresse": send_to_address,
+        "skiltstednavn": sign_name,
+        "utm_koordinater": utm_coords,
+        "baksidetekst": back_text,
+        "skiltfarge": skiltfarge,
+        "sign_name": sign_name,
+        "direction": status.get("direction"),
+        "status": status.get("status"),
+        "destination_name": dest_name,
+        "destination_anchor_id": dest_anchor_id,
+        "distance_meters": distance_meters,
+        "front_lon": front_lon,
+        "front_lat": front_lat,
+        "back_lon": back_lon,
+        "back_lat": back_lat,
+        "last_inspected": status.get("last_inspected"),
+        "notes": status.get("notes"),
+        "updated_by": status.get("updated_by"),
+    }

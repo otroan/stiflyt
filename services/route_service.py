@@ -2,6 +2,7 @@
 import psycopg
 import json
 from typing import Optional, Dict, List, Any
+import utm
 from psycopg.rows import dict_row
 from .database import (
     db_connection,
@@ -631,6 +632,190 @@ def get_route_length(conn, route_geom):
             cur.execute(length_query, (route_geom,))
             result = cur.fetchone()
             return float(result[0]) if result and result[0] is not None else 0.0
+
+
+def wgs84_to_utm25833(conn, lon: float, lat: float) -> Optional[tuple]:
+    """Convert WGS84 (lon, lat) to UTM 33N (easting, northing). Returns (easting, northing) or None."""
+    query = """
+        SELECT
+            ST_X(ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833)) as easting,
+            ST_Y(ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833)) as northing
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (lon, lat, lon, lat))
+        row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    return (int(round(float(row[0]), 0)), int(round(float(row[1]), 0)))
+
+
+def wgs84_to_utm_display(lon: float, lat: float) -> Optional[str]:
+    """
+    Convert WGS84 (lon, lat) to standard UTM display: zone + letter, easting, northing (integers).
+    Works for any point on Earth within UTM range (80°S–84°N). Uses the utm library for
+    automatic zone and latitude-band. Format matches common civilian notation: e.g. "33N 341443 6902893".
+    """
+    try:
+        easting, northing, zone_number, zone_letter = utm.from_latlon(lat, lon)
+        zone_str = f"{zone_number}{zone_letter}"
+        return f"UTM{zone_str} {int(round(easting))} {int(round(northing))}"
+    except (ValueError, utm.OutOfRangeError):
+        return None
+
+
+def get_route_geometry_and_length(conn, rutenummer: str) -> tuple:
+    """
+    Get route geometry (in 25833) and length in meters for a route.
+    Returns (route_geom_25833_hex_or_none, length_meters).
+    """
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+    schema_quoted = quote_identifier(ROUTE_SCHEMA)
+    query = f"""
+        SELECT
+            ST_Transform(ST_GeomFromGeoJSON(lwr.route_geometries->>%s), 25833) as route_geom,
+            ST_Length(ST_Transform(ST_GeomFromGeoJSON(lwr.route_geometries->>%s), 4326)::geography) as length_m
+        FROM {schema_quoted}.links_with_routes lwr
+        WHERE %s = ANY(lwr.rutenummer_list)
+          AND lwr.route_geometries->>%s IS NOT NULL
+        LIMIT 1
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(query, (rutenummer, rutenummer, rutenummer, rutenummer))
+        row = cur.fetchone()
+    if not row or row.get("route_geom") is None:
+        return (None, 0.0)
+    length_m = float(row["length_m"]) if row.get("length_m") is not None else 0.0
+    return (row["route_geom"], length_m)
+
+
+def get_route_endpoint_nodes_and_length(conn, rutenummer: str) -> Optional[Dict[str, Any]]:
+    """
+    Get first node, last node and length in meters for a route.
+    Returns dict with first_a_node, last_b_node, length_m, or None if route not found.
+    """
+    if not validate_schema_name(ROUTE_SCHEMA):
+        return None
+    schema_quoted = quote_identifier(ROUTE_SCHEMA)
+    query = f"""
+        WITH route_links AS (
+            SELECT link_id, a_node, b_node
+            FROM {schema_quoted}.links_with_routes
+            WHERE %s = ANY(rutenummer_list)
+        ),
+        len AS (
+            SELECT ST_Length(ST_Transform(ST_GeomFromGeoJSON(lwr.route_geometries->>%s), 4326)::geography) as length_m
+            FROM {schema_quoted}.links_with_routes lwr
+            WHERE %s = ANY(lwr.rutenummer_list) AND lwr.route_geometries->>%s IS NOT NULL
+            LIMIT 1
+        )
+        SELECT
+            (SELECT a_node FROM route_links ORDER BY link_id ASC LIMIT 1) as first_a_node,
+            (SELECT b_node FROM route_links ORDER BY link_id DESC LIMIT 1) as last_b_node,
+            (SELECT length_m FROM len) as length_m
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(query, (rutenummer, rutenummer, rutenummer, rutenummer))
+        row = cur.fetchone()
+    if not row or (row.get("first_a_node") is None and row.get("last_b_node") is None):
+        return None
+    length_m = float(row["length_m"]) if row.get("length_m") is not None else 0.0
+    return {
+        "first_a_node": int(row["first_a_node"]) if row.get("first_a_node") is not None else None,
+        "last_b_node": int(row["last_b_node"]) if row.get("last_b_node") is not None else None,
+        "length_m": length_m,
+    }
+
+
+def _route_geom_to_linestring(conn, route_geom):
+    """
+    Ensure route geometry is a LineString for ST_LineLocatePoint.
+    ST_LineLocatePoint requires a line; GeoJSON routes can be MultiLineString.
+    Returns a LineString geometry or None.
+    """
+    if route_geom is None:
+        return None
+    query = """
+        SELECT
+            CASE
+                WHEN ST_GeometryType(%s::geometry) = 'ST_LineString' AND NOT ST_IsEmpty(%s::geometry)
+                THEN %s::geometry
+                WHEN ST_GeometryType(%s::geometry) = 'ST_MultiLineString' AND ST_NumGeometries(%s::geometry) >= 1
+                THEN COALESCE(
+                    CASE WHEN ST_GeometryType(ST_LineMerge(%s::geometry)) = 'ST_LineString'
+                         THEN ST_LineMerge(%s::geometry)
+                         ELSE NULL END,
+                    ST_GeometryN(%s::geometry, 1)
+                )
+                ELSE NULL
+            END AS line_geom
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (route_geom,) * 8)
+        row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    return row[0]
+
+
+def point_route_km(conn, rutenummer: str, lon: float, lat: float) -> Optional[float]:
+    """
+    Compute km along route for a point (WGS84 lon, lat).
+    Projects the point onto the route and returns distance from start in km.
+    Returns None if route not found or point cannot be projected.
+    """
+    route_geom, length_m = get_route_geometry_and_length(conn, rutenummer)
+    if route_geom is None or length_m <= 0:
+        return None
+    line_geom = _route_geom_to_linestring(conn, route_geom)
+    if line_geom is None:
+        return None
+    query = """
+        SELECT ST_LineLocatePoint(
+            %s::geometry,
+            ST_ClosestPoint(%s::geometry, ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833))
+        ) as fraction
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (line_geom, line_geom, lon, lat))
+        row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    fraction = float(row[0])
+    route_km = (fraction * length_m) / 1000.0
+    return round(route_km, 4)
+
+
+def point_on_route_km_and_geom(conn, rutenummer: str, lon: float, lat: float) -> Optional[tuple]:
+    """
+    Project a point (WGS84) onto the route; return (route_km, geom_wkt_25833).
+    geom_wkt_25833 is the closest point on the route in SRID 25833, as WKT for storage.
+    Returns None if route not found.
+    """
+    route_geom, length_m = get_route_geometry_and_length(conn, rutenummer)
+    if route_geom is None or length_m <= 0:
+        return None
+    line_geom = _route_geom_to_linestring(conn, route_geom)
+    if line_geom is None:
+        return None
+    query = """
+        SELECT
+            ST_LineLocatePoint(
+                %s::geometry,
+                ST_ClosestPoint(%s::geometry, ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833))
+            ) as fraction,
+            ST_AsText(
+                ST_ClosestPoint(%s::geometry, ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833))
+            ) as closest_wkt
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (line_geom, line_geom, lon, lat, line_geom, lon, lat))
+        row = cur.fetchone()
+    if not row or row[0] is None:
+        return None
+    fraction = float(row[0])
+    route_km = round((fraction * length_m) / 1000.0, 4)
+    return (route_km, row[1])
 
 
 def geometry_to_geojson(conn, geom):
