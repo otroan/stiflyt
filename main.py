@@ -1,10 +1,14 @@
 """FastAPI application main entry point."""
-from fastapi import FastAPI, HTTPException
+import os
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from starlette.middleware.sessions import SessionMiddleware
 from pathlib import Path
 from api.routes import router
+from api.auth import router as auth_router, require_user
+from services.auth_config import session_secret, session_https_only
 from services.startup_checks import run_startup_checks
 
 app = FastAPI(
@@ -24,20 +28,52 @@ async def startup_event() -> None:
     # This function raises RuntimeError if validation fails, which prevents the app from starting
     run_startup_checks()
 
-# Add CORS middleware
+# Session middleware — signed cookies via itsdangerous. Must be installed
+# before any route that touches request.session (i.e., all of them).
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=session_secret(),
+    https_only=session_https_only(),
+    same_site="lax",
+)
+
+# CORS: in dev the Vite proxy makes the API same-origin (no CORS needed); in
+# production the frontend is served by FastAPI from the same domain. Origins
+# can be overridden via ALLOWED_ORIGINS (comma-separated) for unusual setups.
+_allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
+_allowed_origins = (
+    [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
+    if _allowed_origins_env
+    else []
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.include_router(router, prefix="/api/v1", tags=["routes"])
+# Auth router — must be mounted BEFORE the protected router so the /auth/*
+# paths aren't gated by require_user.
+app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
 
-# Include changeset editor routes
+# Everything else under /api/v1/* requires a valid session.
+app.include_router(
+    router,
+    prefix="/api/v1",
+    tags=["routes"],
+    dependencies=[Depends(require_user)],
+)
+
+# Changeset routes — internal admin surface, also gated.
 from api.changeset import router as changeset_router
-app.include_router(changeset_router, prefix="/api", tags=["changeset"])
+app.include_router(
+    changeset_router,
+    prefix="/api",
+    tags=["changeset"],
+    dependencies=[Depends(require_user)],
+)
 
 # Serve frontend static files
 frontend_path = Path(__file__).parent / "frontend"

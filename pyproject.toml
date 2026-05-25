@@ -20,6 +20,9 @@ dependencies = [
     "Pillow>=10.0.0",
     "pillow-heif>=0.16.0",
     "python-multipart>=0.0.6",
+    "reportlab>=4.0.0",
+    "authlib>=1.3.0",
+    "itsdangerous>=2.1.0",
 ]
 [project.scripts]
 matrikkel-cli = "matrikkel.cli:main"

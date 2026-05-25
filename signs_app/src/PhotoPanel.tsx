@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "./api";
 import { FIELD_PHOTO_TAGS, type FieldPhoto, type FieldPhotoTag } from "./types";
 
@@ -13,7 +13,9 @@ interface Props {
   onPickPendingForPlacement: (photoId: number | null) => void;
   onClose: () => void;
   onChanged: () => void;
-  onOpenLightbox: (photo: FieldPhoto) => void;
+  /** Open the lightbox. `photos` is the set the user pages through with
+   *  the lightbox's arrows; `initial` is the one shown first. */
+  onOpenLightbox: (photos: FieldPhoto[], initial: FieldPhoto) => void;
 }
 
 /** Side-panel UI for the photo layer: upload, pending-placement tray, and the
@@ -31,8 +33,9 @@ export default function PhotoPanel({
   onOpenLightbox,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dirInputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number; skipped: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tagFilter, setTagFilter] = useState<FieldPhotoTag | null>(null);
 
@@ -43,20 +46,38 @@ export default function PhotoPanel({
 
   async function onFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
+    // Filter out non-images (directory uploads pick up .DS_Store, sidecars,
+    // and whatever else lives next to the photos).
+    const all = Array.from(files);
+    const images = all.filter(isImageFile);
+    const skipped = all.length - images.length;
+    if (images.length === 0) {
+      setError(skipped > 0 ? `Ingen bilder funnet (${skipped} filer hoppet over)` : "Ingen filer valgt");
+      return;
+    }
     setError(null);
     setUploading(true);
-    setUploadProgress({ done: 0, total: files.length });
+    setUploadProgress({ done: 0, total: images.length, skipped });
     let done = 0;
     let firstError: string | null = null;
-    for (const f of Array.from(files)) {
-      try {
-        await api.uploadPhoto(areaCode, f);
-      } catch (e) {
-        if (!firstError) firstError = (e as Error)?.message ?? String(e);
+    // Modest concurrency: 4 in flight at a time keeps backend memory + Pillow
+    // decoding under control while still parallelising the slow path (HEIC
+    // decode + JPEG thumb).
+    const CONCURRENCY = 4;
+    let idx = 0;
+    async function worker() {
+      while (idx < images.length) {
+        const myIdx = idx++;
+        try {
+          await api.uploadPhoto(areaCode, images[myIdx]);
+        } catch (e) {
+          if (!firstError) firstError = (e as Error)?.message ?? String(e);
+        }
+        done += 1;
+        setUploadProgress({ done, total: images.length, skipped });
       }
-      done += 1;
-      setUploadProgress({ done, total: files.length });
     }
+    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
     setUploading(false);
     setUploadProgress(null);
     if (firstError) setError(firstError);
@@ -71,7 +92,7 @@ export default function PhotoPanel({
         <button onClick={onClose} title="Lukk bilder-panelet">✕</button>
       </div>
 
-      <div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
         <input
           ref={fileInputRef}
           type="file"
@@ -80,6 +101,17 @@ export default function PhotoPanel({
           style={{ display: "none" }}
           onChange={(e) => { onFiles(e.target.files); if (fileInputRef.current) fileInputRef.current.value = ""; }}
         />
+        <input
+          ref={dirInputRef}
+          type="file"
+          // webkitdirectory turns the picker into a directory selector and the
+          // FileList becomes every file the directory contains (recursive).
+          // React doesn't know this attr; cast to any to avoid the type noise.
+          {...({ webkitdirectory: "", directory: "" } as any)}
+          multiple
+          style={{ display: "none" }}
+          onChange={(e) => { onFiles(e.target.files); if (dirInputRef.current) dirInputRef.current.value = ""; }}
+        />
         <button
           className="primary"
           onClick={() => fileInputRef.current?.click()}
@@ -87,9 +119,21 @@ export default function PhotoPanel({
         >
           {uploading
             ? `Laster opp ${uploadProgress?.done ?? 0}/${uploadProgress?.total ?? 0}…`
-            : "+ Last opp bilder"}
+            : "+ Last opp filer"}
+        </button>
+        <button
+          onClick={() => dirInputRef.current?.click()}
+          disabled={uploading}
+          title="Velg en mappe — alle bilder i mappen lastes opp"
+        >
+          + Mappe
         </button>
       </div>
+      {uploadProgress && uploadProgress.skipped > 0 && (
+        <div style={{ fontSize: 11, color: "#666" }}>
+          {uploadProgress.skipped} fil{uploadProgress.skipped === 1 ? "" : "er"} hoppet over (ikke bilde)
+        </div>
+      )}
 
       {error && <div style={{ color: "#c43d3d", fontSize: 12 }}>Feil: {error}</div>}
 
@@ -121,7 +165,7 @@ export default function PhotoPanel({
         {filteredPlaced.map((p) => (
           <button
             key={p.id}
-            onClick={() => onOpenLightbox(p)}
+            onClick={() => onOpenLightbox(filteredPlaced, p)}
             title={p.caption || `Tatt ${p.taken_at ?? "ukjent"}`}
             style={{
               padding: 0, border: "1px solid #ddd", borderRadius: 3, overflow: "hidden",
@@ -144,7 +188,7 @@ function PendingTray({
   armed: boolean;
   onPickForPlacement: (photoId: number | null) => void;
   onChanged: () => void;
-  onOpenLightbox: (photo: FieldPhoto) => void;
+  onOpenLightbox: (photos: FieldPhoto[], initial: FieldPhoto) => void;
 }) {
   return (
     <div style={{ background: "#fff4d0", border: "1px solid #e0c060", borderRadius: 4, padding: 8 }}>
@@ -173,7 +217,7 @@ function PendingTray({
                 <img src={p.thumb_url} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
               </button>
               <button
-                onClick={() => onOpenLightbox(p)}
+                onClick={() => onOpenLightbox([p], p)}
                 title="Vis bilde"
                 style={{
                   position: "absolute", top: 2, left: 2, padding: "0 4px",
@@ -208,6 +252,14 @@ function PendingTray({
   );
 }
 
+const IMAGE_EXT_RE = /\.(heic|heif|jpe?g|png)$/i;
+function isImageFile(f: File): boolean {
+  if (f.size === 0) return false;
+  if (f.type && f.type.startsWith("image/")) return true;
+  // iPhone HEIC uploads sometimes arrive with mime "" — fall back to extension.
+  return IMAGE_EXT_RE.test(f.name);
+}
+
 function TagChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button
@@ -227,17 +279,69 @@ function TagChip({ label, active, onClick }: { label: string; active: boolean; o
 // -----------------------------------------------------------------------------
 
 interface LightboxProps {
-  photo: FieldPhoto;
+  /** Photos the user can page through with ←/→. Pass a one-element list for
+   *  a single-photo open (no arrows shown). */
+  photos: FieldPhoto[];
+  initialIndex: number;
   onClose: () => void;
   onChanged: () => void;
 }
 
-export function PhotoLightbox({ photo, onClose, onChanged }: LightboxProps) {
-  const [caption, setCaption] = useState(photo.caption ?? "");
-  const [tags, setTags] = useState<FieldPhotoTag[]>(photo.tags);
+export function PhotoLightbox({ photos, initialIndex, onClose, onChanged }: LightboxProps) {
+  const [index, setIndex] = useState(() =>
+    Math.min(Math.max(0, initialIndex), Math.max(0, photos.length - 1)),
+  );
+  // Detect "different set vs. same set with fresher data". A new set →
+  // reset to initialIndex. A data refresh (same ids, possibly updated
+  // captions/tags) → keep the user's paged position.
+  const setSignature = photos.map((p) => p.id).join(",");
+  const lastSignatureRef = useRef(setSignature);
+  useEffect(() => {
+    if (lastSignatureRef.current !== setSignature) {
+      lastSignatureRef.current = setSignature;
+      setIndex(Math.min(Math.max(0, initialIndex), Math.max(0, photos.length - 1)));
+    }
+  }, [setSignature, initialIndex, photos.length]);
+
+  // Clamp in case the current photo was deleted in another tab.
+  const safeIndex = Math.min(index, photos.length - 1);
+  const photo = photos[safeIndex];
+  const [caption, setCaption] = useState(photo?.caption ?? "");
+  const [tags, setTags] = useState<FieldPhotoTag[]>(photo?.tags ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { setCaption(photo.caption ?? ""); setTags(photo.tags); }, [photo.id, photo.caption, photo.tags]);
+  // Reset the editable fields when paging lands on a different photo. We
+  // intentionally key only on photo.id so an in-flight data refresh (same id,
+  // possibly newer caption) doesn't wipe whatever the user is currently
+  // typing into the textarea.
+  useEffect(() => {
+    setCaption(photo?.caption ?? "");
+    setTags(photo?.tags ?? []);
+    setError(null);
+  }, [photo?.id]);
+
+  const canPrev = photos.length > 1;
+  const canNext = photos.length > 1;
+  const goPrev = () => setIndex((i) => (i - 1 + photos.length) % photos.length);
+  const goNext = () => setIndex((i) => (i + 1) % photos.length);
+
+  // Keyboard: ←/→ pages, Esc closes. Bound to window so focus inside the
+  // textarea doesn't trap the arrows (we only steal them when the modal owns
+  // the screen and the user isn't typing).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { onClose(); return; }
+      const tgt = e.target as HTMLElement | null;
+      const typing = tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable);
+      if (typing) return;
+      if (e.key === "ArrowLeft" && canPrev) { e.preventDefault(); goPrev(); }
+      else if (e.key === "ArrowRight" && canNext) { e.preventDefault(); goNext(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canPrev, canNext, onClose]);
+
+  if (!photo) return null;
 
   function toggleTag(t: FieldPhotoTag) {
     setTags((cur) => (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]));
@@ -252,7 +356,9 @@ export function PhotoLightbox({ photo, onClose, onChanged }: LightboxProps) {
         tags,
       });
       onChanged();
-      onClose();
+      // Stay on the same photo when paging — only close on save for a
+      // single-photo lightbox, where there's nothing else to step to.
+      if (photos.length <= 1) onClose();
     } catch (e) {
       setError((e as Error)?.message ?? String(e));
     } finally {
@@ -273,6 +379,14 @@ export function PhotoLightbox({ photo, onClose, onChanged }: LightboxProps) {
     }
   }
 
+  const arrowStyle: CSSProperties = {
+    position: "absolute", top: "50%", transform: "translateY(-50%)",
+    width: 40, height: 40, borderRadius: 20, border: "none",
+    background: "rgba(255,255,255,0.85)", cursor: "pointer", fontSize: 22,
+    lineHeight: "38px", textAlign: "center", padding: 0,
+    boxShadow: "0 1px 4px rgba(0,0,0,0.3)",
+  };
+
   return (
     <div
       onClick={onClose}
@@ -289,12 +403,27 @@ export function PhotoLightbox({ photo, onClose, onChanged }: LightboxProps) {
           display: "grid", gridTemplateColumns: "1fr 280px", gap: 12,
         }}
       >
-        <div style={{ background: "#000", borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 360 }}>
+        <div style={{ position: "relative", background: "#000", borderRadius: 4, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 360 }}>
           <img
             src={photo.display_url}
             alt={photo.caption || ""}
             style={{ maxWidth: "100%", maxHeight: "80vh", display: "block" }}
           />
+          {canPrev && (
+            <button onClick={goPrev} title="Forrige (←)" style={{ ...arrowStyle, left: 8 }}>‹</button>
+          )}
+          {canNext && (
+            <button onClick={goNext} title="Neste (→)" style={{ ...arrowStyle, right: 8 }}>›</button>
+          )}
+          {photos.length > 1 && (
+            <div style={{
+              position: "absolute", bottom: 8, left: "50%", transform: "translateX(-50%)",
+              padding: "2px 8px", borderRadius: 10, fontSize: 11,
+              background: "rgba(0,0,0,0.55)", color: "white",
+            }}>
+              {safeIndex + 1} / {photos.length}
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 12 }}>

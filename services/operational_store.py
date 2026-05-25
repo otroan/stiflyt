@@ -187,7 +187,7 @@ def ensure_operational_schema(conn) -> None:
                 geom GEOMETRY(Point, 25833) NOT NULL,
                 anchor_node_id INTEGER NULL,
                 name TEXT NULL,
-                back_text TEXT NULL DEFAULT 'Stier er merket av DNT Oslo og Omegn',
+                back_text TEXT NULL DEFAULT 'Stier er ryddet og merket av DNT Oslo og Omegn',
                 send_to_name TEXT NULL,
                 send_to_address TEXT NULL,
                 updated_by TEXT NULL,
@@ -810,8 +810,10 @@ def get_sign_status_for_sign_sites(
     return grouped
 
 
-# Default back text for sign sites (baksidetekst)
-DEFAULT_BACK_TEXT = "Stier er merket av DNT Oslo og Omegn"
+# Default back text for sign sites (baksidetekst). The template lives in
+# `data/sign_export.yaml`; this is the static-only render (no per-site
+# name/coords), used as a fallback where those values aren't available.
+from .sign_back_template import DEFAULT_BACK_TEXT  # noqa: E402, F401
 
 
 def create_sign_site(
@@ -1419,7 +1421,8 @@ def get_sign_sites_status_by_area_anchor(
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"""
-            SELECT id, anchor_node_id, site_code, status, name, updated_at
+            SELECT id, anchor_node_id, site_code, status, name,
+                   send_to_name, send_to_address, updated_at
             FROM {schema_quoted}.sign_sites
             WHERE area_code = %s AND anchor_node_id IS NOT NULL;
             """,

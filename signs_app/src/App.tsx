@@ -1,10 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import type { CandidatesResponse, FieldPhoto, RouteListItem, RouteSummary, SignSite } from "./types";
+import type { CandidatesResponse, FieldPhoto, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
 import SiteEditor from "./SiteEditor";
 import AreaReport from "./AreaReport";
 import PhotoPanel, { PhotoLightbox } from "./PhotoPanel";
+
+const LOGIN_ERROR_MESSAGES: Record<string, string> = {
+  not_allowed: "E-postadressen din står ikke i tilgangslisten. Kontakt en administrator.",
+  email_unverified: "Google-kontoen din har ikke verifisert e-postadressen.",
+  oauth_error: "Innloggingen ble avbrutt eller feilet. Prøv igjen.",
+};
+
+function LoginScreen({ errorCode }: { errorCode: string | null }) {
+  const msg = errorCode ? LOGIN_ERROR_MESSAGES[errorCode] ?? `Feil: ${errorCode}` : null;
+  return (
+    <div className="login-screen">
+      <div className="login-card">
+        <h1>Skiltverktøy</h1>
+        <p>Logg inn med Google-kontoen din for å fortsette.</p>
+        {msg && <div className="login-error">{msg}</div>}
+        <a className="login-btn" href="/api/v1/auth/login">Logg inn med Google</a>
+      </div>
+    </div>
+  );
+}
 
 const BASE_LAYER_STORAGE_KEY = "signs_app:baseLayer";
 const BASE_LAYER_LABELS: Record<BaseLayerId, string> = {
@@ -19,6 +39,35 @@ const DEFAULT_AREA = "bre";
 type Mode = "browse" | "add-manual" | "place-photo";
 
 export default function App() {
+  // Auth state. `me` is null until we've checked; once set we render the
+  // real app. If /me 401s, api.ts triggers the redirect and we render the
+  // login screen as a brief flash (or longer if login_error is in the URL).
+  const [me, setMe] = useState<SessionUser | null>(null);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [loginErrorCode, setLoginErrorCode] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("login_error");
+  });
+  useEffect(() => {
+    let cancelled = false;
+    api.getMe()
+      .then((u) => { if (!cancelled) setMe(u); })
+      .catch(() => { /* network / 5xx — leave login screen up so user can retry */ })
+      .finally(() => { if (!cancelled) setAuthChecking(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Strip ?login_error= from the URL once the user is in (or even just
+  // checking) so a manual refresh doesn't re-display the error.
+  useEffect(() => {
+    if (loginErrorCode && me) {
+      const u = new URL(window.location.href);
+      u.searchParams.delete("login_error");
+      window.history.replaceState({}, "", u.toString());
+      setLoginErrorCode(null);
+    }
+  }, [me, loginErrorCode]);
+
   const [areaCode, setAreaCode] = useState<string>(DEFAULT_AREA);
   const [candidates, setCandidates] = useState<CandidatesResponse | null>(null);
   const [routes, setRoutes] = useState<RouteListItem[]>([]);
@@ -47,7 +96,9 @@ export default function App() {
   // Photo from the pending-placement tray that's been picked. The next map
   // click in "place-photo" mode geotags this photo at the clicked position.
   const [pendingPlacementId, setPendingPlacementId] = useState<number | null>(null);
-  const [lightboxPhoto, setLightboxPhoto] = useState<FieldPhoto | null>(null);
+  // Lightbox holds a *set* of photos so the user can page through them with
+  // ←/→. Single-photo opens just pass a one-element list.
+  const [lightboxState, setLightboxState] = useState<{ photos: FieldPhoto[]; index: number } | null>(null);
 
   const placedPhotos = useMemo(() => photos.filter((p) => p.lon != null && p.lat != null), [photos]);
   const pendingPhotos = useMemo(() => photos.filter((p) => p.needs_placement), [photos]);
@@ -60,7 +111,7 @@ export default function App() {
       setError(String((e as Error)?.message ?? e));
     }
   };
-  useEffect(() => { refreshPhotos(); }, [areaCode]);
+  useEffect(() => { if (me) refreshPhotos(); }, [areaCode, me]);
   // Set of "<sign_site_id>:<destination_anchor_node_id>" strings — panels the
   // user has earmarked for the next manufacturing export.
   const [selectedPanels, setSelectedPanels] = useState<Set<string>>(new Set());
@@ -73,6 +124,7 @@ export default function App() {
   const clearPanelSelection = () => setSelectedPanels(new Set());
 
   useEffect(() => {
+    if (!me) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -106,7 +158,7 @@ export default function App() {
       .catch((e) => !cancelled && setError(String(e?.message || e)))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [areaCode]);
+  }, [areaCode, me]);
 
   const refreshCandidates = async (): Promise<CandidatesResponse | null> => {
     try {
@@ -186,11 +238,37 @@ export default function App() {
     setMode(photoId == null ? "browse" : "place-photo");
   }
 
-  function openLightbox(photo: FieldPhoto) { setLightboxPhoto(photo); }
-  async function handlePhotoMarkerClick(photoId: number) {
-    const p = photos.find((x) => x.id === photoId);
-    if (p) setLightboxPhoto(p);
+  function openLightbox(set: FieldPhoto[], initial: FieldPhoto) {
+    const idx = Math.max(0, set.findIndex((p) => p.id === initial.id));
+    setLightboxState({ photos: set, index: idx });
   }
+  function handleMapPhotosOpen(ids: number[]) {
+    // Map order to the user's click intent — single dot passes one id, a
+    // cluster passes every photo inside it. Preserve the order ids came in.
+    const byId = new Map(photos.map((p) => [p.id, p] as const));
+    const set = ids.map((id) => byId.get(id)).filter((p): p is FieldPhoto => !!p);
+    if (set.length === 0) return;
+    setLightboxState({ photos: set, index: 0 });
+  }
+  // Keep the lightbox's set in sync with refreshed photo data (e.g. after
+  // editing a caption, the parent's `photos` list updates and we want the
+  // open lightbox to reflect the new caption/tags too).
+  useEffect(() => {
+    if (!lightboxState) return;
+    const byId = new Map(photos.map((p) => [p.id, p] as const));
+    const refreshed = lightboxState.photos
+      .map((p) => byId.get(p.id))
+      .filter((p): p is FieldPhoto => !!p);
+    if (refreshed.length === 0) { setLightboxState(null); return; }
+    // Only update if something actually changed by reference — guards against
+    // an infinite render loop.
+    const same = refreshed.length === lightboxState.photos.length
+      && refreshed.every((p, i) => p === lightboxState.photos[i]);
+    if (same) return;
+    const currentId = lightboxState.photos[lightboxState.index]?.id;
+    const newIndex = Math.max(0, refreshed.findIndex((p) => p.id === currentId));
+    setLightboxState({ photos: refreshed, index: newIndex });
+  }, [photos]);
 
   async function placeManualSign(lon: number, lat: number, routes: string[]) {
     if (routes.length === 0) return;
@@ -215,6 +293,13 @@ export default function App() {
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     }
+  }
+
+  if (authChecking) {
+    return <div className="app-booting">Sjekker innlogging…</div>;
+  }
+  if (!me) {
+    return <LoginScreen errorCode={loginErrorCode} />;
   }
 
   return (
@@ -274,13 +359,19 @@ export default function App() {
         {selectedPanels.size > 0 && (
           <button onClick={clearPanelSelection} title="Tøm utvalget">Tøm</button>
         )}
-        <button disabled title="Felt-PDF — kommer">Felt-PDF</button>
         <button
-          onClick={() => setPhotosVisible((v) => !v)}
-          title={photosVisible ? "Skjul bilder på kartet" : "Vis bilder på kartet"}
-          style={photosVisible ? {} : { opacity: 0.5 }}
+          onClick={() => api.downloadFieldPdf(areaCode).catch((e) => setError(String((e as Error)?.message ?? e)))}
+          title="Felt-PDF — ett oppslag per skiltsted (kartutsnitt, paneler, bilder)"
         >
-          {photosVisible ? "📷 På" : "📷 Av"}
+          Felt-PDF (alle)
+        </button>
+        <button
+          onClick={() => api.downloadFieldPdf(areaCode, Array.from(selectedPanels))
+            .catch((e) => setError(String((e as Error)?.message ?? e)))}
+          disabled={selectedPanels.size === 0}
+          title={selectedPanels.size === 0 ? "Velg panel(er) for å eksportere et utvalg" : `Felt-PDF for ${selectedPanels.size} valgte panel`}
+        >
+          Felt-PDF ({selectedPanels.size} valgt)
         </button>
         <button
           onClick={() => setPhotosOpen((v) => !v)}
@@ -295,6 +386,16 @@ export default function App() {
         >
           ℹ Om området
         </button>
+        <div className="user-widget" title={me.email}>
+          {me.picture && <img src={me.picture} alt="" className="user-avatar" />}
+          <span className="user-email">{me.email}</span>
+          <button
+            onClick={() => api.logout().catch((e) => setError(String((e as Error)?.message ?? e)))}
+            title="Logg ut"
+          >
+            Logg ut
+          </button>
+        </div>
       </div>
 
       <div className="map-pane">
@@ -311,9 +412,11 @@ export default function App() {
             baseLayer={baseLayer}
             focusedRoute={focusedRoute}
             onFocusRoute={setFocusedRoute}
+            areaCode={areaCode}
             photos={placedPhotos}
             photosVisible={photosVisible}
-            onPhotoClick={handlePhotoMarkerClick}
+            onPhotosVisibleChange={setPhotosVisible}
+            onPhotosOpen={handleMapPhotosOpen}
           />
         )}
       </div>
@@ -367,10 +470,11 @@ export default function App() {
         />
       )}
 
-      {lightboxPhoto && (
+      {lightboxState && (
         <PhotoLightbox
-          photo={lightboxPhoto}
-          onClose={() => setLightboxPhoto(null)}
+          photos={lightboxState.photos}
+          initialIndex={lightboxState.index}
+          onClose={() => setLightboxState(null)}
           onChanged={refreshPhotos}
         />
       )}

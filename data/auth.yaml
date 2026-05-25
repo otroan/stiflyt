@@ -1,0 +1,11 @@
+# Email allow-list for the signs tool.
+#
+# Anyone signing in with Google must have their email listed here. Users
+# whose Google email isn't in the list get a 403 after the OAuth callback —
+# the session is never set.
+#
+# Edit this file and restart the API to apply.
+
+allow:
+  - otroan@employees.org
+  - ichiroumakino@gmail.com

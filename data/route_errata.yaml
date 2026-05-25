@@ -1,0 +1,34 @@
+# Local errata for Kartverket turrutebasen data.
+#
+# Source of truth for the contents of ops.rutenummer_remap. Sync into the
+# database with:
+#
+#     make sync-route-errata
+#
+# Two operations per entry:
+#
+#   to: <other_rutenummer>   — retag every segment from the key to this rutenummer
+#   delete: true             — hide every segment with this rutenummer from the signs_app
+#
+# Exactly one of {to, delete} must be set. Removing an entry and re-syncing
+# restores the original tag / segment.
+#
+# Each entry should link to the Kartverket ticket / DNT contact so the patch
+# can be cleaned up when the source data is fixed.
+
+rutenummer_remaps:
+
+  # Segments labelled by Kartverket with the date-style id "20160407" should
+  # actually be part of bre26 (Sunndalen → Sunndalssætra) per DNT.
+  "20160407":
+    to: bre26
+    comment: "Should be bre26 (Sunndalen → Sunndalssætra)"
+    reported_at: 2026-05-25
+
+  # bre7 was removed by DNT — Kartverket still has the stub geometry tagged.
+  # Hide every bre7 segment so it stops contributing endpoints, panels,
+  # and lines to the signs_app.
+  "bre7":
+    delete: true
+    comment: "bre7 deleted by DNT; spur at node 108545. Reported to Kartverket."
+    reported_at: 2026-05-25

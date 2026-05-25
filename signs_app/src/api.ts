@@ -5,15 +5,45 @@ import type {
   FieldPhoto,
   FieldPhotosResponse,
   PlacenameCandidatesResponse,
+  SessionUser,
 } from "./types";
 
 const BASE = "/api/v1";
+
+// Suppressed once we've already triggered a redirect to the login flow, so a
+// burst of in-flight 401s doesn't replace `window.location` repeatedly.
+let didRedirectOn401 = false;
+
+class UnauthenticatedError extends Error {
+  constructor() {
+    super("not_authenticated");
+    this.name = "UnauthenticatedError";
+  }
+}
+
+function handleMaybeAuth(res: Response): void {
+  if (res.status !== 401) return;
+  if (!didRedirectOn401) {
+    didRedirectOn401 = true;
+    window.location.href = "/api/v1/auth/login";
+  }
+  throw new UnauthenticatedError();
+}
+
+/** fetch() that auto-redirects to login on 401. Use instead of bare `fetch`
+ *  whenever calling /api/v1/* directly (i.e. not via jsonFetch). */
+async function fetchWithAuth(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const res = await fetch(input, init);
+  handleMaybeAuth(res);
+  return res;
+}
 
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json", "X-User": "signs_app" },
     ...init,
   });
+  handleMaybeAuth(res);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`API ${res.status} ${path}: ${text}`);
@@ -31,6 +61,7 @@ async function timedJsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   const tNet = performance.now() - t0;
+  handleMaybeAuth(res);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`API ${res.status} ${path}: ${text}`);
@@ -48,6 +79,26 @@ async function timedJsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  /** Current session user, or null if not logged in. Does NOT redirect — the
+   *  caller decides whether to show a login screen or bounce to Google. */
+  getMe: async (): Promise<SessionUser | null> => {
+    const res = await fetch(`${BASE}/auth/me`, {
+      headers: { "Content-Type": "application/json" },
+    });
+    if (res.status === 401) return null;
+    if (!res.ok) throw new Error(`API ${res.status} /auth/me`);
+    return res.json();
+  },
+
+  logout: async () => {
+    const res = await fetch(`${BASE}/auth/logout`, { method: "POST" });
+    if (!res.ok) throw new Error(`API ${res.status} logout`);
+    // Clear the redirect guard and bounce to /; the next /me will 401 and
+    // restart the login flow.
+    didRedirectOn401 = false;
+    window.location.href = "/";
+  },
+
   getCandidates: (area: string) => timedJsonFetch<CandidatesResponse>(`/signs/candidates/${area}`),
 
   getAreaRoutes: (area: string) => timedJsonFetch<AreaRouteSummaryResponse>(`/signs/area/${area}/routes`),
@@ -125,7 +176,7 @@ export const api = {
     }),
 
   deleteSite: async (signSiteId: number) => {
-    const res = await fetch(`${BASE}/signs/sites/${signSiteId}`, {
+    const res = await fetchWithAuth(`${BASE}/signs/sites/${signSiteId}`, {
       method: "DELETE",
       headers: { "X-User": "signs_app" },
     });
@@ -140,12 +191,12 @@ export const api = {
     // POST when there's a selection — body avoids URL-length limits.
     const url = `${BASE}/signs/manufacturing/${area}.xlsx`;
     const res = panels && panels.length > 0
-      ? await fetch(url, {
+      ? await fetchWithAuth(url, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-User": "signs_app" },
           body: JSON.stringify({ panels }),
         })
-      : await fetch(url, { headers: { "X-User": "signs_app" } });
+      : await fetchWithAuth(url, { headers: { "X-User": "signs_app" } });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`API ${res.status} xlsx: ${text}`);
@@ -154,6 +205,30 @@ export const api = {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `skilt-${area}${panels && panels.length > 0 ? "-valgte" : ""}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
+  },
+
+  /** Field-PDF: one A4 page per sign site with map snippet, photos, panels. */
+  downloadFieldPdf: async (area: string, panels?: string[]) => {
+    const url = `${BASE}/signs/field-pdf/${area}.pdf`;
+    const res = panels && panels.length > 0
+      ? await fetchWithAuth(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-User": "signs_app" },
+          body: JSON.stringify({ panels }),
+        })
+      : await fetchWithAuth(url, { headers: { "X-User": "signs_app" } });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`API ${res.status} field-pdf: ${text}`);
+    }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `feltkart-${area}${panels && panels.length > 0 ? "-valgte" : ""}.pdf`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -171,6 +246,24 @@ export const api = {
     return jsonFetch<FieldPhotosResponse>(`/photos?area=${area}${q}`);
   },
 
+  /** Bulk-fetch base64 thumbnail bytes for every placed photo in the area
+   *  (optionally clipped to a viewport bbox). One request returns all thumbs
+   *  in one go — the map registers them as map images and the cluster /
+   *  single-photo layers light up immediately. */
+  getPhotoThumbnails: (
+    area: string,
+    bbox?: { minLng: number; minLat: number; maxLng: number; maxLat: number },
+  ) => {
+    const q = bbox
+      ? `&bbox=${bbox.minLng},${bbox.minLat},${bbox.maxLng},${bbox.maxLat}`
+      : "";
+    return jsonFetch<{
+      area_code: string;
+      thumbs: { id: number; data: string }[];
+      count: number;
+    }>(`/photos/thumbnails?area=${area}${q}`);
+  },
+
   uploadPhoto: async (
     area: string,
     file: File,
@@ -181,7 +274,7 @@ export const api = {
     form.append("file", file);
     if (payload?.caption) form.append("caption", payload.caption);
     for (const t of payload?.tags ?? []) form.append("tags", t);
-    const res = await fetch(`${BASE}/photos`, {
+    const res = await fetchWithAuth(`${BASE}/photos`, {
       method: "POST",
       headers: { "X-User": "signs_app" },
       body: form,
@@ -203,7 +296,7 @@ export const api = {
     }),
 
   deletePhoto: async (photoId: number) => {
-    const res = await fetch(`${BASE}/photos/${photoId}`, {
+    const res = await fetchWithAuth(`${BASE}/photos/${photoId}`, {
       method: "DELETE",
       headers: { "X-User": "signs_app" },
     });

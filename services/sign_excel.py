@@ -22,22 +22,17 @@ BODY_FONT = Font(name="Calibri", size=11)
 WRAP = Alignment(wrap_text=True, vertical="top")
 NUM_RIGHT = Alignment(horizontal="right")
 
-# Manufacturer-facing columns. Lon/lat and the acceptance status are intentionally
-# omitted — the latter is a site lifecycle state (proposed/accepted/installed),
-# not something the sign maker needs. When we introduce a real per-panel
-# *physical* status (e.g. ok / needs_replace / damaged / missing) we'll add it
-# back as its own column.
+# Manufacturer-facing columns. One row per panel; site-level fields
+# (baksidetekst, sendes_til) repeat across the panels of a site.
 COLUMNS = [
-    ("skiltsted_id", "Skiltsted-ID", 14),
-    ("skiltsted_navn", "Skiltsted (navn)", 26),
-    ("ruter", "Ruter", 14),
-    ("destinasjon", "Destinasjon", 26),
-    ("km", "km", 7),
+    ("antall", "Antall", 7),
+    ("tekst_paa_skiltet", "Tekst på skiltet", 26),
+    ("km", "Km", 7),
     ("pilretning", "Pilretning", 12),
-    ("skiltfarge", "Skiltfarge", 11),
     ("baksidetekst", "Baksidetekst", 36),
-    ("utm32v", "UTM 32V", 22),
-    ("notater", "Notater", 36),
+    ("skiltfarge", "Skiltfarge", 11),
+    ("ruter", "Ruter", 14),
+    ("sendes_til", "Sendes til (navn, adresse)", 30),
 ]
 
 
@@ -94,11 +89,6 @@ def build_manufacturing_workbook(
 
     row = 2
     for site in data.get("sites", []):
-        skiltsted_id = (
-            str(site.get("sign_site_id"))
-            if site.get("sign_site_id") is not None
-            else (f"@{site.get('anchor_node_id')}" if site.get("anchor_node_id") is not None else "")
-        )
         panels: List[Dict[str, Any]] = site.get("panels") or []
         if selection_set is not None:
             sid = site.get("sign_site_id")
@@ -112,11 +102,11 @@ def build_manufacturing_workbook(
             if not panels:
                 continue
         if not panels:
-            _write_row(ws, row, site, None, skiltsted_id)
+            _write_row(ws, row, site, None)
             row += 1
             continue
         for panel in panels:
-            _write_row(ws, row, site, panel, skiltsted_id)
+            _write_row(ws, row, site, panel)
             row += 1
 
     buf = BytesIO()
@@ -124,25 +114,26 @@ def build_manufacturing_workbook(
     return buf.getvalue()
 
 
-def _write_row(ws, row: int, site: Dict[str, Any], panel: Dict[str, Any] | None, skiltsted_id: str) -> None:
+def _write_row(ws, row: int, site: Dict[str, Any], panel: Dict[str, Any] | None) -> None:
+    send_to_name = (site.get("send_to_name") or "").strip()
+    send_to_address = (site.get("send_to_address") or "").strip()
+    sendes_til = "\n".join(p for p in (send_to_name, send_to_address) if p)
     values = {
-        "skiltsted_id": skiltsted_id,
-        "skiltsted_navn": site.get("name") or "",
-        "ruter": ", ".join(panel.get("route_numbers") or []) if panel else ", ".join(site.get("route_numbers") or []),
-        "destinasjon": (panel.get("destination_name") if panel else "") or "",
+        "antall": 1 if panel else "",
+        "tekst_paa_skiltet": (panel.get("destination_name") if panel else "") or "",
         "km": _format_km(panel.get("distance_km_displayed")) if panel else "",
         "pilretning": (panel.get("direction") if panel else "") or "",
-        "skiltfarge": (panel.get("color") if panel else "trehvit") or "trehvit",
         "baksidetekst": site.get("back_text") or "",
-        "utm32v": site.get("utm_coords") or "",
-        "notater": "",
+        "skiltfarge": (panel.get("color") if panel else "trehvit") or "trehvit",
+        "ruter": ", ".join(panel.get("route_numbers") or []) if panel else ", ".join(site.get("route_numbers") or []),
+        "sendes_til": sendes_til,
     }
     for col_idx, (key, _h, _w) in enumerate(COLUMNS, start=1):
         c = ws.cell(row=row, column=col_idx, value=values[key])
         c.font = BODY_FONT
-        if key == "km":
+        if key in ("km", "antall"):
             c.alignment = NUM_RIGHT
-        elif key in ("baksidetekst", "destinasjon", "skiltsted_navn", "notater", "utm32v"):
+        elif key in ("baksidetekst", "tekst_paa_skiltet", "sendes_til"):
             c.alignment = WRAP
 
 

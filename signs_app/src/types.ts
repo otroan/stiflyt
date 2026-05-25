@@ -1,6 +1,12 @@
 export type SignColor = "trehvit" | "grønn";
 export type SignStatus = "proposed" | "accepted" | "rejected" | "installed";
 
+export interface SessionUser {
+  email: string;
+  name: string;
+  picture: string | null;
+}
+
 export interface SignPanel {
   destination_name: string;
   destination_anchor_node_id: number | null;

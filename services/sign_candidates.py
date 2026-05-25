@@ -69,40 +69,43 @@ def correct_distance_km(distance_meters: Optional[float], factor: float = DEFAUL
     return float(round(km))
 
 
-def format_utm32v_block(lon: Optional[float], lat: Optional[float]) -> Optional[str]:
-    """Multi-line UTM coordinate block, rounded to the nearest 10 m.
-
-    Layout (Norwegian convention):
-
-        UTM 32V
-        E 432150
-        N 6854120
-
-    Zone is computed from the point — Breheimen lands in 32V. 10 m precision
-    matches what a handheld GPS can realistically deliver (and the sign-post
-    placement accuracy in practice).
-    """
+def _utm32v_components(lon: Optional[float], lat: Optional[float]) -> Optional[tuple]:
+    """Return (easting, northing) in UTM 32V rounded to 10 m, or None."""
     if lon is None or lat is None:
         return None
     try:
         import utm  # local import keeps top of module clean
-        easting, northing, zone_number, zone_letter = utm.from_latlon(lat, lon)
+        easting, northing, _zone_number, _zone_letter = utm.from_latlon(lat, lon)
     except (ValueError, Exception):
         return None
     e10 = int(round(easting / 10.0)) * 10
     n10 = int(round(northing / 10.0)) * 10
-    return f"UTM {zone_number}{zone_letter}\nE {e10}\nN {n10}"
+    return e10, n10
+
+
+def format_utm32v_block(lon: Optional[float], lat: Optional[float]) -> Optional[str]:
+    """Single-line UTM 32V coordinates: ``<easting> <northing>`` rounded to 10 m.
+
+    The zone label (32V) lives in the column header / surrounding context,
+    so the value itself is just the 7+7 digits.
+    """
+    parts = _utm32v_components(lon, lat)
+    if parts is None:
+        return None
+    return f"{parts[0]} {parts[1]}"
 
 
 def format_sign_back(anchor_name: Optional[str], lon: Optional[float], lat: Optional[float]) -> str:
-    """Sign back text: anchor name followed by a UTM 32V coordinate block."""
-    parts: List[str] = []
-    if anchor_name:
-        parts.append(anchor_name)
-    block = format_utm32v_block(lon, lat)
-    if block:
-        parts.append(block)
-    return "\n".join(parts)
+    """Sign back text rendered from the template in ``data/sign_export.yaml``."""
+    from .sign_back_template import render
+    parts = _utm32v_components(lon, lat)
+    easting = str(parts[0]) if parts else ""
+    northing = str(parts[1]) if parts else ""
+    return render({
+        "name": anchor_name or "",
+        "easting": easting,
+        "northing": northing,
+    })
 
 
 def _route_adjacency_with_links(route_links_list: List[Dict[str, Any]]) -> Dict[int, List[tuple]]:
@@ -804,6 +807,7 @@ def _fetch_manual_sites_for_area(op_conn, area_code: str) -> List[Dict[str, Any]
         cur.execute(
             f"""
             SELECT id, site_code, status, name, rutenummer, rutenummer_list, route_km,
+                   send_to_name, send_to_address,
                    ST_X(ST_Transform(geom, 4326)) AS lon,
                    ST_Y(ST_Transform(geom, 4326)) AS lat
             FROM {schema_quoted}.sign_sites
@@ -1204,6 +1208,8 @@ def get_sign_candidates_for_area(conn, area_code: str, *, timings: Optional[list
                     "route_numbers": list(sign.get("rutenummer_list") or []),
                     "back_text": format_sign_back(name, lon, lat),
                     "utm_coords": sign.get("utm_coords"),
+                    "send_to_name": persisted_row.get("send_to_name") if persisted_row else None,
+                    "send_to_address": persisted_row.get("send_to_address") if persisted_row else None,
                     "panels": panels,
                 }
             )
@@ -1291,6 +1297,8 @@ def get_sign_candidates_for_area(conn, area_code: str, *, timings: Optional[list
                     "route_km": route_km_for_sign,
                     "back_text": format_sign_back(m.get("name"), lon, lat),
                     "utm_coords": format_utm32v_block(lon, lat),
+                    "send_to_name": m.get("send_to_name"),
+                    "send_to_address": m.get("send_to_address"),
                     "panels": panels,
                 }
             )

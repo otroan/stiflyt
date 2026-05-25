@@ -281,6 +281,29 @@ def list_photos(
         return [_row_to_api(r) for r in cur.fetchall()]
 
 
+def list_placed_thumbnail_paths(
+    op_conn,
+    area_code: str,
+    bbox: Optional[tuple] = None,
+) -> List[Dict[str, Any]]:
+    """Return `(id, thumb_path)` rows for placed photos in `area_code`,
+    optionally filtered to a bounding box `(min_lng, min_lat, max_lng, max_lat)`.
+
+    Used by the bulk-thumbnails endpoint that ships every visible thumb in a
+    single response so the map doesn't have to issue N per-photo GETs."""
+    from psycopg.rows import dict_row
+
+    where = "WHERE area_code = %s AND lon IS NOT NULL AND lat IS NOT NULL"
+    params: list = [area_code]
+    if bbox is not None:
+        where += " AND lon BETWEEN %s AND %s AND lat BETWEEN %s AND %s"
+        params.extend([bbox[0], bbox[2], bbox[1], bbox[3]])
+    sql = f"SELECT id, thumb_path FROM ops.field_photos {where}"
+    with op_conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(sql, params)
+        return [dict(r) for r in cur.fetchall()]
+
+
 def get_photo(op_conn, photo_id: int) -> Optional[Dict[str, Any]]:
     """Return one row including the on-disk paths (for the file-serve endpoint)."""
     from psycopg.rows import dict_row

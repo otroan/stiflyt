@@ -4,6 +4,7 @@ import secrets
 import traceback
 import json
 import re
+import base64
 from typing import Optional, Annotated, Dict, List, Any
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Depends, Response, status, Header, UploadFile, File, Form
@@ -86,6 +87,7 @@ from services.sign_candidates import get_sign_candidates_for_area, get_route_sum
 from services._timing import format_server_timing
 from services import field_photos as fp_svc
 from services.sign_excel import build_manufacturing_workbook
+from services.sign_pdf import build_field_pdf
 from services.route_service import snap_point_to_full_route
 from services.route_service import point_on_route_km_and_geom
 from services.validators import get_validator_registry
@@ -1930,6 +1932,51 @@ async def post_manufacturing_xlsx(area_code: str, payload: Dict):
         raise HTTPException(status_code=500, detail=f"Error generating manufacturing.xlsx: {e}")
 
 
+@router.get("/signs/field-pdf/{area_code}.pdf")
+async def get_field_pdf(area_code: str):
+    """Field PDF for an area — one A4 page per sign site with map snippet,
+    route memberships, endpoint distances, panels, and nearby photos."""
+    if not re.match(r"^[a-z]{2,5}$", area_code or ""):
+        raise HTTPException(status_code=400, detail="Invalid area_code")
+    try:
+        with db_connection() as conn, op_db_connection() as op_conn:
+            data = build_field_pdf(conn, op_conn, area_code)
+        return Response(
+            content=data,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=feltkart-{area_code}.pdf"},
+        )
+    except Exception as e:
+        print(f"Error generating field-pdf for {area_code}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error generating field-pdf: {e}")
+
+
+@router.post("/signs/field-pdf/{area_code}.pdf")
+async def post_field_pdf(area_code: str, payload: Dict):
+    """Field PDF filtered to a selection. Body matches the Excel POST shape:
+    ``{"panels": ["<sign_site_id>:<destination_anchor_node_id>:<first_link_id>", ...]}``.
+    Empty / missing selection returns the same content as the GET variant."""
+    if not re.match(r"^[a-z]{2,5}$", area_code or ""):
+        raise HTTPException(status_code=400, detail="Invalid area_code")
+    selection = (payload or {}).get("panels") or []
+    if not isinstance(selection, list):
+        raise HTTPException(status_code=400, detail="`panels` must be a list of strings")
+    try:
+        with db_connection() as conn, op_db_connection() as op_conn:
+            data = build_field_pdf(conn, op_conn, area_code, selection=selection or None)
+        suffix = "valgte" if selection else "alle"
+        return Response(
+            content=data,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=feltkart-{area_code}-{suffix}.pdf"},
+        )
+    except Exception as e:
+        print(f"Error generating filtered field-pdf for {area_code}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error generating field-pdf: {e}")
+
+
 def _validate_area_code(area_code: str) -> None:
     if not re.match(r"^[a-z]{2,5}$", area_code or ""):
         raise HTTPException(status_code=400, detail="Invalid area_code")
@@ -2397,6 +2444,48 @@ async def get_photo_file(
         print(f"Error serving photo {photo_id}: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error serving photo: {e}")
+
+
+@router.get("/photos/thumbnails")
+async def get_photo_thumbnails_bulk(
+    area: Annotated[str, Query(...)],
+    bbox: Annotated[
+        Optional[str],
+        Query(description="lng_min,lat_min,lng_max,lat_max — optional viewport filter"),
+    ] = None,
+) -> Dict:
+    """Bulk-deliver thumbnail bytes for every placed photo in `area`, optionally
+    clipped to a viewport `bbox`. The response is one JSON document carrying
+    base64-encoded JPEGs so the map can register all thumbnails as map images
+    in a single round trip instead of N per-photo GETs."""
+    _validate_area_code(area)
+    bbox_tuple: Optional[tuple] = None
+    if bbox:
+        try:
+            parts = [float(x) for x in bbox.split(",")]
+            if len(parts) != 4:
+                raise ValueError("expected 4 comma-separated floats")
+            bbox_tuple = (parts[0], parts[1], parts[2], parts[3])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid bbox: {e}")
+    try:
+        with op_db_connection() as op_conn:
+            rows = fp_svc.list_placed_thumbnail_paths(op_conn, area, bbox_tuple)
+        thumbs = []
+        for r in rows:
+            path = fp_svc.resolve_path(r["thumb_path"])
+            if not path.exists():
+                continue
+            with open(path, "rb") as f:
+                data = base64.b64encode(f.read()).decode("ascii")
+            thumbs.append({"id": r["id"], "data": data})
+        return {"area_code": area, "thumbs": thumbs, "count": len(thumbs)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk-loading thumbnails for {area}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error bulk-loading thumbnails: {e}")
 
 
 @router.patch("/photos/{photo_id}")
