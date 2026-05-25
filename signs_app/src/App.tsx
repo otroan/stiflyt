@@ -1,10 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  Alert,
+  Avatar,
+  Badge,
+  Button,
+  Center,
+  Group,
+  Loader,
+  Paper,
+  Select,
+  Stack,
+  Tabs,
+  Text,
+  Title,
+} from "@mantine/core";
+import { IconCamera, IconDownload, IconInfoCircle, IconMapPin } from "@tabler/icons-react";
 import { api } from "./api";
 import type { CandidatesResponse, FieldPhoto, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
 import SiteEditor from "./SiteEditor";
 import AreaReport from "./AreaReport";
 import PhotoPanel, { PhotoLightbox } from "./PhotoPanel";
+import FloatingToolbar from "./FloatingToolbar";
+import ExportTab from "./ExportTab";
+import { notifyError } from "./notify";
+
+type SidebarTab = "sites" | "photos" | "export" | "about";
 
 const LOGIN_ERROR_MESSAGES: Record<string, string> = {
   not_allowed: "E-postadressen din står ikke i tilgangslisten. Kontakt en administrator.",
@@ -15,14 +36,30 @@ const LOGIN_ERROR_MESSAGES: Record<string, string> = {
 function LoginScreen({ errorCode }: { errorCode: string | null }) {
   const msg = errorCode ? LOGIN_ERROR_MESSAGES[errorCode] ?? `Feil: ${errorCode}` : null;
   return (
-    <div className="login-screen">
-      <div className="login-card">
-        <h1>Skiltverktøy</h1>
-        <p>Logg inn med Google-kontoen din for å fortsette.</p>
-        {msg && <div className="login-error">{msg}</div>}
-        <a className="login-btn" href="/api/v1/auth/login">Logg inn med Google</a>
-      </div>
-    </div>
+    <Center mih="100vh" bg="gray.0">
+      <Paper p="xl" shadow="md" radius="md" w={380}>
+        <Stack gap="md" align="center">
+          <Title order={2} c="brand.7">Skiltverktøy</Title>
+          <Text c="dimmed" size="sm" ta="center">
+            Logg inn med Google-kontoen din for å fortsette.
+          </Text>
+          {msg && (
+            <Alert color="red" w="100%" variant="light">
+              {msg}
+            </Alert>
+          )}
+          <Button
+            component="a"
+            href="/api/v1/auth/login"
+            color="brand"
+            size="md"
+            fullWidth
+          >
+            Logg inn med Google
+          </Button>
+        </Stack>
+      </Paper>
+    </Center>
   );
 }
 
@@ -68,18 +105,24 @@ export default function App() {
     }
   }, [me, loginErrorCode]);
 
+  // When the user picks a site on the map, surface its editor. Without this,
+  // clicking a marker while the Export tab is open does nothing visible.
+  const [selectedSiteKey, setSelectedSiteKeyInner] = useState<string | null>(null);
+  const setSelectedSiteKey = (k: string | null) => {
+    setSelectedSiteKeyInner(k);
+    if (k) setSidebarTab("sites");
+  };
+
   const [areaCode, setAreaCode] = useState<string>(DEFAULT_AREA);
   const [candidates, setCandidates] = useState<CandidatesResponse | null>(null);
   const [routes, setRoutes] = useState<RouteListItem[]>([]);
   const [routeSummaries, setRouteSummaries] = useState<Map<string, RouteSummary>>(new Map());
-  // Track the selected site by stable key (sign_site_id or anchor_node_id) so
-  // it survives reorderings of the candidates list (which can happen on any
-  // refresh — manual sites are appended after anchor sites and may shuffle
-  // when rows are added/removed). selectedSiteIdx (the *array position*) is
-  // recomputed from the key whenever candidates change.
-  const [selectedSiteKey, setSelectedSiteKey] = useState<string | null>(null);
+  // Tracked by stable key (sign_site_id or anchor_node_id) so it survives
+  // reorderings of the candidates list (manual sites are appended after
+  // anchor sites and may shuffle when rows are added/removed).
+  // selectedSiteIdx (array position) is recomputed from the key below.
+  // The state itself is defined earlier alongside the sidebarTab auto-switch.
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>("browse");
   const [baseLayer, setBaseLayer] = useState<BaseLayerId>(() => {
     const stored = localStorage.getItem(BASE_LAYER_STORAGE_KEY);
@@ -87,11 +130,25 @@ export default function App() {
   });
   useEffect(() => { localStorage.setItem(BASE_LAYER_STORAGE_KEY, baseLayer); }, [baseLayer]);
   const [focusedRoute, setFocusedRoute] = useState<string | null>(null);
-  const [showReport, setShowReport] = useState(false);
+  // Escape clears route focus — backup for users who can't quickly relocate
+  // the hovered popup. Only binds when a route is actually focused so we
+  // don't fight with text-input Escape elsewhere.
+  useEffect(() => {
+    if (!focusedRoute) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const tgt = e.target as HTMLElement | null;
+      const typing = tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable);
+      if (typing) return;
+      setFocusedRoute(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [focusedRoute]);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("sites");
 
   // --- Field photos state ---
   const [photos, setPhotos] = useState<FieldPhoto[]>([]);
-  const [photosOpen, setPhotosOpen] = useState(false);
   const [photosVisible, setPhotosVisible] = useState(true);
   // Photo from the pending-placement tray that's been picked. The next map
   // click in "place-photo" mode geotags this photo at the clicked position.
@@ -108,7 +165,7 @@ export default function App() {
       const r = await api.listPhotos(areaCode);
       setPhotos(r.photos);
     } catch (e) {
-      setError(String((e as Error)?.message ?? e));
+      notifyError(e);
     }
   };
   useEffect(() => { if (me) refreshPhotos(); }, [areaCode, me]);
@@ -127,7 +184,6 @@ export default function App() {
     if (!me) return;
     let cancelled = false;
     setLoading(true);
-    setError(null);
     setSelectedSiteKey(null);
     Promise.all([
       api.getCandidates(areaCode),
@@ -155,7 +211,7 @@ export default function App() {
         setRoutes(routeItems);
         setRouteSummaries(m);
       })
-      .catch((e) => !cancelled && setError(String(e?.message || e)))
+      .catch((e) => { if (!cancelled) notifyError(e, "Klarte ikke å laste området"); })
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
   }, [areaCode, me]);
@@ -166,7 +222,7 @@ export default function App() {
       setCandidates(c);
       return c;
     } catch (e) {
-      setError(String((e as Error)?.message ?? e));
+      notifyError(e);
       return null;
     }
   };
@@ -214,7 +270,7 @@ export default function App() {
         setMode("browse");
         await refreshPhotos();
       } catch (e) {
-        setError(String((e as Error)?.message ?? e));
+        notifyError(e);
       }
       return;
     }
@@ -225,7 +281,7 @@ export default function App() {
     let routes = routesAtPoint;
     if (routes.length === 0) {
       const nearest = nearestRoute(routeFeatures, lon, lat);
-      if (!nearest) { setError("Fant ingen rute nær klikket"); return; }
+      if (!nearest) { notifyError("Fant ingen rute nær klikket"); return; }
       routes = [nearest.rutenummer];
     }
     // A sign on a shared segment belongs to every route that crosses there;
@@ -291,138 +347,168 @@ export default function App() {
         setSelectedSiteKey(`s:${created.id}`);
       }
     } catch (e) {
-      setError(String((e as Error)?.message ?? e));
+      notifyError(e);
     }
   }
 
   if (authChecking) {
-    return <div className="app-booting">Sjekker innlogging…</div>;
+    return (
+      <Center mih="100vh">
+        <Stack gap="sm" align="center">
+          <Loader />
+          <Text size="sm" c="dimmed">Sjekker innlogging…</Text>
+        </Stack>
+      </Center>
+    );
   }
   if (!me) {
     return <LoginScreen errorCode={loginErrorCode} />;
   }
 
+  const statLabel = candidates
+    ? `${candidates.totals.total_sites} steder · ${candidates.totals.accepted} aksept · ${candidates.totals.rejected ?? 0} avvist`
+    : loading
+      ? "Laster…"
+      : "";
+
   return (
     <div className="app">
-      <div className="topbar">
-        <span>Skiltverktøy —</span>
-        <select value={areaCode} onChange={(e) => setAreaCode(e.target.value)}>
-          <option value="bre">Breheimen og Jostedalsbreen</option>
-        </select>
-        <div className="spacer" />
-        <span className="stat">
-          {candidates
-            ? `${candidates.totals.total_sites} steder · ${candidates.totals.accepted} aksept · ${candidates.totals.rejected ?? 0} avvist`
-            : loading
-              ? "Laster…"
-              : ""}
-        </span>
-        <select
+      <Group className="topbar" bg="brand.7" px="md" gap="sm" wrap="nowrap" h={48}>
+        <Text fw={600} c="white" size="sm" style={{ whiteSpace: "nowrap" }}>Skiltverktøy</Text>
+        <Select
+          value={areaCode}
+          onChange={(v) => v && setAreaCode(v)}
+          data={[{ value: "bre", label: "Breheimen og Jostedalsbreen" }]}
+          size="xs"
+          allowDeselect={false}
+          w={240}
+        />
+        <div style={{ flex: 1 }} />
+        {statLabel && (
+          <Text size="xs" c="white" opacity={0.85} style={{ whiteSpace: "nowrap" }}>
+            {statLabel}
+          </Text>
+        )}
+        <Select
           value={baseLayer}
-          onChange={(e) => setBaseLayer(e.target.value as BaseLayerId)}
-          title="Bakgrunnskart"
-        >
-          {(Object.keys(BASE_LAYER_LABELS) as BaseLayerId[]).map((k) => (
-            <option key={k} value={k}>{BASE_LAYER_LABELS[k]}</option>
-          ))}
-        </select>
-        {focusedRoute && (
-          <button
-            onClick={() => setFocusedRoute(null)}
-            title="Fjern fokus"
-            style={{ background: "#1a7fc4", color: "white", borderColor: "#1a7fc4" }}
-          >
-            ✕ Fokus: {focusedRoute}
-          </button>
-        )}
-        <button
-          onClick={() => setMode((m) => (m === "add-manual" ? "browse" : "add-manual"))}
-          style={mode === "add-manual" ? { background: "#fae3a8" } : {}}
-          title="Plassér et manuelt skilt — klikk på en rute"
-        >
-          {mode === "add-manual" ? "Klikk på kartet…" : "+ Manuelt skilt"}
-        </button>
-        <button
-          onClick={() => api.downloadManufacturingXlsx(areaCode).catch((e) => setError(String((e as Error)?.message ?? e)))}
-          title="Last ned hele skiltlisten som Excel"
-        >
-          Excel (alle)
-        </button>
-        <button
-          onClick={() => api.downloadManufacturingXlsx(areaCode, Array.from(selectedPanels))
-            .catch((e) => setError(String((e as Error)?.message ?? e)))}
-          disabled={selectedPanels.size === 0}
-          title={selectedPanels.size === 0 ? "Velg panel(er) for å eksportere et utvalg" : `Last ned ${selectedPanels.size} valgte panel`}
-        >
-          Excel ({selectedPanels.size} valgt)
-        </button>
-        {selectedPanels.size > 0 && (
-          <button onClick={clearPanelSelection} title="Tøm utvalget">Tøm</button>
-        )}
-        <button
-          onClick={() => api.downloadFieldPdf(areaCode).catch((e) => setError(String((e as Error)?.message ?? e)))}
-          title="Felt-PDF — ett oppslag per skiltsted (kartutsnitt, paneler, bilder)"
-        >
-          Felt-PDF (alle)
-        </button>
-        <button
-          onClick={() => api.downloadFieldPdf(areaCode, Array.from(selectedPanels))
-            .catch((e) => setError(String((e as Error)?.message ?? e)))}
-          disabled={selectedPanels.size === 0}
-          title={selectedPanels.size === 0 ? "Velg panel(er) for å eksportere et utvalg" : `Felt-PDF for ${selectedPanels.size} valgte panel`}
-        >
-          Felt-PDF ({selectedPanels.size} valgt)
-        </button>
-        <button
-          onClick={() => setPhotosOpen((v) => !v)}
-          style={photosOpen ? { background: "#eaf3fc" } : {}}
-          title="Åpne bildepanelet"
-        >
-          Bilder ({photos.length}{pendingPhotos.length > 0 ? `, ${pendingPhotos.length} venter` : ""})
-        </button>
-        <button
-          onClick={() => setShowReport(true)}
-          title="Om området — totalt antall ruter, lengde, skiltsteder og paneler"
-        >
-          ℹ Om området
-        </button>
-        <div className="user-widget" title={me.email}>
-          {me.picture && <img src={me.picture} alt="" className="user-avatar" />}
-          <span className="user-email">{me.email}</span>
-          <button
-            onClick={() => api.logout().catch((e) => setError(String((e as Error)?.message ?? e)))}
+          onChange={(v) => v && setBaseLayer(v as BaseLayerId)}
+          data={(Object.keys(BASE_LAYER_LABELS) as BaseLayerId[]).map((k) => ({
+            value: k,
+            label: BASE_LAYER_LABELS[k],
+          }))}
+          size="xs"
+          allowDeselect={false}
+          aria-label="Bakgrunnskart"
+          w={180}
+        />
+        <Group gap="xs" wrap="nowrap" title={me.email}>
+          {me.picture && <Avatar src={me.picture} size="sm" radius="xl" />}
+          <Text size="xs" c="white" opacity={0.85} style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {me.email}
+          </Text>
+          <Button
+            variant="default"
+            size="xs"
+            onClick={() => api.logout().catch((e) => notifyError(e))}
             title="Logg ut"
           >
             Logg ut
-          </button>
-        </div>
-      </div>
+          </Button>
+        </Group>
+      </Group>
 
       <div className="map-pane">
-        {error && <div className="empty">Feil: {error}</div>}
-        {!error && (
-          <MapView
-            routes={routes}
-            routeSummaries={routeSummaries}
-            sites={candidates?.sites ?? []}
-            selectedIdx={selectedSiteIdx}
-            onSelect={selectSiteByIdx}
-            onMapClick={(mode === "add-manual" || mode === "place-photo") ? handleMapClick : undefined}
-            cursor={(mode === "add-manual" || mode === "place-photo") ? "crosshair" : undefined}
-            baseLayer={baseLayer}
-            focusedRoute={focusedRoute}
-            onFocusRoute={setFocusedRoute}
-            areaCode={areaCode}
-            photos={placedPhotos}
-            photosVisible={photosVisible}
-            onPhotosVisibleChange={setPhotosVisible}
-            onPhotosOpen={handleMapPhotosOpen}
-          />
-        )}
+        <FloatingToolbar
+          mode={mode}
+          onChangeMode={(m) => {
+            // Leaving place-photo via the toolbar should also clear the
+            // pending pick so we don't enter a confusing half-state where
+            // the panel says "armed" but no mode listens for clicks.
+            if (mode === "place-photo" && m !== "place-photo") {
+              setPendingPlacementId(null);
+            }
+            setMode(m);
+          }}
+          pendingPlacementId={pendingPlacementId}
+        />
+        <MapView
+          routes={routes}
+          routeSummaries={routeSummaries}
+          sites={candidates?.sites ?? []}
+          selectedIdx={selectedSiteIdx}
+          onSelect={selectSiteByIdx}
+          onMapClick={(mode === "add-manual" || mode === "place-photo") ? handleMapClick : undefined}
+          cursor={(mode === "add-manual" || mode === "place-photo") ? "crosshair" : undefined}
+          baseLayer={baseLayer}
+          focusedRoute={focusedRoute}
+          onFocusRoute={setFocusedRoute}
+          areaCode={areaCode}
+          photos={placedPhotos}
+          photosVisible={photosVisible}
+          onPhotosVisibleChange={setPhotosVisible}
+          onPhotosOpen={handleMapPhotosOpen}
+        />
       </div>
 
-      <div className="side">
-        {photosOpen ? (
+      <Tabs
+        value={sidebarTab}
+        onChange={(v) => v && setSidebarTab(v as SidebarTab)}
+        className="side"
+        variant="default"
+        keepMounted={false}
+      >
+        <Tabs.List grow>
+          <Tabs.Tab value="sites" leftSection={<IconMapPin size={14} />}>
+            Skiltsteder
+          </Tabs.Tab>
+          <Tabs.Tab
+            value="photos"
+            leftSection={<IconCamera size={14} />}
+            rightSection={pendingPhotos.length > 0
+              ? <Badge size="xs" color="orange" circle>{pendingPhotos.length}</Badge>
+              : null}
+          >
+            Bilder
+          </Tabs.Tab>
+          <Tabs.Tab
+            value="export"
+            leftSection={<IconDownload size={14} />}
+            rightSection={selectedPanels.size > 0
+              ? <Badge size="xs" color="brand" circle>{selectedPanels.size}</Badge>
+              : null}
+          >
+            Eksport
+          </Tabs.Tab>
+          <Tabs.Tab value="about" leftSection={<IconInfoCircle size={14} />}>
+            Om
+          </Tabs.Tab>
+        </Tabs.List>
+
+        <Tabs.Panel value="sites" className="side-panel">
+          {!selectedSite && (
+            <Text c="dimmed" size="sm" p="lg" ta="center">
+              {mode === "add-manual"
+                ? "Klikk på kartet langs en rute for å plassere et manuelt skilt. Felles segment blir automatisk knyttet til alle rutene der."
+                : mode === "place-photo"
+                  ? "Klikk på kartet for å plassere det valgte bildet."
+                  : loading
+                    ? "Laster skiltsteder…"
+                    : "Velg et skiltsted på kartet."}
+            </Text>
+          )}
+          {selectedSite && (
+            <SiteEditor
+              site={selectedSite}
+              areaCode={areaCode}
+              onClose={() => setSelectedSiteKey(null)}
+              onChanged={refreshCandidates}
+              selectedPanels={selectedPanels}
+              onTogglePanel={togglePanelSelection}
+            />
+          )}
+        </Tabs.Panel>
+
+        <Tabs.Panel value="photos" className="side-panel">
           <PhotoPanel
             areaCode={areaCode}
             placed={placedPhotos}
@@ -430,45 +516,28 @@ export default function App() {
             selectedPendingId={pendingPlacementId}
             placementArmed={mode === "place-photo"}
             onPickPendingForPlacement={pickPendingForPlacement}
-            onClose={() => setPhotosOpen(false)}
+            onClose={() => setSidebarTab("sites")}
             onChanged={refreshPhotos}
             onOpenLightbox={openLightbox}
           />
-        ) : (
-          <>
-            {!selectedSite && (
-              <div className="empty">
-                {mode === "add-manual"
-                  ? "Klikk på kartet langs en rute for å plassere et manuelt skilt. Felles segment blir automatisk knyttet til alle rutene der."
-                  : mode === "place-photo"
-                    ? "Klikk på kartet for å plassere det valgte bildet."
-                    : loading
-                      ? "Laster skiltsteder…"
-                      : "Velg et skiltsted på kartet."}
-              </div>
-            )}
-            {selectedSite && (
-              <SiteEditor
-                site={selectedSite}
-                areaCode={areaCode}
-                onClose={() => setSelectedSiteKey(null)}
-                onChanged={refreshCandidates}
-                selectedPanels={selectedPanels}
-                onTogglePanel={togglePanelSelection}
-              />
-            )}
-          </>
-        )}
-      </div>
+        </Tabs.Panel>
 
-      {showReport && (
-        <AreaReport
-          areaCode={areaCode}
-          candidates={candidates}
-          routeSummaries={routeSummaries}
-          onClose={() => setShowReport(false)}
-        />
-      )}
+        <Tabs.Panel value="export" className="side-panel">
+          <ExportTab
+            areaCode={areaCode}
+            selectedPanels={selectedPanels}
+            onClearSelection={clearPanelSelection}
+          />
+        </Tabs.Panel>
+
+        <Tabs.Panel value="about" className="side-panel">
+          <AreaReport
+            areaCode={areaCode}
+            candidates={candidates}
+            routeSummaries={routeSummaries}
+          />
+        </Tabs.Panel>
+      </Tabs>
 
       {lightboxState && (
         <PhotoLightbox

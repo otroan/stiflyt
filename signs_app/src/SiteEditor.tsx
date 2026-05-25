@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { SignPanel, SignSite } from "./types";
 import { formatKm } from "./format";
 import { api } from "./api";
+import { notifyError } from "./notify";
 import NamePicker from "./NamePicker";
 
 interface Props {
@@ -22,7 +23,6 @@ export default function SiteEditor({
   onTogglePanel,
 }: Props) {
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
   const [editingName, setEditingName] = useState(false);
 
   const kind = site.is_manual
@@ -35,17 +35,15 @@ export default function SiteEditor({
 
   async function doAccept() {
     if (site.anchor_node_id == null) return;
-    setBusy(true); setErr(null);
-    try { await api.acceptCandidate(areaCode, site.anchor_node_id); onChanged(); }
-    catch (e) { setErr(String((e as Error)?.message ?? e)); }
+    setBusy(true);     try { await api.acceptCandidate(areaCode, site.anchor_node_id); onChanged(); }
+    catch (e) { notifyError(e); }
     finally { setBusy(false); }
   }
 
   async function doReject() {
     if (site.anchor_node_id == null) return;
-    setBusy(true); setErr(null);
-    try { await api.rejectCandidate(areaCode, site.anchor_node_id); onChanged(); }
-    catch (e) { setErr(String((e as Error)?.message ?? e)); }
+    setBusy(true);     try { await api.rejectCandidate(areaCode, site.anchor_node_id); onChanged(); }
+    catch (e) { notifyError(e); }
     finally { setBusy(false); }
   }
 
@@ -57,22 +55,20 @@ export default function SiteEditor({
       ? "Skiltet og alle panel-redigeringer blir borte for godt."
       : "Skiltstedet går tilbake til foreslått kandidat. Aksepter-redigeringer (farge, pilretning osv.) går tapt.";
     if (!window.confirm(`${label}?\n\n${consequence}`)) return;
-    setBusy(true); setErr(null);
-    try { await api.deleteSite(site.sign_site_id); onClose(); onChanged(); }
-    catch (e) { setErr(String((e as Error)?.message ?? e)); }
+    setBusy(true);     try { await api.deleteSite(site.sign_site_id); onClose(); onChanged(); }
+    catch (e) { notifyError(e); }
     finally { setBusy(false); }
   }
 
   async function saveAnchorName(newName: string) {
     if (site.anchor_node_id == null) {
-      setErr("Manuelle skilt har ikke ankernavn å redigere ennå");
+      notifyError("Manuelle skilt har ikke ankernavn å redigere ennå");
       return;
     }
     const v = newName.trim();
     if (!v) return;
-    setBusy(true); setErr(null);
-    try { await api.setAnchorName(site.anchor_node_id, v); setEditingName(false); onChanged(); }
-    catch (e) { setErr(String((e as Error)?.message ?? e)); throw e; }
+    setBusy(true);     try { await api.setAnchorName(site.anchor_node_id, v); setEditingName(false); onChanged(); }
+    catch (e) { notifyError(e); throw e; }
     finally { setBusy(false); }
   }
 
@@ -80,9 +76,8 @@ export default function SiteEditor({
     if (site.sign_site_id == null) return;
     const v = newName.trim();
     if (!v) return;
-    setBusy(true); setErr(null);
-    try { await api.updateSiteName(site.sign_site_id, v); setEditingName(false); onChanged(); }
-    catch (e) { setErr(String((e as Error)?.message ?? e)); throw e; }
+    setBusy(true);     try { await api.updateSiteName(site.sign_site_id, v); setEditingName(false); onChanged(); }
+    catch (e) { notifyError(e); throw e; }
     finally { setBusy(false); }
   }
 
@@ -92,16 +87,15 @@ export default function SiteEditor({
   async function ensureAccepted(): Promise<number | null> {
     if (site.sign_site_id != null) return site.sign_site_id;
     if (site.anchor_node_id == null) {
-      setErr("Kan ikke redigere før skiltet er akseptert (ingen ankernode)");
+      notifyError("Kan ikke redigere før skiltet er akseptert (ingen ankernode)");
       return null;
     }
-    setErr(null);
     try {
       const res = await api.acceptCandidate(areaCode, site.anchor_node_id);
       onChanged();
       return res.id;
     } catch (e) {
-      setErr(String((e as Error)?.message ?? e));
+      notifyError(e);
       return null;
     }
   }
@@ -111,8 +105,7 @@ export default function SiteEditor({
     patch: { color?: "trehvit" | "grønn"; direction?: string | null; distance_km?: number | null; destination_name?: string | null },
   ) {
     if (panel.destination_anchor_node_id == null) return;
-    setBusy(true); setErr(null);
-    try {
+    setBusy(true);     try {
       const siteId = await ensureAccepted();
       if (siteId == null) return;
       await api.patchPanel(siteId, panel.destination_anchor_node_id, {
@@ -124,7 +117,7 @@ export default function SiteEditor({
       });
       onChanged();
     } catch (e) {
-      setErr(String((e as Error)?.message ?? e));
+      notifyError(e);
     } finally { setBusy(false); }
   }
 
@@ -178,8 +171,6 @@ export default function SiteEditor({
           />
         ))}
       </div>
-
-      {err && <div style={{ color: "#a32d2d", fontSize: 12, marginTop: 6 }}>{err}</div>}
 
       <div className="actions">
         {!site.is_manual && site.status !== "accepted" && site.status !== "installed" && (

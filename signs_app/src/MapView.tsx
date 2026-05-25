@@ -81,6 +81,42 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
 
 const ALL_BASE_LAYERS: BaseLayerId[] = ["osm", "topo4", "topo4graatone"];
 
+/** Run `fn` once the style is parsed (layers/sources can be mutated).
+ *
+ *  Why not `map.loaded()` / `map.isStyleLoaded()` plus `map.once("load", fn)`?
+ *  Both `loaded()` and `isStyleLoaded()` flip back to false during ordinary
+ *  tile loads (they AND over source-cache state), and the `load` / `style.load`
+ *  events are ONE-SHOT per map lifetime — a callback queued via `once` AFTER
+ *  the event already fired will simply never run. That's the underlying cause
+ *  of "the basemap dropdown only works after a page refresh" and "photo
+ *  clusters sometimes never appear".
+ *
+ *  The robust pattern: attach a listener at map-creation that sets a flag
+ *  on first `style.load`. We then resolve based on that flag, polling cheaply
+ *  while it's not yet set. Once set, all subsequent calls fire `fn` immediately.
+ */
+type MapLoadState = { styleLoaded: boolean };
+
+function attachLoadState(map: maplibregl.Map): MapLoadState {
+  const state: MapLoadState = { styleLoaded: false };
+  (map as unknown as { __loadState: MapLoadState }).__loadState = state;
+  map.on("style.load", () => { state.styleLoaded = true; });
+  return state;
+}
+
+function whenStyleReady(map: maplibregl.Map, fn: () => void): void {
+  const state = (map as unknown as { __loadState?: MapLoadState }).__loadState;
+  if (state?.styleLoaded) { fn(); return; }
+  // Style not yet loaded; poll. The listener attached in attachLoadState
+  // sets the flag the moment `style.load` fires, so this resolves promptly.
+  const tick = () => {
+    const s = (map as unknown as { __loadState?: MapLoadState }).__loadState;
+    if (s?.styleLoaded) { fn(); return; }
+    setTimeout(tick, 50);
+  };
+  setTimeout(tick, 50);
+}
+
 const CLICK_TOLERANCE_PX = 6;
 
 // Photo-marker sizing. The thumbs the API returns are 200×200, so icon-size
@@ -159,6 +195,9 @@ export default function MapView({
       center: BREHEIMEN_CENTER,
       zoom: 9,
     });
+    // Must attach the load-state listener immediately so we never miss the
+    // initial `style.load` event — that's the single flip we depend on.
+    attachLoadState(map);
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({}), "top-right");
     map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
@@ -303,8 +342,7 @@ export default function MapView({
       if (map.getLayer("sites-circle")) map.moveLayer("sites-circle");
       if (map.getLayer("routes-line-focused")) map.moveLayer("routes-line-focused");
     };
-    if (map.loaded()) setup();
-    else map.once("load", setup);
+    whenStyleReady(map, setup);
   }, [routesGeoJSON, sitesGeoJSON, onSelect]);
 
   // Map-level click for plain map (manual placement). Always wired — the
@@ -379,8 +417,7 @@ export default function MapView({
       }
       map.triggerRepaint();
     };
-    if (map.loaded()) apply();
-    else map.once("load", apply);
+    whenStyleReady(map, apply);
   }, [focusedRoute]);
 
   // Switch base-map visibility when the user changes it
@@ -393,8 +430,7 @@ export default function MapView({
         map.setLayoutProperty(id, "visibility", id === baseLayer ? "visible" : "none");
       }
     };
-    if (map.loaded()) apply();
-    else map.once("load", apply);
+    whenStyleReady(map, apply);
   }, [baseLayer]);
 
   // Photo layer — a clustered GeoJSON source feeds three layers:
@@ -598,8 +634,7 @@ export default function MapView({
       if (map.getLayer("sites-circle")) map.moveLayer("sites-circle");
       if (map.getLayer("routes-line-focused")) map.moveLayer("routes-line-focused");
     };
-    if (map.loaded()) setup();
-    else map.once("load", setup);
+    whenStyleReady(map, setup);
   }, [photosGeoJSON]);
 
   // Load thumbnail images in BULK. One GET to /photos/thumbnails returns
@@ -706,12 +741,9 @@ export default function MapView({
     loadVisible();
     const onMoveEnd = () => { loadVisible(); };
     map.on("moveend", onMoveEnd);
-    const onLoad = () => { loadVisible(); };
-    map.on("load", onLoad);
     return () => {
       cancelled = true;
       map.off("moveend", onMoveEnd);
-      map.off("load", onLoad);
     };
   }, [photos, areaCode]);
 
@@ -728,8 +760,7 @@ export default function MapView({
         if (map.getLayer(lid)) map.setLayoutProperty(lid, "visibility", v);
       }
     };
-    if (map.getLayer("photos-single") || map.getLayer("photos-cluster-icon")) apply();
-    else map.once("load", apply);
+    whenStyleReady(map, apply);
   }, [photosVisible]);
 
   // Recentre on selected site

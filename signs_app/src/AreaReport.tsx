@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
+import { notifyError } from "./notify";
 import type {
   AreaStatsResponse,
   CandidatesResponse,
@@ -11,7 +12,6 @@ interface Props {
   areaCode: string;
   candidates: CandidatesResponse | null;
   routeSummaries: Map<string, RouteSummary>;
-  onClose: () => void;
 }
 
 interface PerRoute {
@@ -22,65 +22,41 @@ interface PerRoute {
   n_panels: number;
 }
 
-export default function AreaReport({ areaCode, candidates, routeSummaries, onClose }: Props) {
+export default function AreaReport({ areaCode, candidates, routeSummaries }: Props) {
   const [stats, setStats] = useState<AreaStatsResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     api.getAreaStats(areaCode)
       .then((s) => { if (!cancelled) setStats(s); })
-      .catch((e) => { if (!cancelled) setError(String((e as Error)?.message ?? e)); });
+      .catch((e) => { if (!cancelled) notifyError(e); });
     return () => { cancelled = true; };
   }, [areaCode]);
 
   const aggregated = useMemo(() => aggregate(candidates, routeSummaries), [candidates, routeSummaries]);
 
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        zIndex: 1000,
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "white", borderRadius: 6, padding: 20,
-          minWidth: 520, maxWidth: 720, maxHeight: "85vh", overflow: "auto",
-          boxShadow: "0 4px 20px rgba(0,0,0,0.3)",
-          font: "13px system-ui, sans-serif",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 18 }}>Om området — {areaCode}</h2>
-          <div style={{ flex: 1 }} />
-          <button onClick={onClose} style={{ padding: "4px 10px" }}>Lukk</button>
+    <div style={{ font: "13px system-ui, sans-serif" }}>
+      <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>Om området — {areaCode}</h2>
+
+      <Headline stats={stats} agg={aggregated} />
+
+      <h3 style={{ marginTop: 18, marginBottom: 6, fontSize: 14 }}>Skiltsteder</h3>
+      <StatusBreakdown candidates={candidates} />
+
+      <h3 style={{ marginTop: 18, marginBottom: 6, fontSize: 14 }}>Paneler</h3>
+      <PanelBreakdown candidates={candidates} />
+
+      <h3 style={{ marginTop: 18, marginBottom: 6, fontSize: 14 }}>
+        Per rute ({aggregated.perRoute.length})
+      </h3>
+      <PerRouteTable rows={aggregated.perRoute} />
+
+      {stats && (
+        <div style={{ marginTop: 12, fontSize: 11, color: "#666" }}>
+          Distanser er korrigert med faktor ×{stats.distance_correction_factor.toFixed(3)} og avrundet
+          etter skiltspesifikasjonen (under 10 km nedover til 0,5 km; over 10 km til nærmeste hele km).
         </div>
-
-        {error && <div style={{ color: "#c43d3d", marginBottom: 8 }}>Feil: {error}</div>}
-
-        <Headline stats={stats} agg={aggregated} />
-
-        <h3 style={{ marginTop: 18, marginBottom: 6, fontSize: 14 }}>Skiltsteder</h3>
-        <StatusBreakdown candidates={candidates} />
-
-        <h3 style={{ marginTop: 18, marginBottom: 6, fontSize: 14 }}>Paneler</h3>
-        <PanelBreakdown candidates={candidates} />
-
-        <h3 style={{ marginTop: 18, marginBottom: 6, fontSize: 14 }}>
-          Per rute ({aggregated.perRoute.length})
-        </h3>
-        <PerRouteTable rows={aggregated.perRoute} />
-
-        {stats && (
-          <div style={{ marginTop: 12, fontSize: 11, color: "#666" }}>
-            Distanser er korrigert med faktor ×{stats.distance_correction_factor.toFixed(3)} og avrundet
-            etter skiltspesifikasjonen (under 10 km nedover til 0,5 km; over 10 km til nærmeste hele km).
-          </div>
-        )}
-      </div>
+      )}
     </div>
   );
 }

@@ -9,34 +9,38 @@ body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #11
   height: 100vh;
 }
 
-.topbar {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 16px;
-  background: #1a3a5c;
-  color: white;
-  font-weight: 600;
-}
-.topbar select, .topbar button {
-  background: white;
-  color: #111;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  padding: 4px 10px;
-  font-size: 13px;
-  cursor: pointer;
-}
-.topbar button:hover { background: #f0f0f0; }
-.topbar .spacer { flex: 1; }
-.topbar .stat { font-size: 12px; font-weight: normal; opacity: 0.85; }
+/* Topbar styling is owned by Mantine (bg, padding, gap, layout); this just
+ * stretches the Mantine Group across both grid columns of the .app grid. */
+.topbar { grid-column: 1 / -1; }
 
 .map-pane { position: relative; }
+
+/* Mode selector overlay on the map. Left edge keeps it clear of MapLibre's
+ * built-in NavigationControl (top-right). z-index puts it above the canvas
+ * but below Mantine modals/popovers, which default to >= 200. */
+.floating-toolbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  background: white;
+}
+/* Side panel hosts a Mantine Tabs. Flex column so the tab strip stays at the
+ * top and only the active panel scrolls. `min-height: 0` lets the flex child
+ * actually shrink so overflow-y on the panel inside takes effect. */
 .side {
   border-left: 1px solid #ddd;
-  overflow-y: auto;
   background: #fafafa;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.side .mantine-Tabs-panel.side-panel {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  /* Default breathing room around tab content. Tabs that build their own
+   * spacing (ExportTab, AreaReport) can apply padding: 0 from inside. */
   padding: 12px;
 }
 
@@ -113,69 +117,3 @@ body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #11
 }
 
 .maplibregl-popup { max-width: 240px; }
-
-/* --- Auth UI --------------------------------------------------------- */
-
-.app-booting {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
-  color: #888;
-  font-size: 14px;
-}
-
-.login-screen {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
-  background: #f6f6f7;
-}
-.login-card {
-  background: white;
-  padding: 32px 36px;
-  border-radius: 8px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  width: 360px;
-  text-align: center;
-}
-.login-card h1 { margin: 0 0 8px; font-size: 22px; color: #1a3a5c; }
-.login-card p { color: #555; font-size: 14px; margin: 0 0 20px; }
-.login-error {
-  background: #fde8e8;
-  border: 1px solid #f5b3b3;
-  color: #92201f;
-  padding: 8px 12px;
-  border-radius: 4px;
-  font-size: 13px;
-  margin-bottom: 16px;
-  text-align: left;
-}
-.login-btn {
-  display: inline-block;
-  background: #1a7fc4;
-  color: white;
-  padding: 10px 18px;
-  border-radius: 4px;
-  text-decoration: none;
-  font-weight: 600;
-  font-size: 14px;
-}
-.login-btn:hover { background: #166aa8; }
-
-.user-widget {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  font-weight: normal;
-  margin-left: 4px;
-}
-.user-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  object-fit: cover;
-}
-.user-email { opacity: 0.85; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

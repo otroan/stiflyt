@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "./api";
+import { notifyError } from "./notify";
 import { FIELD_PHOTO_TAGS, type FieldPhoto, type FieldPhotoTag } from "./types";
 
 interface Props {
@@ -36,7 +37,6 @@ export default function PhotoPanel({
   const dirInputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number; skipped: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [tagFilter, setTagFilter] = useState<FieldPhotoTag | null>(null);
 
   const filteredPlaced = useMemo(() => {
@@ -52,10 +52,9 @@ export default function PhotoPanel({
     const images = all.filter(isImageFile);
     const skipped = all.length - images.length;
     if (images.length === 0) {
-      setError(skipped > 0 ? `Ingen bilder funnet (${skipped} filer hoppet over)` : "Ingen filer valgt");
+      notifyError(skipped > 0 ? `Ingen bilder funnet (${skipped} filer hoppet over)` : "Ingen filer valgt");
       return;
     }
-    setError(null);
     setUploading(true);
     setUploadProgress({ done: 0, total: images.length, skipped });
     let done = 0;
@@ -80,7 +79,7 @@ export default function PhotoPanel({
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
     setUploading(false);
     setUploadProgress(null);
-    if (firstError) setError(firstError);
+    if (firstError) notifyError(firstError, "Opplasting feilet");
     onChanged();
   }
 
@@ -134,8 +133,6 @@ export default function PhotoPanel({
           {uploadProgress.skipped} fil{uploadProgress.skipped === 1 ? "" : "er"} hoppet over (ikke bilde)
         </div>
       )}
-
-      {error && <div style={{ color: "#c43d3d", fontSize: 12 }}>Feil: {error}</div>}
 
       {pending.length > 0 && (
         <PendingTray
@@ -309,7 +306,6 @@ export function PhotoLightbox({ photos, initialIndex, onClose, onChanged }: Ligh
   const [caption, setCaption] = useState(photo?.caption ?? "");
   const [tags, setTags] = useState<FieldPhotoTag[]>(photo?.tags ?? []);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // Reset the editable fields when paging lands on a different photo. We
   // intentionally key only on photo.id so an in-flight data refresh (same id,
   // possibly newer caption) doesn't wipe whatever the user is currently
@@ -317,7 +313,6 @@ export function PhotoLightbox({ photos, initialIndex, onClose, onChanged }: Ligh
   useEffect(() => {
     setCaption(photo?.caption ?? "");
     setTags(photo?.tags ?? []);
-    setError(null);
   }, [photo?.id]);
 
   const canPrev = photos.length > 1;
@@ -349,7 +344,6 @@ export function PhotoLightbox({ photos, initialIndex, onClose, onChanged }: Ligh
 
   async function save() {
     setBusy(true);
-    setError(null);
     try {
       await api.patchPhoto(photo.id, {
         caption: caption.trim() === "" ? null : caption.trim(),
@@ -360,7 +354,7 @@ export function PhotoLightbox({ photos, initialIndex, onClose, onChanged }: Ligh
       // single-photo lightbox, where there's nothing else to step to.
       if (photos.length <= 1) onClose();
     } catch (e) {
-      setError((e as Error)?.message ?? String(e));
+      notifyError(e);
     } finally {
       setBusy(false);
     }
@@ -374,7 +368,7 @@ export function PhotoLightbox({ photos, initialIndex, onClose, onChanged }: Ligh
       onChanged();
       onClose();
     } catch (e) {
-      setError((e as Error)?.message ?? String(e));
+      notifyError(e);
       setBusy(false);
     }
   }
@@ -461,8 +455,6 @@ export function PhotoLightbox({ photos, initialIndex, onClose, onChanged }: Ligh
               ))}
             </div>
           </div>
-
-          {error && <div style={{ color: "#c43d3d" }}>Feil: {error}</div>}
 
           <div style={{ display: "flex", gap: 6, marginTop: "auto" }}>
             <button className="primary" disabled={busy} onClick={save}>Lagre</button>
