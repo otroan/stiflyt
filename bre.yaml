@@ -1,0 +1,221 @@
+- number: 1
+  status: active
+  authority: dnt
+  endpoints:
+    a: Betjent
+    b: Sognefjellsvegen
+- number: 2
+  status: active
+  authority: dnt
+  endpoints:
+    a: Ormeli
+    b: Ormeli
+- number: 3
+  status: active
+  authority: dnt
+  endpoints:
+    a: Fortunsdalen
+    b: Vetledalen
+- number: 4
+  status: active
+  authority: dnt
+  endpoints:
+    a: Vetledalen
+    b: Sognefjellsvegen
+- number: 5
+  status: active
+  authority: dnt
+  endpoints:
+    a: Sognefjellsvegen
+    b: Sognefjellsvegen
+- number: 6
+  status: active
+  authority: dnt
+  endpoints:
+    a: Vetledalen
+    b: Bøvertunholet
+- number: 7
+  status: active
+  authority: dnt
+  endpoints:
+    a: Framrustvegen
+    b: Framrusti
+- number: 9
+  status: active
+  authority: dnt
+  endpoints:
+    a: Turruter Sota-Brennsætre og Røykeskålen
+    b: Veslsota
+- number: 10
+  status: active
+  authority: dnt
+  endpoints:
+    a: Heimaste brue
+    b: Røysflatan
+- number: 11
+  status: active
+  authority: dnt
+  endpoints:
+    a: Middalen
+    b: Rastebu
+- number: 14
+  status: active
+  authority: dnt
+  endpoints:
+    a: Mysubyttvegen
+- number: 15
+  status: active
+  authority: dnt
+  endpoints:
+    a: Stordalen
+    b: Sprongdalshytta
+- number: 16
+  status: active
+  authority: dnt
+  endpoints:
+    a: Slæom
+- number: 17
+  status: active
+  authority: dnt
+  endpoints:
+    a: Middalen
+- number: 18
+  status: active
+  authority: dnt
+  endpoints:
+    a: Sprongdalshytta
+    b: Sprongdalshytta
+- number: 19
+  status: active
+  authority: dnt
+  endpoints:
+    a: Austra
+    b: Austra
+- number: 20
+  status: active
+  authority: dnt
+  endpoints:
+    a: Fagredalen
+    b: Arentzbu
+- number: 21
+  status: active
+  authority: dnt
+  endpoints:
+    a: Mørkridsvegen
+    b: Mørkridsvegen
+- number: 22
+  status: active
+  authority: dnt
+  endpoints:
+    a: Hundkast
+    b: Krekafossen
+- number: 23
+  status: active
+  authority: dnt
+  endpoints:
+    a: Vigdalstøl
+- number: 24
+  status: active
+  authority: dnt
+  endpoints:
+    a: Vigdalstøl
+    b: Fivla
+- number: 25
+  status: active
+  authority: dnt
+  endpoints:
+    a: Vigdalstøl
+    b: Storhaugveg
+- number: 26
+  status: active
+  authority: dnt
+  title: Ferdselsvegen over Kamperhamrane- Historisk vandrerute
+- number: 27
+  status: active
+  authority: dnt
+  endpoints:
+    a: Bottvegen
+- number: 28
+  status: active
+  authority: dnt
+- number: 29
+  status: active
+  authority: dnt
+  title: Skålastien
+  endpoints:
+    a: Lodalsvegen
+    b: Skålatårnet
+- number: 30
+  status: active
+  authority: dnt
+  endpoints:
+    a: Oldedalsvegen
+- number: 32
+  status: active
+  authority: dnt
+  endpoints:
+    a: Stølen
+    b: Vellene
+- number: 47
+  status: active
+  authority: dnt
+  endpoints:
+    a: Navarsete
+- number: 48
+  status: active
+  authority: dnt
+  endpoints:
+    a: Nipevegen
+    b: Nipevegen
+- number: 49
+  status: active
+  authority: dnt
+  endpoints:
+    a: Hundkast
+    b: Krekafossen
+- number: 50
+  status: active
+  authority: dnt
+  endpoints:
+    a: Mysubyttvegen
+    b: Mysubyttvegen
+- number: 52
+  status: active
+  authority: dnt
+  endpoints:
+    a: Vetledalen
+- number: 53
+  status: active
+  authority: dnt
+  endpoints:
+    a: Vigdalen
+    b: Vigdalen
+- number: 54
+  status: active
+  authority: dnt
+  endpoints:
+    a: Kilen
+    b: Fivla
+- number: 57
+  status: active
+  authority: dnt
+  endpoints:
+    a: Sognefjellsvegen
+    b: Dumma
+- number: 58
+  status: active
+  authority: dnt
+  endpoints:
+    a: Vigdalselvi
+    b: Vigdalstøl
+- number: 59
+  status: active
+  authority: dnt
+  endpoints:
+    a: Fortunsdalen
+    b: Skålabotn
+- number: 61
+  status: active
+  authority: dnt
+  endpoints:
+    a: Morkatjønne

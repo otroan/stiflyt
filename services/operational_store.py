@@ -1,8 +1,9 @@
 """Operational data storage helpers (endpoint names, number spaces)."""
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
+import psycopg
 from psycopg.rows import dict_row
 
 from .database import validate_schema_name, quote_identifier
@@ -11,15 +12,62 @@ from .database import validate_schema_name, quote_identifier
 OP_SCHEMA = os.getenv("OP_SCHEMA", "ops")
 
 
+_OP_SCHEMA_INITIALIZED: bool = False
+
+
+def _is_operational_schema_initialized(conn) -> bool:
+    """Cheap probe: assume schema is fully set up if ops.sign_site_skilt exists.
+
+    `ops.sign_site_skilt` is the last table created by migration 011, so its
+    presence is a reliable proxy for "migration 011 has run". Cached in-process
+    so we don't re-probe on every request.
+    """
+    global _OP_SCHEMA_INITIALIZED
+    if _OP_SCHEMA_INITIALIZED:
+        return True
+    if not validate_schema_name(OP_SCHEMA):
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = 'sign_site_skilt'
+            );
+            """,
+            (OP_SCHEMA,),
+        )
+        row = cur.fetchone()
+        ok = bool(row and row[0])
+    _OP_SCHEMA_INITIALIZED = ok
+    return ok
+
+
 def ensure_operational_schema(conn) -> None:
-    """Ensure operational schema and core tables exist."""
+    """Ensure operational schema and core tables exist.
+
+    Fast-path: if migration 011 has already run (see [[plan-breheimen-signs-2026-05]]),
+    return immediately. The runtime DB user (typically `stiflyt_reader`) only
+    has DML, not DDL — so attempting CREATE/ALTER on every call would fail.
+
+    Legacy bootstrap path (full DDL below) only runs when the schema is missing
+    pieces AND the connection has the privileges to add them — kept for first-
+    time-setup convenience on dev boxes where the migration hasn't been run.
+    """
     if not validate_schema_name(OP_SCHEMA):
         raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
 
+    if _is_operational_schema_initialized(conn):
+        return
+
     schema_quoted = quote_identifier(OP_SCHEMA)
 
-    with conn.cursor() as cur:
-        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_quoted};")
+    # Try the legacy bootstrap. If any DDL fails with insufficient privileges,
+    # surface a clear error message pointing at migration 011 rather than the
+    # raw psycopg error.
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {schema_quoted};")
 
         cur.execute(
             f"""
@@ -208,6 +256,46 @@ def ensure_operational_schema(conn) -> None:
             ADD COLUMN IF NOT EXISTS skiltfarge TEXT NULL;
             """
         )
+        # signs_app extensions: area-based proposed/accepted/rejected/installed status,
+        # plus a sortable site code allocated from ops.number_spaces.
+        cur.execute(
+            f"""
+            ALTER TABLE {schema_quoted}.sign_sites
+            ADD COLUMN IF NOT EXISTS area_code TEXT NULL;
+            """
+        )
+        cur.execute(
+            f"""
+            ALTER TABLE {schema_quoted}.sign_sites
+            ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'accepted';
+            """
+        )
+        cur.execute(
+            f"""
+            ALTER TABLE {schema_quoted}.sign_sites
+            ADD COLUMN IF NOT EXISTS site_code TEXT NULL;
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS sign_sites_area_status_idx
+            ON {schema_quoted}.sign_sites (area_code, status);
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS sign_sites_area_anchor_uidx
+            ON {schema_quoted}.sign_sites (area_code, anchor_node_id)
+            WHERE area_code IS NOT NULL AND anchor_node_id IS NOT NULL;
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS sign_sites_site_code_uidx
+            ON {schema_quoted}.sign_sites (site_code)
+            WHERE site_code IS NOT NULL;
+            """
+        )
 
         # Destinations (pil/skilt) per sign site: which anchors to show. Empty = use default (topology or route endpoints).
         cur.execute(
@@ -251,6 +339,14 @@ def ensure_operational_schema(conn) -> None:
             ON {schema_quoted}.sign_site_skilt (sign_site_id);
             """
         )
+    except psycopg.errors.InsufficientPrivilege as e:
+        raise RuntimeError(
+            "ops schema is not initialized and the current DB user lacks DDL privileges. "
+            "Run stiflyt-db/migrations/011_signs_app_extensions.sql as the schema owner."
+        ) from e
+    # Refresh the cached flag now that DDL has succeeded
+    global _OP_SCHEMA_INITIALIZED
+    _OP_SCHEMA_INITIALIZED = True
 
 
 def upsert_endpoint_name(
@@ -1028,6 +1124,38 @@ def set_sign_site_destinations(
     return get_sign_site_destinations(conn, sign_site_id)
 
 
+def get_sign_site_skilt_full(conn, sign_site_ids: List[int]) -> Dict[int, List[Dict]]:
+    """Return ALL skilt rows per site as a list (preserves first_link_id discrimination).
+
+    Use this when you need to distinguish multiple panel rows that share an
+    anchor_node_id but differ on first_link_id (the parallel-path case).
+    The legacy `get_sign_site_skilt_for_sites` collapses such rows.
+    """
+    if not sign_site_ids:
+        return {}
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        return {}
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT id, sign_site_id, anchor_node_id, first_link_id, direction, status, skiltfarge,
+                   distance_meters, destination_name, updated_by, created_at, updated_at
+            FROM {schema_quoted}.sign_site_skilt
+            WHERE sign_site_id = ANY(%s)
+            ORDER BY sign_site_id, anchor_node_id, first_link_id NULLS FIRST;
+            """,
+            (sign_site_ids,),
+        )
+        rows = cur.fetchall()
+    grouped: Dict[int, List[Dict]] = {}
+    for r in rows:
+        sid = int(r["sign_site_id"])
+        grouped.setdefault(sid, []).append(dict(r))
+    return grouped
+
+
 def get_sign_site_skilt_for_sites(conn, sign_site_ids: List[int]) -> Dict[int, Dict[int, Dict]]:
     """Return skilt rows: sign_site_id -> anchor_node_id -> row dict."""
     if not sign_site_ids:
@@ -1039,11 +1167,11 @@ def get_sign_site_skilt_for_sites(conn, sign_site_ids: List[int]) -> Dict[int, D
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"""
-            SELECT id, sign_site_id, anchor_node_id, direction, status, skiltfarge, distance_meters,
-                   updated_by, created_at, updated_at
+            SELECT id, sign_site_id, anchor_node_id, first_link_id, direction, status, skiltfarge,
+                   distance_meters, destination_name, updated_by, created_at, updated_at
             FROM {schema_quoted}.sign_site_skilt
             WHERE sign_site_id = ANY(%s)
-            ORDER BY sign_site_id, anchor_node_id;
+            ORDER BY sign_site_id, anchor_node_id, first_link_id NULLS FIRST;
             """,
             (sign_site_ids,),
         )
@@ -1056,18 +1184,271 @@ def get_sign_site_skilt_for_sites(conn, sign_site_ids: List[int]) -> Dict[int, D
     return grouped
 
 
+def allocate_site_code(conn, area_code: str) -> str:
+    """Allocate the next BRE-SS-NNNN style site code for an area via ops.number_spaces.
+
+    The scope is `sign_sites`; prefix is the area_code uppercase. The numeric
+    suffix is monotonically increasing per scope/prefix.
+    """
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    scope = "sign_sites"
+    prefix_upper = area_code.upper()
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT MAX((number)::int) AS max_n
+            FROM {schema_quoted}.number_spaces
+            WHERE scope = %s AND prefix = %s AND number ~ '^[0-9]+$';
+            """,
+            (scope, prefix_upper),
+        )
+        row = cur.fetchone()
+        next_n = (row.get("max_n") or 0) + 1 if row else 1
+        # Loop to handle race: try inserting; bump on conflict.
+        for _ in range(1000):
+            try:
+                cur.execute(
+                    f"""
+                    INSERT INTO {schema_quoted}.number_spaces (scope, prefix, number, status)
+                    VALUES (%s, %s, %s, %s);
+                    """,
+                    (scope, prefix_upper, str(next_n), "allocated"),
+                )
+                break
+            except psycopg.errors.UniqueViolation:  # type: ignore[attr-defined]
+                next_n += 1
+        else:
+            raise RuntimeError("Could not allocate site code after 1000 attempts")
+    return f"{prefix_upper}-SS-{next_n:04d}"
+
+
+def accept_sign_candidate(
+    conn,
+    area_code: str,
+    anchor_node_id: int,
+    geom_wkt_25833: str,
+    name: Optional[str],
+    updated_by: Optional[str] = None,
+) -> Dict:
+    """Persist an auto-proposed anchor as an accepted sign site.
+
+    Idempotent: if a row already exists for (area_code, anchor_node_id), updates
+    its status to 'accepted' and returns it (preserves the existing site_code).
+    """
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT id, site_code FROM {schema_quoted}.sign_sites
+            WHERE area_code = %s AND anchor_node_id = %s;
+            """,
+            (area_code, anchor_node_id),
+        )
+        existing = cur.fetchone()
+    if existing:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""
+                UPDATE {schema_quoted}.sign_sites
+                SET status = 'accepted', updated_by = %s, updated_at = NOW()
+                WHERE id = %s
+                RETURNING id, site_code, status, area_code, anchor_node_id, name;
+                """,
+                (updated_by, existing["id"]),
+            )
+            return dict(cur.fetchone())
+    site_code = allocate_site_code(conn, area_code)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            INSERT INTO {schema_quoted}.sign_sites
+                (geom, anchor_node_id, name, area_code, status, site_code, updated_by)
+            VALUES (ST_SetSRID(ST_GeomFromText(%s), 25833), %s, %s, %s, 'accepted', %s, %s)
+            RETURNING id, site_code, status, area_code, anchor_node_id, name;
+            """,
+            (geom_wkt_25833, anchor_node_id, name, area_code, site_code, updated_by),
+        )
+        return dict(cur.fetchone())
+
+
+def reject_sign_candidate(
+    conn,
+    area_code: str,
+    anchor_node_id: int,
+    geom_wkt_25833: str,
+    name: Optional[str],
+    updated_by: Optional[str] = None,
+) -> Dict:
+    """Soft-reject a candidate: persist a sign_sites row with status='rejected'.
+
+    Idempotent (same upsert pattern as :func:`accept_sign_candidate`). No site
+    code is allocated for rejects to avoid burning numbers; a rejected row
+    that's later accepted will get a code at that time.
+    """
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT id FROM {schema_quoted}.sign_sites
+            WHERE area_code = %s AND anchor_node_id = %s;
+            """,
+            (area_code, anchor_node_id),
+        )
+        existing = cur.fetchone()
+        if existing:
+            cur.execute(
+                f"""
+                UPDATE {schema_quoted}.sign_sites
+                SET status = 'rejected', updated_by = %s, updated_at = NOW()
+                WHERE id = %s
+                RETURNING id, site_code, status, area_code, anchor_node_id, name;
+                """,
+                (updated_by, existing["id"]),
+            )
+        else:
+            cur.execute(
+                f"""
+                INSERT INTO {schema_quoted}.sign_sites
+                    (geom, anchor_node_id, name, area_code, status, updated_by)
+                VALUES (ST_SetSRID(ST_GeomFromText(%s), 25833), %s, %s, %s, 'rejected', %s)
+                RETURNING id, site_code, status, area_code, anchor_node_id, name;
+                """,
+                (geom_wkt_25833, anchor_node_id, name, area_code, updated_by),
+            )
+        return dict(cur.fetchone())
+
+
+DEFAULT_DISTANCE_CORRECTION = 1.125
+
+
+def get_distance_correction_factor(conn, area_code: str) -> float:
+    """Look up the per-area distance correction (×1.125 default for bre).
+
+    Heuristic — see [[plan-breheimen-signs-2026-05]] / README. The factor
+    blends polyline-chord shortcut + 2D→3D elevation + Kartverket
+    generalisation. Configurable per area via ops.distance_correction.
+    """
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        return DEFAULT_DISTANCE_CORRECTION
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"SELECT factor FROM {schema_quoted}.distance_correction WHERE area_code = %s;",
+                (area_code,),
+            )
+            row = cur.fetchone()
+        if row and row.get("factor") is not None:
+            return float(row["factor"])
+    except psycopg.errors.UndefinedTable:
+        # Table not yet created (migration 012 not run); fall back to default.
+        return DEFAULT_DISTANCE_CORRECTION
+    return DEFAULT_DISTANCE_CORRECTION
+
+
+def set_distance_correction_factor(
+    conn,
+    area_code: str,
+    factor: float,
+    comment: Optional[str] = None,
+    updated_by: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Upsert the correction factor for an area. Returns the persisted row."""
+    if not (0 < factor < 5):
+        raise ValueError("factor must be in (0, 5)")
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            INSERT INTO {schema_quoted}.distance_correction (area_code, factor, comment, updated_by)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (area_code) DO UPDATE
+                SET factor = EXCLUDED.factor,
+                    comment = COALESCE(EXCLUDED.comment, {schema_quoted}.distance_correction.comment),
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+            RETURNING area_code, factor, comment, updated_by, updated_at;
+            """,
+            (area_code, factor, comment, updated_by),
+        )
+        return dict(cur.fetchone())
+
+
+def delete_sign_site(conn, sign_site_id: int) -> bool:
+    """Hard-delete a sign_site row. CASCADEs to sign_site_destinations,
+    sign_site_skilt, sign_status. Returns True if a row was deleted.
+
+    For an anchor-based site this reverts the anchor to its "proposed"
+    candidate state on the next /signs/candidates fetch (since the overlay
+    row is gone). For a manual site the sign disappears entirely.
+    """
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {schema_quoted}.sign_sites WHERE id = %s;",
+            (sign_site_id,),
+        )
+        return cur.rowcount > 0
+
+
+def get_sign_sites_status_by_area_anchor(
+    conn,
+    area_code: str,
+) -> Dict[int, Dict]:
+    """Return per-anchor persisted status for an area: anchor_node_id -> {status, site_code, ...}."""
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        return {}
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT id, anchor_node_id, site_code, status, name, updated_at
+            FROM {schema_quoted}.sign_sites
+            WHERE area_code = %s AND anchor_node_id IS NOT NULL;
+            """,
+            (area_code,),
+        )
+        rows = cur.fetchall()
+    return {int(r["anchor_node_id"]): dict(r) for r in rows if r.get("anchor_node_id") is not None}
+
+
 def patch_sign_site_skilt(
     conn,
     sign_site_id: int,
     anchor_node_id: int,
     updates: Dict[str, Any],
     updated_by: Optional[str] = None,
+    first_link_id: Optional[int] = None,
 ) -> Optional[Dict]:
-    """Create or update skilt metadata for one destination on a sign site. None values clear optional fields."""
+    """Create or update skilt metadata for one panel on a sign site.
+
+    Panels are keyed by (sign_site_id, anchor_node_id, first_link_id). When
+    first_link_id is None, the row addresses the legacy "no-discriminator"
+    slot for that (site, anchor) — used for manual signs and for any panel
+    that hasn't been split-by-direction. Edits to one panel never leak to
+    another panel sharing the same anchor but a different first_link_id.
+    """
     ensure_operational_schema(conn)
     if not validate_schema_name(OP_SCHEMA):
         raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
-    allowed = frozenset({"direction", "status", "skiltfarge", "distance_meters"})
+    allowed = frozenset({"direction", "status", "skiltfarge", "distance_meters", "destination_name"})
     cleaned = {k: v for k, v in updates.items() if k in allowed}
     if not cleaned:
         return None
@@ -1076,11 +1457,13 @@ def patch_sign_site_skilt(
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"""
-            SELECT id, direction, status, skiltfarge, distance_meters
+            SELECT id, direction, status, skiltfarge, distance_meters, destination_name, first_link_id
             FROM {schema_quoted}.sign_site_skilt
-            WHERE sign_site_id = %s AND anchor_node_id = %s;
+            WHERE sign_site_id = %s
+              AND anchor_node_id = %s
+              AND COALESCE(first_link_id, -1) = COALESCE(%s::int, -1);
             """,
-            (sign_site_id, anchor_node_id),
+            (sign_site_id, anchor_node_id, first_link_id),
         )
         existing = cur.fetchone()
         if existing:
@@ -1089,6 +1472,7 @@ def patch_sign_site_skilt(
                 "status": existing["status"],
                 "skiltfarge": existing["skiltfarge"],
                 "distance_meters": existing["distance_meters"],
+                "destination_name": existing["destination_name"],
             }
             merged.update(cleaned)
             cur.execute(
@@ -1098,17 +1482,19 @@ def patch_sign_site_skilt(
                     status = %s,
                     skiltfarge = %s,
                     distance_meters = %s,
+                    destination_name = %s,
                     updated_by = %s,
                     updated_at = NOW()
                 WHERE id = %s
-                RETURNING id, sign_site_id, anchor_node_id, direction, status, skiltfarge, distance_meters,
-                          updated_by, created_at, updated_at;
+                RETURNING id, sign_site_id, anchor_node_id, first_link_id, direction, status, skiltfarge,
+                          distance_meters, destination_name, updated_by, created_at, updated_at;
                 """,
                 (
                     merged["direction"],
                     merged["status"],
                     merged["skiltfarge"],
                     merged["distance_meters"],
+                    merged["destination_name"],
                     ub,
                     existing["id"],
                 ),
@@ -1119,23 +1505,27 @@ def patch_sign_site_skilt(
                 "status": None,
                 "skiltfarge": None,
                 "distance_meters": None,
+                "destination_name": None,
             }
             merged.update(cleaned)
             cur.execute(
                 f"""
                 INSERT INTO {schema_quoted}.sign_site_skilt (
-                    sign_site_id, anchor_node_id, direction, status, skiltfarge, distance_meters, updated_by
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, sign_site_id, anchor_node_id, direction, status, skiltfarge, distance_meters,
-                          updated_by, created_at, updated_at;
+                    sign_site_id, anchor_node_id, first_link_id, direction, status, skiltfarge,
+                    distance_meters, destination_name, updated_by
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, sign_site_id, anchor_node_id, first_link_id, direction, status, skiltfarge,
+                          distance_meters, destination_name, updated_by, created_at, updated_at;
                 """,
                 (
                     sign_site_id,
                     anchor_node_id,
+                    first_link_id,
                     merged["direction"],
                     merged["status"],
                     merged["skiltfarge"],
                     merged["distance_meters"],
+                    merged["destination_name"],
                     ub,
                 ),
             )

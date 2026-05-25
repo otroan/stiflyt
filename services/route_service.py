@@ -786,6 +786,71 @@ def point_route_km(conn, rutenummer: str, lon: float, lat: float) -> Optional[fl
     return round(route_km, 4)
 
 
+def snap_point_to_full_route(conn, rutenummer: str, lon: float, lat: float) -> Optional[tuple]:
+    """Snap a WGS84 click to the closest point on a route's FULL geometry.
+
+    Unlike :func:`point_on_route_km_and_geom`, which uses
+    `route_continuous_geometries` (only the longest connected portion),
+    this looks at every sub-LineString of `stiflyt.routes.route_geometry`
+    and picks the actually-closest one. Routes with disconnected segments
+    (e.g. bre52 has 3.7 km connected of 23.5 km total) were causing manual
+    signs to teleport from where the user clicked to a far-away point on
+    the connected piece. This function fixes that.
+
+    Returns (route_km, geom_wkt_25833, distance_to_click_m) or None.
+    The km is approximate for disconnected routes — it sums the lengths
+    of preceding sub-LineStrings in ST_Dump order — but the geometry is
+    the actual closest point on the network. distance_to_click_m lets
+    callers pick the closest route when several are candidates.
+    """
+    if not validate_schema_name(ROUTE_SCHEMA):
+        return None
+    schema_quoted = quote_identifier(ROUTE_SCHEMA)
+    query = f"""
+        WITH route AS (
+            SELECT ST_Transform(route_geometry, 25833) AS g
+            FROM {schema_quoted}.routes
+            WHERE rutenummer = %s
+            LIMIT 1
+        ),
+        click AS (
+            SELECT ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833) AS p
+        ),
+        parts AS (
+            SELECT (ST_Dump(g)).geom AS part, (ST_Dump(g)).path[1] AS idx
+            FROM route
+        ),
+        with_lengths AS (
+            SELECT idx, part, ST_Length(part) AS len FROM parts
+        ),
+        nearest AS (
+            SELECT p.idx, p.part, p.len,
+                   ST_LineLocatePoint(p.part, c.p) AS f,
+                   ST_AsText(ST_ClosestPoint(p.part, c.p)) AS snap_wkt,
+                   ST_Distance(p.part, c.p) AS dist_m
+            FROM with_lengths p, click c
+            ORDER BY ST_Distance(p.part, c.p)
+            LIMIT 1
+        ),
+        prefix AS (
+            SELECT COALESCE(SUM(w.len), 0) AS prefix_len
+            FROM with_lengths w, nearest n
+            WHERE w.idx < n.idx
+        )
+        SELECT
+            (pre.prefix_len + n.len * n.f) / 1000.0 AS route_km,
+            n.snap_wkt,
+            n.dist_m
+        FROM nearest n, prefix pre;
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (rutenummer, lon, lat))
+        row = cur.fetchone()
+    if not row or row[0] is None or row[1] is None:
+        return None
+    return (round(float(row[0]), 4), row[1], float(row[2]))
+
+
 def point_on_route_km_and_geom(conn, rutenummer: str, lon: float, lat: float) -> Optional[tuple]:
     """
     Project a point (WGS84) onto the route; return (route_km, geom_wkt_25833).

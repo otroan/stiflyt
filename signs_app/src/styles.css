@@ -1,0 +1,115 @@
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #111; }
+
+.app {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  grid-template-rows: 48px 1fr;
+  height: 100vh;
+}
+
+.topbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: #1a3a5c;
+  color: white;
+  font-weight: 600;
+}
+.topbar select, .topbar button {
+  background: white;
+  color: #111;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.topbar button:hover { background: #f0f0f0; }
+.topbar .spacer { flex: 1; }
+.topbar .stat { font-size: 12px; font-weight: normal; opacity: 0.85; }
+
+.map-pane { position: relative; }
+.side {
+  border-left: 1px solid #ddd;
+  overflow-y: auto;
+  background: #fafafa;
+  padding: 12px;
+}
+
+.site-card {
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.site-card h3 { margin: 0 0 4px; font-size: 15px; }
+.site-card .meta { font-size: 12px; color: #666; margin-bottom: 8px; }
+.site-card .back-text {
+  background: #f3f3f3;
+  border: 1px dashed #bbb;
+  padding: 6px 8px;
+  margin: 6px 0;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.panel-row {
+  display: grid;
+  grid-template-columns: 1fr 60px 80px 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border-top: 1px solid #eee;
+  font-size: 13px;
+}
+.panel-row:first-of-type { border-top: none; }
+.panel-row .dest { font-weight: 500; }
+.panel-row .km { font-variant-numeric: tabular-nums; text-align: right; }
+.panel-row .color { font-size: 11px; }
+.panel-row .routes { font-size: 10px; color: #888; }
+
+.color-tag {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  border: 1px solid;
+}
+.color-tag.tre { background: #f5efe0; border-color: #c4a44a; color: #6b4f00; }
+.color-tag.gronn { background: #1f6b3a; border-color: #1f6b3a; color: white; }
+
+.actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.actions button {
+  flex: 1;
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.actions button.primary {
+  background: #1a3a5c;
+  color: white;
+  border-color: #1a3a5c;
+}
+.actions button.danger { color: #a32d2d; }
+
+.empty {
+  color: #888;
+  font-size: 13px;
+  padding: 24px;
+  text-align: center;
+}
+
+.maplibregl-popup { max-width: 240px; }

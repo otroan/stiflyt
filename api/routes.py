@@ -4,10 +4,10 @@ import secrets
 import traceback
 import json
 import re
-from typing import Optional, Annotated, Dict
+from typing import Optional, Annotated, Dict, List, Any
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Query, Depends, Response, status, Header
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Query, Depends, Response, status, Header, UploadFile, File, Form
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
 from .schemas import (
@@ -76,8 +76,17 @@ from services.operational_store import (
     set_sign_site_destinations,
     update_sign_site,
     patch_sign_site_skilt,
+    accept_sign_candidate,
+    reject_sign_candidate,
+    allocate_site_code,
+    delete_sign_site,
 )
 from services.signs import get_signs_for_route, get_signs_for_prefix, get_signs_for_bbox, build_sign_production_rows
+from services.sign_candidates import get_sign_candidates_for_area, get_route_summary_for_area, get_area_stats
+from services._timing import format_server_timing
+from services import field_photos as fp_svc
+from services.sign_excel import build_manufacturing_workbook
+from services.route_service import snap_point_to_full_route
 from services.route_service import point_on_route_km_and_geom
 from services.validators import get_validator_registry
 from collections import defaultdict
@@ -1871,6 +1880,607 @@ async def get_signs_by_prefix(
     except Exception as e:
         print(f"Error getting signs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error getting signs: {str(e)}")
+
+
+@router.get("/signs/manufacturing/{area_code}.xlsx")
+async def get_manufacturing_xlsx(area_code: str):
+    """Excel manufacturing list (one row per panel) for an area."""
+    if not re.match(r"^[a-z]{2,5}$", area_code or ""):
+        raise HTTPException(status_code=400, detail="Invalid area_code")
+    try:
+        with db_connection() as conn:
+            data = build_manufacturing_workbook(conn, area_code)
+        return Response(
+            content=data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=skilt-{area_code}.xlsx",
+            },
+        )
+    except Exception as e:
+        print(f"Error generating manufacturing.xlsx for {area_code}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error generating manufacturing.xlsx: {e}")
+
+
+@router.post("/signs/manufacturing/{area_code}.xlsx")
+async def post_manufacturing_xlsx(area_code: str, payload: Dict):
+    """Excel manufacturing list filtered to a user-supplied selection.
+
+    Body: {"panels": ["<sign_site_id>:<destination_anchor_node_id>", ...]}
+    Empty / missing selection returns the same content as the GET variant.
+    """
+    if not re.match(r"^[a-z]{2,5}$", area_code or ""):
+        raise HTTPException(status_code=400, detail="Invalid area_code")
+    selection = (payload or {}).get("panels") or []
+    if not isinstance(selection, list):
+        raise HTTPException(status_code=400, detail="`panels` must be a list of strings")
+    try:
+        with db_connection() as conn:
+            data = build_manufacturing_workbook(conn, area_code, selection=selection or None)
+        suffix = "valgte" if selection else "alle"
+        return Response(
+            content=data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=skilt-{area_code}-{suffix}.xlsx"},
+        )
+    except Exception as e:
+        print(f"Error generating filtered manufacturing.xlsx for {area_code}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error generating manufacturing.xlsx: {e}")
+
+
+def _validate_area_code(area_code: str) -> None:
+    if not re.match(r"^[a-z]{2,5}$", area_code or ""):
+        raise HTTPException(status_code=400, detail="Invalid area_code")
+
+
+@router.get("/signs/placenames")
+async def signs_app_nearby_placenames(
+    lon: Annotated[float, Query(description="WGS84 longitude")],
+    lat: Annotated[float, Query(description="WGS84 latitude")],
+    radius: Annotated[float, Query(ge=10.0, le=5000.0, description="Search radius (m)")] = 500.0,
+    limit: Annotated[int, Query(ge=1, le=50)] = 12,
+):
+    """Nearest stedsnavn + ruteinfopunkt around a point.
+
+    Same shape as `/v1/anchors/{anchor_id}/placenames` but takes coordinates
+    instead of an anchor id — used by the signs_app's NamePicker for manual
+    signs (which have no anchor_node_id).
+    """
+    try:
+        with db_connection() as conn:
+            candidates = list_placename_candidates(conn, lon, lat, search_radius_meters=radius, limit=limit)
+            facilities = list_ruteinfopunkt_facilities(conn, lon, lat, search_radius_meters=radius, limit=limit)
+        return {
+            "lon": lon,
+            "lat": lat,
+            "radius_meters": radius,
+            "candidates": [
+                {
+                    "name": c["name"],
+                    "source_type": c["source"],
+                    "source_id": c.get("source_id"),
+                    "distance_meters": c.get("distance_meters"),
+                    "tilrettelegging": c.get("tilrettelegging"),
+                }
+                for c in candidates
+            ],
+            "facilities": [
+                {
+                    "name": f["name"],
+                    "source_id": f.get("source_id"),
+                    "distance_meters": f.get("distance_meters"),
+                    "tilrettelegging": f.get("tilrettelegging"),
+                }
+                for f in facilities
+            ],
+        }
+    except Exception as e:
+        print(f"Error getting nearby placenames: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting nearby placenames: {e}")
+
+
+@router.post("/signs/anchors/{anchor_id}/name")
+async def signs_app_set_anchor_name(
+    anchor_id: int,
+    payload: Dict,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Edit the anchor's display name from the signs_app.
+
+    Upserts into ops.endpoint_names with source_type='signs_app'. The next
+    /v1/signs/candidates fetch picks the new name up automatically (it's the
+    same name resolver the sign-report uses).
+
+    Body: { "name": "Sotabu" }
+    """
+    name = (payload or {}).get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise HTTPException(status_code=400, detail="`name` is required")
+    name = name.strip()
+    with db_connection() as conn:
+        coords = get_anchor_node_coords(conn, anchor_id)
+        geom = get_anchor_node_geometry(conn, anchor_id)
+    if not geom:
+        raise HTTPException(status_code=404, detail=f"Anchor {anchor_id} not found")
+    with op_db_connection() as op_conn:
+        row = upsert_endpoint_name(
+            op_conn,
+            anchor_node_id=anchor_id,
+            name=name,
+            source_type="signs_app",
+            geom=geom,
+            rutenummer=None,  # global (any-route) name
+            validated_by=x_user or "anonymous",
+            anchor_lon=(coords or {}).get("lon"),
+            anchor_lat=(coords or {}).get("lat"),
+        )
+    return {"anchor_node_id": anchor_id, "name": row.get("name", name)}
+
+
+@router.patch("/signs/sites/{sign_site_id}/panels/{destination_anchor_node_id}/edit")
+async def signs_app_patch_panel(
+    sign_site_id: int,
+    destination_anchor_node_id: int,
+    payload: Dict,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Per-panel override: color, direction, displayed km, custom destination name.
+
+    Stored on ops.sign_site_skilt, keyed by (sign_site_id, anchor_node_id).
+    Only keys present in the payload are written; unknown keys are ignored.
+    """
+    updates: Dict = {}
+    if "color" in payload:
+        color = payload["color"]
+        if color not in (None, "trehvit", "grønn"):
+            raise HTTPException(status_code=400, detail="color must be 'trehvit' or 'grønn'")
+        updates["skiltfarge"] = color
+    if "direction" in payload:
+        direction = payload["direction"]
+        if direction is not None and not isinstance(direction, str):
+            raise HTTPException(status_code=400, detail="direction must be a string or null")
+        updates["direction"] = direction
+    if "distance_km" in payload:
+        km = payload["distance_km"]
+        if km is None:
+            updates["distance_meters"] = None
+        else:
+            try:
+                updates["distance_meters"] = float(km) * 1000.0
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="distance_km must be numeric")
+    if "destination_name" in payload:
+        dn = payload["destination_name"]
+        if dn is not None and not isinstance(dn, str):
+            raise HTTPException(status_code=400, detail="destination_name must be a string or null")
+        updates["destination_name"] = dn.strip() if isinstance(dn, str) else None
+    if not updates:
+        raise HTTPException(status_code=400, detail="no editable fields in payload")
+    first_link_id_raw = payload.get("first_link_id")
+    first_link_id: Optional[int] = None
+    if first_link_id_raw is not None:
+        try:
+            first_link_id = int(first_link_id_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="first_link_id must be an integer")
+    with op_db_connection() as op_conn:
+        row = patch_sign_site_skilt(
+            op_conn,
+            sign_site_id=sign_site_id,
+            anchor_node_id=destination_anchor_node_id,
+            updates=updates,
+            updated_by=x_user or "anonymous",
+            first_link_id=first_link_id,
+        )
+    if row is None:
+        raise HTTPException(status_code=500, detail="failed to write panel override")
+    return row
+
+
+@router.post("/signs/candidates/{area_code}/manual")
+async def signs_app_create_manual_sign(
+    area_code: str,
+    payload: Dict,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Create a manual sign site at an arbitrary point along one or more routes.
+
+    Body: {
+      "rutenummer_list": ["bre21", "bre62"],   # preferred — list of routes the
+                                               # sign belongs to (shared segment)
+      "rutenummer": "bre6",                    # legacy single — equivalent to a
+                                               # list of one
+      "lon": 7.5, "lat": 61.7,
+      "name": "Bridge"
+    }
+
+    The point is snapped to the *first* route's geometry (they share the segment,
+    so the snap result is essentially identical across routes); we record
+    `route_km` along that first route so panels for each route can be computed
+    at read time. `rutenummer_list` stores the full set; the legacy
+    `rutenummer` column gets the first element for back-compat.
+    """
+    _validate_area_code(area_code)
+    body = payload or {}
+    raw_list = body.get("rutenummer_list")
+    single = body.get("rutenummer")
+    # Normalise: accept either {rutenummer_list:[...]} or {rutenummer:"..."}.
+    if isinstance(raw_list, list) and raw_list:
+        rutenummer_list = [str(r).strip() for r in raw_list if isinstance(r, str) and r.strip()]
+    elif isinstance(single, str) and single.strip():
+        rutenummer_list = [single.strip()]
+    else:
+        raise HTTPException(status_code=400, detail="`rutenummer_list` (or legacy `rutenummer`) is required")
+    if not rutenummer_list:
+        raise HTTPException(status_code=400, detail="rutenummer_list cannot be empty")
+    lon = body.get("lon")
+    lat = body.get("lat")
+    name = body.get("name")
+    if not isinstance(lon, (int, float)) or not isinstance(lat, (int, float)):
+        raise HTTPException(status_code=400, detail="`lon` and `lat` (numbers) are required")
+    # When the click sits on a shared segment we snap on EVERY listed route
+    # and pick whichever lands closest to the click. snap_point_to_full_route
+    # operates on `stiflyt.routes.route_geometry` (the full MultiLineString),
+    # so disconnected segments no longer teleport the marker to the longest
+    # connected portion.
+    try:
+        with db_connection() as conn:
+            snapped_per_route = []
+            for rn in rutenummer_list:
+                s = snap_point_to_full_route(conn, rn, float(lon), float(lat))
+                if s is not None:
+                    snapped_per_route.append((rn, s))
+        if not snapped_per_route:
+            raise HTTPException(status_code=404, detail=f"Could not snap to any of {rutenummer_list}")
+        snapped_per_route.sort(key=lambda t: t[1][2])  # by distance_to_click
+        primary_route, (route_km, geom_wkt, _dist_m) = snapped_per_route[0]
+        # Reorder rutenummer_list so primary_route is first (used as the legacy
+        # `rutenummer` column).
+        rutenummer_list = [primary_route] + [r for r in rutenummer_list if r != primary_route]
+        with op_db_connection() as op_conn:
+            site_code = allocate_site_code(op_conn, area_code)
+            from services.operational_store import OP_SCHEMA as _OP
+            schema_quoted = quote_identifier(_OP)
+            with op_conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO {schema_quoted}.sign_sites
+                        (rutenummer, rutenummer_list, route_km, geom, anchor_node_id, name,
+                         area_code, status, site_code, updated_by)
+                    VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromText(%s), 25833), NULL, %s,
+                            %s, 'accepted', %s, %s)
+                    RETURNING id, site_code, status, area_code, rutenummer, rutenummer_list,
+                              route_km, name;
+                    """,
+                    (
+                        primary_route,
+                        rutenummer_list,
+                        route_km,
+                        geom_wkt,
+                        name,
+                        area_code,
+                        site_code,
+                        x_user or "anonymous",
+                    ),
+                )
+                return dict(cur.fetchone())
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating manual sign: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error creating manual sign: {e}")
+
+
+@router.delete("/signs/sites/{sign_site_id}", status_code=204)
+async def delete_sign_site_endpoint(
+    sign_site_id: int,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Hard-delete a sign site. For anchor-based sites this also drops the
+    accept/reject state so the anchor reappears as a fresh proposed candidate.
+    For manual sites the sign and its panels go away entirely."""
+    try:
+        with op_db_connection() as op_conn:
+            deleted = delete_sign_site(op_conn, sign_site_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found")
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting sign site {sign_site_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error deleting sign site: {e}")
+
+
+@router.post("/signs/candidates/{area_code}/anchors/{anchor_node_id}/accept")
+async def accept_sign_candidate_endpoint(
+    area_code: str,
+    anchor_node_id: int,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Persist a proposed candidate as an accepted sign site, allocating a site code."""
+    _validate_area_code(area_code)
+    try:
+        with db_connection() as conn:
+            geom_wkt = get_anchor_node_geometry(conn, anchor_node_id)
+            if geom_wkt is None:
+                raise HTTPException(status_code=404, detail=f"Anchor {anchor_node_id} not found")
+            from services.operational_store import get_endpoint_names_for_anchors as _names
+            with op_db_connection() as op_conn:
+                names = _names(op_conn, [anchor_node_id])
+                resolved_name = (names.get(anchor_node_id) or {}).get("name")
+                row = accept_sign_candidate(
+                    op_conn,
+                    area_code=area_code,
+                    anchor_node_id=anchor_node_id,
+                    geom_wkt_25833=geom_wkt,
+                    name=resolved_name,
+                    updated_by=x_user,
+                )
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error accepting candidate {area_code}/{anchor_node_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error accepting candidate: {e}")
+
+
+@router.post("/signs/candidates/{area_code}/anchors/{anchor_node_id}/reject")
+async def reject_sign_candidate_endpoint(
+    area_code: str,
+    anchor_node_id: int,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Mark an anchor as rejected (won't appear as 'proposed' next load)."""
+    _validate_area_code(area_code)
+    try:
+        with db_connection() as conn:
+            geom_wkt = get_anchor_node_geometry(conn, anchor_node_id)
+            if geom_wkt is None:
+                raise HTTPException(status_code=404, detail=f"Anchor {anchor_node_id} not found")
+            from services.operational_store import get_endpoint_names_for_anchors as _names
+            with op_db_connection() as op_conn:
+                names = _names(op_conn, [anchor_node_id])
+                resolved_name = (names.get(anchor_node_id) or {}).get("name")
+                row = reject_sign_candidate(
+                    op_conn,
+                    area_code=area_code,
+                    anchor_node_id=anchor_node_id,
+                    geom_wkt_25833=geom_wkt,
+                    name=resolved_name,
+                    updated_by=x_user,
+                )
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error rejecting candidate {area_code}/{anchor_node_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error rejecting candidate: {e}")
+
+
+@router.get("/signs/area/{area_code}/routes")
+async def get_signs_area_route_summary(area_code: str, response: Response) -> Dict:
+    """Per-route summary for the signs_app route hover popup.
+
+    Returns rutenummer + start_name, end_name and total length (corrected km).
+    Lightweight (~80 ms on bre) so the frontend can fetch it once per area
+    and look up route metadata client-side when rendering hovers.
+
+    Emits a Server-Timing header so per-phase costs show up in browser
+    DevTools (Network → request → Timing).
+    """
+    _validate_area_code(area_code)
+    try:
+        timings: list = []
+        with db_connection() as conn:
+            result = get_route_summary_for_area(conn, area_code, timings=timings)
+        if timings:
+            response.headers["Server-Timing"] = format_server_timing(timings)
+            response.headers["Access-Control-Expose-Headers"] = "Server-Timing"
+        return result
+    except Exception as e:
+        print(f"Error getting route summary for {area_code}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting route summary: {e}")
+
+
+@router.get("/signs/area/{area_code}/stats")
+async def get_signs_area_stats(area_code: str) -> Dict:
+    """Headline numbers for the area report modal.
+
+    Cheap — single link-fetch + sum. Other report fields (sign counts,
+    panel counts, status breakdown) are derived client-side from the
+    /candidates response the frontend already has in memory.
+    """
+    _validate_area_code(area_code)
+    try:
+        with db_connection() as conn:
+            return get_area_stats(conn, area_code)
+    except Exception as e:
+        print(f"Error getting area stats for {area_code}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting area stats: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Field photos — uncoupled photo layer (sign documentation + route condition)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/photos")
+async def upload_photo(
+    area: Annotated[str, Form(...)],
+    file: Annotated[UploadFile, File(...)],
+    caption: Annotated[Optional[str], Form()] = None,
+    # FastAPI parses repeated `tags=foo&tags=bar` into a list via Form().
+    tags: Annotated[List[str], Form()] = [],
+) -> Dict:
+    """Upload one photo. EXIF GPS is auto-extracted; photos without GPS
+    get NULL lon/lat and surface in the "needs placement" tray until the
+    user geotags them via PATCH.
+    """
+    _validate_area_code(area)
+    try:
+        raw = await file.read()
+        storage = fp_svc.store_upload(
+            area_code=area,
+            raw_bytes=raw,
+            filename=file.filename,
+            mime_type=file.content_type,
+        )
+        with op_db_connection() as op_conn:
+            row = fp_svc.insert_photo(
+                op_conn,
+                area_code=area,
+                storage=storage,
+                caption=caption,
+                tags=tags,
+                uploaded_by=None,
+            )
+        return row
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error uploading photo to {area}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error uploading photo: {e}")
+
+
+@router.get("/photos")
+async def list_photos(
+    area: Annotated[str, Query(...)],
+    pending: Annotated[Optional[bool], Query(description="True=only awaiting placement, False=only placed, omit=both")] = None,
+) -> Dict:
+    """List photos in an area. `pending=true` returns the "needs placement" tray;
+    `pending=false` returns the placed photos (what the map layer draws)."""
+    _validate_area_code(area)
+    try:
+        only_placed = None if pending is None else (not pending)
+        with op_db_connection() as op_conn:
+            rows = fp_svc.list_photos(op_conn, area, only_placed=only_placed)
+        return {"area_code": area, "photos": rows, "count": len(rows)}
+    except Exception as e:
+        print(f"Error listing photos for {area}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error listing photos: {e}")
+
+
+@router.get("/photos/{photo_id}/file")
+async def get_photo_file(
+    photo_id: int,
+    size: Annotated[str, Query(pattern="^(thumb|display|original)$")] = "display",
+):
+    """Serve photo bytes. `size` picks the variant: thumb (200 px), display
+    (1600 px JPEG), or original (the uploaded file, possibly HEIC)."""
+    try:
+        with op_db_connection() as op_conn:
+            row = fp_svc.get_photo(op_conn, photo_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        rel = row[{"thumb": "thumb_path", "display": "display_path", "original": "file_path"}[size]]
+        path = fp_svc.resolve_path(rel)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="File missing on disk")
+        # JPEGs for thumb/display; original keeps its uploaded mime.
+        media_type = "image/jpeg" if size in ("thumb", "display") else (row.get("mime_type") or "application/octet-stream")
+        return FileResponse(str(path), media_type=media_type)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error serving photo {photo_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error serving photo: {e}")
+
+
+@router.patch("/photos/{photo_id}")
+async def patch_photo(
+    photo_id: int,
+    body: Dict[str, Any],
+) -> Dict:
+    """Update caption / tags / placement. Body keys:
+      lon, lat        — manual geotag (both required together)
+      caption         — string or null
+      tags            — full replacement list (constrained vocabulary)
+    """
+    lon = body.get("lon")
+    lat = body.get("lat")
+    if (lon is None) != (lat is None):
+        raise HTTPException(status_code=400, detail="lon and lat must be set together")
+    caption = body.get("caption")
+    clear_caption = "caption" in body and caption is None
+    tags = body.get("tags")
+    try:
+        with op_db_connection() as op_conn:
+            row = fp_svc.update_photo(
+                op_conn,
+                photo_id,
+                lon=float(lon) if lon is not None else None,
+                lat=float(lat) if lat is not None else None,
+                caption=caption if not clear_caption else None,
+                tags=list(tags) if isinstance(tags, list) else None,
+                clear_caption=clear_caption,
+            )
+        if not row:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error patching photo {photo_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error patching photo: {e}")
+
+
+@router.delete("/photos/{photo_id}")
+async def delete_photo(photo_id: int) -> Dict:
+    """Delete a photo row + best-effort delete its on-disk artifacts."""
+    try:
+        with op_db_connection() as op_conn:
+            ok = fp_svc.delete_photo(op_conn, photo_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        return {"deleted": photo_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting photo {photo_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error deleting photo: {e}")
+
+
+@router.get("/signs/candidates/{area_code}")
+async def get_sign_candidates(area_code: str, response: Response) -> Dict:
+    """Auto-proposed sign sites + panels for an area (signs_app frontend).
+
+    Returns every anchor in the area as a candidate sign site, with panels
+    deduped by destination name, distances corrected (×1.125) and rounded
+    per spec (<10 km floor to 0.5 km; >=10 km nearest int), and a 32V UTM
+    formatted back-text.
+
+    Emits a Server-Timing header so per-phase costs show up in browser
+    DevTools (Network → request → Timing).
+    """
+    if not re.match(r"^[a-z]{2,5}$", area_code or ""):
+        raise HTTPException(status_code=400, detail="Invalid area_code")
+    try:
+        timings: list = []
+        with db_connection() as conn:
+            result = get_sign_candidates_for_area(conn, area_code, timings=timings)
+        if timings:
+            response.headers["Server-Timing"] = format_server_timing(timings)
+            response.headers["Access-Control-Expose-Headers"] = "Server-Timing"
+        return result
+    except Exception as e:
+        print(f"Error getting sign candidates for {area_code}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting sign candidates: {e}")
 
 
 @router.get("/signs/missing", response_model=SignsMissingReport)

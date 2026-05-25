@@ -1,8 +1,9 @@
-.PHONY: help install install-dev backend backend-noreload backend-prod frontend mcp clean test lint format perf-test
+.PHONY: help install install-dev backend backend-noreload backend-prod frontend signs signs-build mcp clean test lint format perf-test
 
 # Default values
 DB_USER ?= $(shell whoami)
 BACKEND_PORT ?= 8001
+SIGNS_PORT ?= 5174
 VENV ?= venv
 PYTHON ?= python3
 
@@ -46,7 +47,7 @@ mcp: ## Start Stiflyt MCP server (stdio). For Cursor MCP; backend should be runn
 	@export STIFLYT_BASE_URL=$${STIFLYT_BASE_URL:-http://localhost:$(BACKEND_PORT)} && \
 	. $(VENV)/bin/activate && stiflyt-mcp
 
-frontend: ## Start changeset editor frontend (React/Vite)
+frontend: ## Start changeset editor frontend (React/Vite, port 3000)
 	@echo "Starting changeset editor frontend on http://localhost:3000"
 	@echo "Backend should be running on http://127.0.0.1:$(BACKEND_PORT)"
 	@if ! curl -s http://127.0.0.1:$(BACKEND_PORT)/health > /dev/null 2>&1; then \
@@ -60,6 +61,26 @@ frontend: ## Start changeset editor frontend (React/Vite)
 		npm install; \
 	fi && \
 	npm run dev
+
+signs: ## Start the Breheimen signs_app (React/Vite, port 5174 by default)
+	@echo "Starting signs_app on http://localhost:$(SIGNS_PORT)"
+	@echo "Backend should be running on http://127.0.0.1:$(BACKEND_PORT)"
+	@if ! curl -s http://127.0.0.1:$(BACKEND_PORT)/health > /dev/null 2>&1; then \
+		echo "⚠️  WARNING: Backend does not appear to be running on port $(BACKEND_PORT)"; \
+		echo "   Run 'make backend' in another terminal first"; \
+		echo ""; \
+	fi
+	@cd signs_app && \
+	if [ ! -d node_modules ]; then \
+		echo "Installing dependencies..."; \
+		npm install; \
+	fi && \
+	node_modules/.bin/vite --port $(SIGNS_PORT)
+
+signs-build: ## Build the signs_app for production (dist/ in signs_app/)
+	@cd signs_app && \
+	if [ ! -d node_modules ]; then npm install; fi && \
+	node_modules/.bin/vite build
 
 test: ## Run backend tests
 	. $(VENV)/bin/activate && pytest
@@ -115,6 +136,11 @@ setup: install-dev ## Setup development environment
 	@echo "Development environment setup complete!"
 	@echo "Run 'make backend' to start the API server"
 	@echo "Run 'make frontend' to start the changeset editor frontend"
+
+sync-route-errata: ## Sync data/route_errata.yaml into ops.rutenummer_remap
+	@export DB_USER=$(DB_USER) && \
+	. $(VENV)/bin/activate && \
+	$(PYTHON) scripts/apply_route_errata.py
 
 db-test: ## Test database connection
 	@export DB_USER=$(DB_USER) && \
