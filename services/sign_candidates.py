@@ -17,7 +17,7 @@ the new signs_app frontend consumes. Applies the user-specified rules:
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .signs import (
     _fetch_anchor_nodes,
@@ -49,6 +49,15 @@ DEFAULT_PANEL_COLOR = "trehvit"
 # of `stiflyt.fotruteinfo` so the remap propagates to filter, dedup,
 # endpoint detection, route summary, manual-sign snap — everything.
 FOTRUTEINFO_VIEW = "ops.fotruteinfo_patched"
+
+# Norwegian fallback labels when an ops.unmarked_segment row has no explicit
+# `label` (e.g. the YAML entry just sets `kind: boat`). Renders as
+# "<destination> via båt" / "via bre" on signs.
+_UNMARKED_KIND_NO: Dict[str, str] = {
+    "boat":    "båt",
+    "glacier": "bre",
+    "other":   "umerket",
+}
 
 
 def correct_distance_km(distance_meters: Optional[float], factor: float = DEFAULT_DISTANCE_CORRECTION) -> Optional[float]:
@@ -106,6 +115,144 @@ def format_sign_back(anchor_name: Optional[str], lon: Optional[float], lat: Opti
         "easting": easting,
         "northing": northing,
     })
+
+
+def _fetch_unmarked_segments_by_link(conn) -> Dict[int, Tuple[str, Optional[str]]]:
+    """Return {link_id: (kind, label)} for every link that contains at least
+    one ops.unmarked_segment row. If the table doesn't exist yet (migration
+    017 not applied) returns {} so callers degrade gracefully.
+
+    If a link contains multiple unmarked segments with conflicting kinds, the
+    one that sorts first wins (deterministic; in practice each crossing is one
+    boat OR one glacier, never both).
+    """
+    schema = os.getenv("ROUTE_SCHEMA", "stiflyt")
+    if not validate_schema_name(schema):
+        return {}
+    schema_quoted = quote_identifier(schema)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'ops' AND table_name = 'unmarked_segment'
+            )
+            """
+        )
+        exists = bool(cur.fetchone()[0])
+        if not exists:
+            return {}
+        cur.execute(
+            f"""
+            SELECT ls.link_id, us.kind, us.label
+            FROM ops.unmarked_segment us
+            JOIN {schema_quoted}.link_segments ls ON ls.segment_id = us.fotrute_fk
+            ORDER BY ls.link_id, us.kind
+            """
+        )
+        rows = cur.fetchall()
+    out: Dict[int, Tuple[str, Optional[str]]] = {}
+    for link_id, kind, label in rows:
+        out.setdefault(int(link_id), (kind, label))
+    return out
+
+
+def _via_suffix(kind: Optional[str], label: Optional[str]) -> Optional[str]:
+    """Render the panel-text suffix for a traversed unmarked segment.
+
+    'kind=glacier, label=Fortundalsbreen' -> 'via Fortundalsbreen'.
+    'kind=boat,    label=None'            -> 'via båt'.
+    'kind=other,   label=None'            -> 'via umerket strekning'.
+    """
+    if not kind:
+        return None
+    if label:
+        return f"via {label}"
+    word = _UNMARKED_KIND_NO.get(kind, kind)
+    return f"via {word}" if kind != "other" else f"via umerket strekning"
+
+
+def _walkable_distance_to_first_unmarked(
+    sign_node: int,
+    destination_node: int,
+    chain: Dict[int, Dict[str, Any]],
+    route_links: List[Dict[str, Any]],
+    unmarked_by_link: Dict[int, Tuple[str, Optional[str]]],
+) -> Optional[float]:
+    """Walking distance from sign_node toward destination_node, stopping at the
+    start of the first unmarked link in the chain. If no unmarked link is
+    encountered, returns the full walking distance.
+
+    The km we show on a sign panel is meant to be the marked-trail distance
+    DNT takes responsibility for. Beyond brekanten / a dock, the hiker is on
+    their own — and showing the total trip distance would suggest the cabin
+    on the other side is closer than the marked portion implies. So we stop
+    summing at the first unmarked link.
+    """
+    sign_pos = chain.get(sign_node, {}).get("pos_m")
+    dest_pos = chain.get(destination_node, {}).get("pos_m")
+    if sign_pos is None or dest_pos is None or sign_pos == dest_pos:
+        return None
+    forward = dest_pos > sign_pos
+    low = min(sign_pos, dest_pos)
+    high = max(sign_pos, dest_pos)
+    edges: List[Tuple[float, float, float, int]] = []
+    for link in route_links:
+        a = link.get("a_node")
+        b = link.get("b_node")
+        link_id = link.get("link_id")
+        length = link.get("length_m") or link.get("length_meters") or 0.0
+        if a is None or b is None or link_id is None:
+            continue
+        try:
+            ap = chain.get(int(a), {}).get("pos_m")
+            bp = chain.get(int(b), {}).get("pos_m")
+            link_id_i = int(link_id)
+            length_f = float(length)
+        except (TypeError, ValueError):
+            continue
+        if ap is None or bp is None:
+            continue
+        early = min(ap, bp)
+        late = max(ap, bp)
+        if early >= low and late <= high:
+            edges.append((early, late, length_f, link_id_i))
+    edges.sort(key=lambda e: e[0], reverse=(not forward))
+    walked = 0.0
+    for _early, _late, length, link_id in edges:
+        if link_id in unmarked_by_link:
+            return walked
+        walked += length
+    return walked
+
+
+def _links_between_chain_nodes(
+    sign_node: int,
+    destination_node: int,
+    chain: Dict[int, Dict[str, Any]],
+) -> List[int]:
+    """All link_ids traversed walking from `sign_node` to `destination_node`
+    along the chain. The chain is built starting from a route endpoint, so
+    each node carries `prev_link_id`, the link that reached it from earlier
+    in the chain. The link between two adjacent chain nodes is the later
+    node's prev_link_id; we count every such link whose later node sits in
+    the open-closed interval (min(sign,dest), max(sign,dest)] of pos_m.
+    """
+    sign_pos = chain.get(sign_node, {}).get("pos_m")
+    dest_pos = chain.get(destination_node, {}).get("pos_m")
+    if sign_pos is None or dest_pos is None or sign_pos == dest_pos:
+        return []
+    low = sign_pos if sign_pos < dest_pos else dest_pos
+    high = sign_pos if sign_pos > dest_pos else dest_pos
+    out: List[int] = []
+    for info in chain.values():
+        pos = info.get("pos_m")
+        prev_link = info.get("prev_link_id")
+        if pos is None or prev_link is None:
+            continue
+        if low < pos <= high:
+            out.append(int(prev_link))
+    return out
 
 
 def _route_adjacency_with_links(route_links_list: List[Dict[str, Any]]) -> Dict[int, List[tuple]]:
@@ -302,6 +449,7 @@ def _compute_panels_for_sign(
     anchor_names: Dict[int, Dict[str, Any]],
     chain_by_route: Optional[Dict[str, Dict[int, Dict[str, Any]]]] = None,
     all_route_endpoints: Optional[set] = None,
+    unmarked_by_link: Optional[Dict[int, Tuple[str, Optional[str]]]] = None,
 ) -> List[Dict[str, Any]]:
     """Panels for one anchor sign.
 
@@ -357,15 +505,38 @@ def _compute_panels_for_sign(
             first_link = _first_link_toward_endpoint(sign_node, node, chain, rls)
             name_info = anchor_names.get(node) or {}
             name = (name_info.get("name") or "").strip() or f"Anchor {node}"
-            key = (name, first_link)
+            # If the chain walk from sign_node to this destination traverses
+            # any unmarked segment (boat/glacier), suffix the destination
+            # text with "via <label or kind-noun>" so the sign flags the
+            # crossing, and clip the distance at the brekanten / dock so we
+            # don't sign-post km that hikers shouldn't take responsibility for.
+            via_kind: Optional[str] = None
+            via_label: Optional[str] = None
+            if unmarked_by_link:
+                for traversed_link in _links_between_chain_nodes(sign_node, node, chain):
+                    hit = unmarked_by_link.get(traversed_link)
+                    if hit is not None:
+                        via_kind, via_label = hit
+                        break
+            if via_kind is not None:
+                clipped = _walkable_distance_to_first_unmarked(
+                    sign_node, node, chain, rls, unmarked_by_link
+                )
+                if clipped is not None:
+                    distance_m = clipped
+            via_suffix = _via_suffix(via_kind, via_label)
+            display_name = f"{name} {via_suffix}" if via_suffix else name
+            key = (display_name, first_link)
             existing = grouped.get(key)
             if existing is None:
                 grouped[key] = {
-                    "destination_name": name,
+                    "destination_name": display_name,
                     "destination_anchor_node_id": node,
                     "first_link_id": first_link,
                     "route_numbers": [route],
                     "distance_m_db": distance_m,
+                    "via_kind": via_kind,
+                    "via_label": via_label,
                 }
             else:
                 if distance_m < existing["distance_m_db"]:
@@ -597,6 +768,8 @@ def _panels_from_sign(sign: Dict[str, Any], correction_factor: float) -> List[Di
                 "distance_km_displayed": correct_distance_km(p.get("distance_m_db"), correction_factor),
                 "color": DEFAULT_PANEL_COLOR,
                 "direction": None,
+                "via_kind": p.get("via_kind"),
+                "via_label": p.get("via_label"),
             }
         )
     return out
@@ -905,20 +1078,34 @@ def get_area_stats(conn, area_code: str) -> Dict[str, Any]:
     Only returns what the frontend can't easily derive from the candidates +
     route-summary payloads it already has — namely the unique trail length
     (sum of physical link lengths, with each shared segment counted once).
+    Boat / glacier segments flagged in ops.unmarked_segment are subtracted
+    from the headline so it reflects only DNT-marked, walking-responsible km.
     Everything else (sign counts, panels) is aggregated client-side from the
     already-loaded /candidates response, so this endpoint stays cheap and
     avoids re-doing the candidate compute.
     """
     links = _fetch_links_for_prefix_fast(conn, area_code)
+    unmarked_by_link = _fetch_unmarked_segments_by_link(conn)
     rutenummers = sorted({r for L in links for r in (L.get("rutenummer_list") or [])})
-    unique_length_m = sum(float(L.get("length_m") or 0.0) for L in links)
+    walkable_length_m = sum(
+        float(L.get("length_m") or 0.0)
+        for L in links
+        if L.get("link_id") not in unmarked_by_link
+    )
+    unmarked_length_m = sum(
+        float(L.get("length_m") or 0.0)
+        for L in links
+        if L.get("link_id") in unmarked_by_link
+    )
     with op_db_connection() as op_conn:
         correction_factor = get_distance_correction_factor(op_conn, area_code)
     return {
         "area_code": area_code,
         "total_routes": len(rutenummers),
-        "unique_trail_length_m": unique_length_m,
-        "unique_trail_length_km_displayed": correct_distance_km(unique_length_m, correction_factor),
+        "unique_trail_length_m": walkable_length_m,
+        "unique_trail_length_km_displayed": correct_distance_km(walkable_length_m, correction_factor),
+        "unmarked_length_m": unmarked_length_m,
+        "unmarked_length_km_displayed": correct_distance_km(unmarked_length_m, correction_factor),
         "distance_correction_factor": correction_factor,
     }
 
@@ -1101,6 +1288,8 @@ def _get_signs_bare_for_prefix(conn, prefix: str, *, timings: Optional[list] = N
     # 1. Links for the area (filter-first; fast)
     with phase_timer(_t, "links_query"):
         links = _fetch_links_for_prefix_fast(conn, prefix)
+    with phase_timer(_t, "unmarked_links"):
+        unmarked_by_link = _fetch_unmarked_segments_by_link(conn)
 
     routes = sorted({r for L in links for r in (L.get("rutenummer_list") or [])})
 
@@ -1140,6 +1329,7 @@ def _get_signs_bare_for_prefix(conn, prefix: str, *, timings: Optional[list] = N
                 sign_node, sign_routes, route_links_by_route, route_endpoints_by_route, anchor_names,
                 chain_by_route=chain_by_route,
                 all_route_endpoints=all_route_endpoints,
+                unmarked_by_link=unmarked_by_link,
             )
 
     for sign in report["signs"]:

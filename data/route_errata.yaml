@@ -1,17 +1,27 @@
 # Local errata for Kartverket turrutebasen data.
 #
-# Source of truth for the contents of ops.rutenummer_remap. Sync into the
-# database with:
+# Source of truth for the contents of ops.rutenummer_remap AND
+# ops.unmarked_segment. Sync into the database with:
 #
 #     make sync-route-errata
 #
-# Two operations per entry:
+# Two sections:
+#
+#   rutenummer_remaps:    rename/hide a Kartverket rutenummer (string-keyed)
+#   unmarked_segments:    flag a fotrute_fk as boat / glacier / other unmarked
+#                          crossing (integer-keyed)
+#
+# For rutenummer_remaps each entry takes one of:
 #
 #   to: <other_rutenummer>   — retag every segment from the key to this rutenummer
 #   delete: true             — hide every segment with this rutenummer from the signs_app
 #
 # Exactly one of {to, delete} must be set. Removing an entry and re-syncing
 # restores the original tag / segment.
+#
+# For unmarked_segments the segment stays in the graph (topology + routeplanner
+# need it) but signs_app suffixes sign panels traversing it with the kind/label
+# ("via bre", "via båt", …) and length stats can subtract it.
 #
 # Each entry should link to the Kartverket ticket / DNT contact so the patch
 # can be cleaned up when the source data is fixed.
@@ -31,4 +41,29 @@ rutenummer_remaps:
   "bre7":
     delete: true
     comment: "bre7 deleted by DNT; spur at node 108545. Reported to Kartverket."
+    reported_at: 2026-05-25
+
+
+unmarked_segments:
+
+  # Femundsmarka — boat crossings over Lake Femunden (M/S Fæmund). Kartverket
+  # has drawn these as ordinary fotruter with vertices hundreds of metres apart,
+  # which is geometrically impossible for a footpath. Confirmed via
+  # scripts/detect_boat_segments.py: 200–650 m per vertex on a real trail
+  # samples every ≤30 m. lokalid is the Kartverket-stable UUID for the ticket.
+  86032: { kind: boat, lokalid: "17510e10-f6da-496a-8e6a-156773c8bea6", comment: "fem7/59/62/63/64/65/66 ferry across Femunden (3.9 km)", reported_at: 2026-05-25 }
+  86033: { kind: boat, lokalid: "bd086b9a-9083-4ce3-8b9c-7ef2ab063a45", comment: "fem60/63/64/65/66 ferry across Femunden (7.8 km)",       reported_at: 2026-05-25 }
+  86034: { kind: boat, lokalid: "da253c42-efd0-467f-a413-c989e8261e88", comment: "fem59/61/64/65/66 ferry across Femunden (9.7 km)",       reported_at: 2026-05-25 }
+  86226: { kind: boat, lokalid: "88e228e5-7903-4c91-93f1-8910d62dabc5", comment: "fem58/59/61/65/66 ferry across Femunden (2.6 km)",       reported_at: 2026-05-25 }
+  86325: { kind: boat, lokalid: "2842814b-33ab-424c-b294-d3e3d14388b0", comment: "fem56/57/58/59/61 ferry across Femunden (8.1 km)",       reported_at: 2026-05-25 }
+  86326: { kind: boat, lokalid: "4210352b-0d69-4932-83ff-0d93a72eb8ac", comment: "fem57/58/59/61/66 ferry across Femunden (6.6 km)",       reported_at: 2026-05-25 }
+  85936: { kind: boat, lokalid: "f002f51e-46f7-44a2-bf7d-602b132ed101", comment: "fem31/54 ferry across Femunden (2.4 km)",                reported_at: 2026-05-25 }
+
+  # Breheimen — bre8 Sota–Nørdstedalseter crosses Fortundalsbreen. Glacier,
+  # not lake — DNT does not mark or maintain the bre traverse.
+  99702:
+    kind: glacier
+    label: Fortundalsbreen
+    lokalid: "3d561a4d-0b84-4265-80cf-ef485644ef47"
+    comment: "bre8 glacier traverse Sota–Nørdstedalseter over Fortundalsbreen (3.3 km)"
     reported_at: 2026-05-25

@@ -378,7 +378,10 @@ export default function App() {
         <Select
           value={areaCode}
           onChange={(v) => v && setAreaCode(v)}
-          data={[{ value: "bre", label: "Breheimen og Jostedalsbreen" }]}
+          data={[
+            { value: "bre", label: "Breheimen og Jostedalsbreen" },
+            { value: "fem", label: "Femundsmarka" },
+          ]}
           size="xs"
           allowDeselect={false}
           w={240}
