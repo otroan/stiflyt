@@ -1,7 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Prod build is served by FastAPI under /skilt/; dev keeps the default /.
+  base: command === "build" ? "/skilt/" : "/",
   plugins: [react()],
   server: {
     port: 5174,
@@ -18,4 +20,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

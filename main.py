@@ -107,6 +107,20 @@ if frontend_path.exists():
 
     # debug.html route removed - debug functionality no longer used
 
+# --- signs_app (Breheimen Skiltverktøy) served at /skilt/ ---
+# Built by `make signs-build` (or by scripts/deploy.sh in production). Vite
+# is configured with base=/skilt/, so the asset URLs in the built index.html
+# already start with /skilt/... StaticFiles(html=True) serves the index for
+# /skilt/ and the files under it. The app uses in-memory state for navigation,
+# so no SPA-fallback route is needed.
+signs_dist = Path(__file__).parent / "signs_app" / "dist"
+if signs_dist.exists():
+    app.mount(
+        "/skilt",
+        StaticFiles(directory=str(signs_dist), html=True),
+        name="signs_app",
+    )
+
 
 @app.get("/health")
 async def health():

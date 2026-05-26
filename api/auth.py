@@ -29,31 +29,54 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# Where to send the user once login succeeds. Kept simple — always the app root.
-# Could become configurable later if we serve multiple frontends from one API.
-POST_LOGIN_REDIRECT = "/"
+# Default landing if the login flow wasn't given an explicit `next` target.
+DEFAULT_POST_LOGIN_REDIRECT = "/"
+
+# Session key for the post-login target carried across the OAuth round-trip.
+_NEXT_SESSION_KEY = "auth_next"
 
 
-def _frontend_login_failure(reason: str) -> RedirectResponse:
+def _safe_next(raw: str | None) -> str | None:
+    """Accept only same-origin paths so `?next=` can't be used as an open
+    redirect. Must start with a single `/` (not `//` or `/\\`) and contain
+    no scheme."""
+    if not raw:
+        return None
+    if not raw.startswith("/"):
+        return None
+    if raw.startswith("//") or raw.startswith("/\\"):
+        return None
+    return raw
+
+
+def _frontend_login_failure(reason: str, next_url: str | None = None) -> RedirectResponse:
     """Bounce back to the app with an error query — the frontend reads this
     and shows the message on the login screen."""
-    return RedirectResponse(url=f"/?login_error={reason}", status_code=302)
+    target = next_url or DEFAULT_POST_LOGIN_REDIRECT
+    sep = "&" if "?" in target else "?"
+    return RedirectResponse(url=f"{target}{sep}login_error={reason}", status_code=302)
 
 
 @router.get("/login", name="auth_login")
-async def login(request: Request):
+async def login(request: Request, next: str | None = None):
+    # Stash the post-login target in the session so /callback can pick it up
+    # after the OAuth round-trip. Only same-origin paths accepted.
+    request.session[_NEXT_SESSION_KEY] = _safe_next(next) or DEFAULT_POST_LOGIN_REDIRECT
     oauth = get_oauth()
     return await oauth.google.authorize_redirect(request, oauth_redirect_uri())
 
 
 @router.get("/callback", name="auth_callback")
 async def callback(request: Request):
+    # Pull (and clear) the stashed target before any early-return path uses it.
+    next_url = _safe_next(request.session.pop(_NEXT_SESSION_KEY, None)) or DEFAULT_POST_LOGIN_REDIRECT
+
     oauth = get_oauth()
     try:
         token = await oauth.google.authorize_access_token(request)
     except OAuthError as exc:
         logger.warning("OAuth callback rejected: %s", exc)
-        return _frontend_login_failure("oauth_error")
+        return _frontend_login_failure("oauth_error", next_url)
 
     # `userinfo` is the OpenID userinfo claim set; Authlib parses it from
     # the id_token automatically when the openid scope is requested.
@@ -61,18 +84,18 @@ async def callback(request: Request):
     email = (userinfo.get("email") or "").strip().lower()
     if not email or not userinfo.get("email_verified", False):
         logger.info("Login rejected: email missing or unverified (%s)", email)
-        return _frontend_login_failure("email_unverified")
+        return _frontend_login_failure("email_unverified", next_url)
 
     if not is_email_allowed(email):
         logger.info("Login rejected: %s not in allow-list", email)
-        return _frontend_login_failure("not_allowed")
+        return _frontend_login_failure("not_allowed", next_url)
 
     request.session["user"] = {
         "email": email,
         "name": userinfo.get("name") or email,
         "picture": userinfo.get("picture"),
     }
-    return RedirectResponse(url=POST_LOGIN_REDIRECT, status_code=302)
+    return RedirectResponse(url=next_url, status_code=302)
 
 
 @router.post("/logout")

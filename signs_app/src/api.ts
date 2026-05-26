@@ -25,7 +25,11 @@ function handleMaybeAuth(res: Response): void {
   if (res.status !== 401) return;
   if (!didRedirectOn401) {
     didRedirectOn401 = true;
-    window.location.href = "/api/v1/auth/login";
+    // Send the user back to the app root (respecting the Vite `base`) after
+    // login by stashing it in the OAuth `next` param. The backend reads it
+    // and redirects there post-callback (defaults to `/` otherwise).
+    const next = encodeURIComponent(import.meta.env.BASE_URL);
+    window.location.href = `/api/v1/auth/login?next=${next}`;
   }
   throw new UnauthenticatedError();
 }
@@ -96,7 +100,7 @@ export const api = {
     // Clear the redirect guard and bounce to /; the next /me will 401 and
     // restart the login flow.
     didRedirectOn401 = false;
-    window.location.href = "/";
+    window.location.href = import.meta.env.BASE_URL;
   },
 
   getCandidates: (area: string) => timedJsonFetch<CandidatesResponse>(`/signs/candidates/${area}`),

@@ -116,6 +116,26 @@ pip install -e . --quiet || {
     exit 1
 }
 
+# Build the signs_app frontend (Vite). main.py serves the resulting dist/
+# at /skilt. Skip silently if the project directory isn't present (older
+# checkouts pre-dating signs_app).
+if [ -f "signs_app/package.json" ]; then
+    if ! command -v npm >/dev/null 2>&1; then
+        log_error "npm is required to build signs_app but was not found on PATH"
+        exit 1
+    fi
+    log "Building signs_app..."
+    (
+        cd signs_app && \
+        npm ci --no-audit --no-fund --silent && \
+        npm run build --silent
+    ) || {
+        log_error "signs_app build failed"
+        exit 1
+    }
+    log_success "signs_app built (signs_app/dist/)"
+fi
+
 # Run any pre-deployment checks
 if [ -f "scripts/pre_deploy.sh" ]; then
     log "Running pre-deployment checks..."

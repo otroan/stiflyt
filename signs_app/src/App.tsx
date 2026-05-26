@@ -50,7 +50,7 @@ function LoginScreen({ errorCode }: { errorCode: string | null }) {
           )}
           <Button
             component="a"
-            href="/api/v1/auth/login"
+            href={`/api/v1/auth/login?next=${encodeURIComponent(import.meta.env.BASE_URL)}`}
             color="brand"
             size="md"
             fullWidth
