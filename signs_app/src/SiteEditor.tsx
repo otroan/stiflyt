@@ -300,6 +300,16 @@ function PanelRow({ panel, siteId, selectedPanels, onTogglePanel, onSave, busy }
             </label>
           </div>
           <div style={{ marginTop: 6, display: "flex", gap: 6, justifyContent: "flex-end" }}>
+            <button
+              onClick={async () => {
+                await onSave({ destination_name: null });
+                setOpen(false);
+              }}
+              disabled={busy}
+              title="Slett egen tekst og bruk auto-generert destinasjon"
+            >
+              Tilbakestill
+            </button>
             <button onClick={() => setOpen(false)}>Avbryt</button>
             <button className="primary" onClick={saveAll}>Lagre</button>
           </div>

@@ -59,6 +59,15 @@ _UNMARKED_KIND_NO: Dict[str, str] = {
     "other":   "umerket",
 }
 
+# Parenthetical the renderer appends after "<destination> via X N km" when
+# the panel's distance is the *marked* portion only (i.e. distance-to-edge
+# of the unmarked segment, not full trip). Makes it unambiguous that the
+# number is to the glacier edge / dock, not the named destination.
+_UNMARKED_DISTANCE_QUALIFIER_NO: Dict[str, str] = {
+    "boat":    "til båt",
+    "glacier": "til brekanten",
+}
+
 
 def correct_distance_km(distance_meters: Optional[float], factor: float = DEFAULT_DISTANCE_CORRECTION) -> Optional[float]:
     """Apply per-area correction factor then round per spec.
@@ -157,6 +166,90 @@ def _fetch_unmarked_segments_by_link(conn) -> Dict[int, Tuple[str, Optional[str]
     return out
 
 
+def _fetch_unmarked_link_entry_offsets(conn) -> Dict[int, Dict[int, float]]:
+    """For each link that contains any unmarked segment, return
+    {link_id: {entry_node_id: meters until first unmarked segment from that
+    entry}}.
+
+    Links bundle consecutive segments between two anchor nodes; a single link
+    can mix marked walkable segments and an unmarked crossing (e.g. bre8 has
+    one link spanning ~11 km of trail + 3 km of glacier between two
+    anchors). Stopping at the link boundary would underestimate the
+    walkable distance by however much trail sits inside the link before the
+    unmarked piece. This precomputes the segment-level offsets so the chain
+    walk can clip distance correctly.
+
+    Returns {} if ops.unmarked_segment doesn't exist yet.
+    """
+    schema = os.getenv("ROUTE_SCHEMA", "stiflyt")
+    if not validate_schema_name(schema):
+        return {}
+    schema_quoted = quote_identifier(schema)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'ops' AND table_name = 'unmarked_segment'
+            )
+            """
+        )
+        if not bool(cur.fetchone()[0]):
+            return {}
+        cur.execute(
+            f"""
+            SELECT
+                l.link_id, l.a_node, l.b_node,
+                ls.seq, ls.from_node,
+                ST_Length(f.senterlinje) AS seg_len_m,
+                (us.fotrute_fk IS NOT NULL) AS is_unmarked
+            FROM {schema_quoted}.links l
+            JOIN {schema_quoted}.link_segments ls ON ls.link_id = l.link_id
+            JOIN {schema_quoted}.fotrute f ON f.objid = ls.segment_id
+            LEFT JOIN ops.unmarked_segment us ON us.fotrute_fk = ls.segment_id
+            WHERE l.link_id IN (
+                SELECT DISTINCT ls2.link_id
+                FROM {schema_quoted}.link_segments ls2
+                JOIN ops.unmarked_segment us2 ON us2.fotrute_fk = ls2.segment_id
+            )
+            ORDER BY l.link_id, ls.seq
+            """
+        )
+        rows = cur.fetchall()
+    from collections import defaultdict
+    by_link: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for link_id, a, b, seq, from_node, seg_len, is_unm in rows:
+        by_link[int(link_id)].append(
+            {
+                "a": int(a), "b": int(b), "seq": int(seq),
+                "from_node": int(from_node),
+                "seg_len_m": float(seg_len or 0.0),
+                "is_unmarked": bool(is_unm),
+            }
+        )
+    out: Dict[int, Dict[int, float]] = {}
+    for link_id, segs in by_link.items():
+        if not segs:
+            continue
+        # Forward direction: enter at first segment's from_node, walk seq 0..N-1.
+        entry_a = segs[0]["from_node"]
+        offset_a = 0.0
+        for s in segs:
+            if s["is_unmarked"]:
+                break
+            offset_a += s["seg_len_m"]
+        # Backward direction: enter at the other endpoint, walk in reverse.
+        a_node, b_node = segs[0]["a"], segs[0]["b"]
+        entry_b = a_node if entry_a == b_node else b_node
+        offset_b = 0.0
+        for s in reversed(segs):
+            if s["is_unmarked"]:
+                break
+            offset_b += s["seg_len_m"]
+        out[link_id] = {entry_a: offset_a, entry_b: offset_b}
+    return out
+
+
 def _via_suffix(kind: Optional[str], label: Optional[str]) -> Optional[str]:
     """Render the panel-text suffix for a traversed unmarked segment.
 
@@ -178,16 +271,22 @@ def _walkable_distance_to_first_unmarked(
     chain: Dict[int, Dict[str, Any]],
     route_links: List[Dict[str, Any]],
     unmarked_by_link: Dict[int, Tuple[str, Optional[str]]],
+    unmarked_link_entry_offsets: Optional[Dict[int, Dict[int, float]]] = None,
 ) -> Optional[float]:
     """Walking distance from sign_node toward destination_node, stopping at the
-    start of the first unmarked link in the chain. If no unmarked link is
-    encountered, returns the full walking distance.
+    start of the first unmarked segment in the chain. If no unmarked segment
+    is encountered, returns the full walking distance.
 
     The km we show on a sign panel is meant to be the marked-trail distance
     DNT takes responsibility for. Beyond brekanten / a dock, the hiker is on
     their own — and showing the total trip distance would suggest the cabin
     on the other side is closer than the marked portion implies. So we stop
-    summing at the first unmarked link.
+    summing at the first unmarked segment.
+
+    A link can mix marked + unmarked segments (e.g. bre8's 14.5 km link
+    between two anchors contains ~11 km of trail + a 3 km glacier). When
+    we hit such a link, we use `unmarked_link_entry_offsets` to add the
+    intra-link walkable offset before stopping.
     """
     sign_pos = chain.get(sign_node, {}).get("pos_m")
     dest_pos = chain.get(destination_node, {}).get("pos_m")
@@ -196,7 +295,7 @@ def _walkable_distance_to_first_unmarked(
     forward = dest_pos > sign_pos
     low = min(sign_pos, dest_pos)
     high = max(sign_pos, dest_pos)
-    edges: List[Tuple[float, float, float, int]] = []
+    edges: List[Tuple[float, float, float, int, int, int]] = []
     for link in route_links:
         a = link.get("a_node")
         b = link.get("b_node")
@@ -205,23 +304,29 @@ def _walkable_distance_to_first_unmarked(
         if a is None or b is None or link_id is None:
             continue
         try:
-            ap = chain.get(int(a), {}).get("pos_m")
-            bp = chain.get(int(b), {}).get("pos_m")
+            a_i, b_i = int(a), int(b)
+            ap = chain.get(a_i, {}).get("pos_m")
+            bp = chain.get(b_i, {}).get("pos_m")
             link_id_i = int(link_id)
             length_f = float(length)
         except (TypeError, ValueError):
             continue
         if ap is None or bp is None:
             continue
-        early = min(ap, bp)
-        late = max(ap, bp)
+        if ap <= bp:
+            early, late, early_node, late_node = ap, bp, a_i, b_i
+        else:
+            early, late, early_node, late_node = bp, ap, b_i, a_i
         if early >= low and late <= high:
-            edges.append((early, late, length_f, link_id_i))
+            edges.append((early, late, length_f, link_id_i, early_node, late_node))
     edges.sort(key=lambda e: e[0], reverse=(not forward))
     walked = 0.0
-    for _early, _late, length, link_id in edges:
+    offsets = unmarked_link_entry_offsets or {}
+    for _early, _late, length, link_id, early_node, late_node in edges:
         if link_id in unmarked_by_link:
-            return walked
+            entry_node = early_node if forward else late_node
+            offset = offsets.get(link_id, {}).get(entry_node, 0.0)
+            return walked + offset
         walked += length
     return walked
 
@@ -450,6 +555,7 @@ def _compute_panels_for_sign(
     chain_by_route: Optional[Dict[str, Dict[int, Dict[str, Any]]]] = None,
     all_route_endpoints: Optional[set] = None,
     unmarked_by_link: Optional[Dict[int, Tuple[str, Optional[str]]]] = None,
+    unmarked_link_entry_offsets: Optional[Dict[int, Dict[int, float]]] = None,
 ) -> List[Dict[str, Any]]:
     """Panels for one anchor sign.
 
@@ -520,7 +626,8 @@ def _compute_panels_for_sign(
                         break
             if via_kind is not None:
                 clipped = _walkable_distance_to_first_unmarked(
-                    sign_node, node, chain, rls, unmarked_by_link
+                    sign_node, node, chain, rls, unmarked_by_link,
+                    unmarked_link_entry_offsets=unmarked_link_entry_offsets,
                 )
                 if clipped is not None:
                     distance_m = clipped
@@ -758,17 +865,35 @@ def _panels_from_sign(sign: Dict[str, Any], correction_factor: float) -> List[Di
     done upstream."""
     out: List[Dict[str, Any]] = []
     for p in sign.get("destinations") or []:
+        dist_m = p.get("distance_m_db")
+        via_kind = p.get("via_kind")
+        # Sign sits essentially AT the brekanten / dock: showing "0.0 km" reads
+        # confusingly ("Nørdstedalseter via Fortundalsbreen — 0 km"). Drop the
+        # number so the panel becomes "Nørdstedalseter via Fortundalsbreen".
+        if via_kind is not None and dist_m is not None and dist_m < 100.0:
+            distance_km_displayed = None
+        else:
+            distance_km_displayed = correct_distance_km(dist_m, correction_factor)
+        # When the panel both traverses an unmarked segment AND shows a km
+        # number, the number is the *marked* portion (to brekanten / dock),
+        # not the full trip. Tag it with "(til brekanten)" / "(til båt)" so
+        # a hiker doesn't read 11 km as "distance to Nørdstedalseter".
+        display_name = p["destination_name"]
+        if via_kind is not None and distance_km_displayed is not None:
+            qualifier = _UNMARKED_DISTANCE_QUALIFIER_NO.get(via_kind)
+            if qualifier:
+                display_name = f"{display_name} ({qualifier})"
         out.append(
             {
-                "destination_name": p["destination_name"],
+                "destination_name": display_name,
                 "destination_anchor_node_id": p.get("destination_anchor_node_id"),
                 "route_numbers": list(p.get("route_numbers") or []),
                 "first_link_id": p.get("first_link_id"),
-                "distance_m_db": p.get("distance_m_db"),
-                "distance_km_displayed": correct_distance_km(p.get("distance_m_db"), correction_factor),
+                "distance_m_db": dist_m,
+                "distance_km_displayed": distance_km_displayed,
                 "color": DEFAULT_PANEL_COLOR,
                 "direction": None,
-                "via_kind": p.get("via_kind"),
+                "via_kind": via_kind,
                 "via_label": p.get("via_label"),
             }
         )
@@ -1058,6 +1183,7 @@ def get_route_summary_for_area(conn, area_code: str, *, timings: Optional[list] 
             if a and b:
                 start_name = start_name or a
                 end_name = end_name or b
+        geom = geometries.get(rn) or {}
         out.append({
             "rutenummer": rn,
             "rutenavn": rutenavn,
@@ -1067,7 +1193,8 @@ def get_route_summary_for_area(conn, area_code: str, *, timings: Optional[list] 
             "end_name": end_name,
             "length_m": total_m,
             "length_km_displayed": correct_distance_km(total_m, correction_factor),
-            "route_geometry": geometries.get(rn),
+            "route_geometry": geom.get("route_geometry"),
+            "route_geometry_unmarked": geom.get("route_geometry_unmarked"),
         })
     return {"area_code": area_code, "routes": out}
 
@@ -1110,9 +1237,16 @@ def get_area_stats(conn, area_code: str) -> Dict[str, Any]:
     }
 
 
-def _route_geometries_for_rutenummers(conn, rutenummers: List[str]) -> Dict[str, Any]:
-    """Per-route GeoJSON MultiLineString (WGS84) assembled from
-    `ops.fotruteinfo_patched` so the rendered line reflects errata patches."""
+def _route_geometries_for_rutenummers(conn, rutenummers: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Per-route GeoJSON MultiLineStrings (WGS84) assembled from
+    `ops.fotruteinfo_patched` so the rendered line reflects errata patches.
+
+    Returns rutenummer -> {
+        "route_geometry":          MultiLineString of walkable (marked) segments,
+        "route_geometry_unmarked": MultiLineString of boat / glacier segments,
+    }
+    Either may be null when a route has no segments of that kind.
+    """
     if not rutenummers:
         return {}
     schema = os.getenv("ROUTE_SCHEMA", "stiflyt")
@@ -1124,8 +1258,17 @@ def _route_geometries_for_rutenummers(conn, rutenummers: List[str]) -> Dict[str,
         SELECT
             fi.rutenummer,
             ST_AsGeoJSON(
-                ST_Multi(ST_Transform(ST_Collect(f.senterlinje), 4326))
-            )::json AS route_geometry
+                ST_Multi(ST_Transform(
+                    ST_Collect(f.senterlinje) FILTER (WHERE NOT COALESCE(fi.is_unmarked, FALSE)),
+                    4326
+                ))
+            )::json AS route_geometry,
+            ST_AsGeoJSON(
+                ST_Multi(ST_Transform(
+                    ST_Collect(f.senterlinje) FILTER (WHERE COALESCE(fi.is_unmarked, FALSE)),
+                    4326
+                ))
+            )::json AS route_geometry_unmarked
         FROM {FOTRUTEINFO_VIEW} fi
         JOIN {schema_quoted}.fotrute f ON f.objid = fi.fotrute_fk
         WHERE fi.rutenummer = ANY(%s)
@@ -1133,7 +1276,13 @@ def _route_geometries_for_rutenummers(conn, rutenummers: List[str]) -> Dict[str,
     """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql, (rutenummers,))
-        return {r["rutenummer"]: r.get("route_geometry") for r in cur.fetchall()}
+        return {
+            r["rutenummer"]: {
+                "route_geometry": r.get("route_geometry"),
+                "route_geometry_unmarked": r.get("route_geometry_unmarked"),
+            }
+            for r in cur.fetchall()
+        }
 
 
 def _route_total_lengths_and_names(conn, rutenummers: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -1290,6 +1439,7 @@ def _get_signs_bare_for_prefix(conn, prefix: str, *, timings: Optional[list] = N
         links = _fetch_links_for_prefix_fast(conn, prefix)
     with phase_timer(_t, "unmarked_links"):
         unmarked_by_link = _fetch_unmarked_segments_by_link(conn)
+        unmarked_link_entry_offsets = _fetch_unmarked_link_entry_offsets(conn)
 
     routes = sorted({r for L in links for r in (L.get("rutenummer_list") or [])})
 
@@ -1330,6 +1480,7 @@ def _get_signs_bare_for_prefix(conn, prefix: str, *, timings: Optional[list] = N
                 chain_by_route=chain_by_route,
                 all_route_endpoints=all_route_endpoints,
                 unmarked_by_link=unmarked_by_link,
+                unmarked_link_entry_offsets=unmarked_link_entry_offsets,
             )
 
     for sign in report["signs"]:

@@ -84,9 +84,12 @@ export interface RouteSummary {
   end_name: string | null;
   length_m: number;
   length_km_displayed: number | null;
-  /** GeoJSON MultiLineString (WGS84) assembled via the patched fotruteinfo
-   *  view — so errata remaps (e.g. 20160407 → bre26) show up on the map. */
+  /** GeoJSON MultiLineString (WGS84) of the marked / walkable portion. */
   route_geometry?: GeoJSON.Geometry | null;
+  /** GeoJSON MultiLineString of unmarked portions (boat / glacier).
+   *  Rendered as a dashed line so the safety annotation on the panel
+   *  ("via båt", "via bre") has a visual companion on the map. */
+  route_geometry_unmarked?: GeoJSON.Geometry | null;
 }
 
 export interface AreaRouteSummaryResponse {
@@ -98,6 +101,7 @@ export interface RouteListItem {
   rutenummer: string;
   rutenavn?: string | null;
   route_geometry?: GeoJSON.Geometry | null;
+  route_geometry_unmarked?: GeoJSON.Geometry | null;
 }
 
 export type FieldPhotoTag =

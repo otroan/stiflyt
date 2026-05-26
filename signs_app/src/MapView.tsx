@@ -225,6 +225,17 @@ export default function MapView({
       })),
   }), [routes]);
 
+  const routesUnmarkedGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => ({
+    type: "FeatureCollection",
+    features: routes
+      .filter((r) => r.route_geometry_unmarked)
+      .map((r) => ({
+        type: "Feature",
+        geometry: r.route_geometry_unmarked as GeoJSON.Geometry,
+        properties: { rutenummer: r.rutenummer, rutenavn: r.rutenavn || "" },
+      })),
+  }), [routes]);
+
   const sitesGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => ({
     type: "FeatureCollection",
     features: sites
@@ -296,6 +307,33 @@ export default function MapView({
         (map.getSource("routes") as maplibregl.GeoJSONSource).setData(routesGeoJSON);
       }
 
+      // routes-unmarked source + dashed line for boat / glacier portions.
+      // Same coordinate frame, separate source so we can style with
+      // line-dasharray without affecting the walkable layer. Rendered just
+      // above the base route line so it visually replaces it on the
+      // unmarked stretch.
+      if (!map.getSource("routes-unmarked")) {
+        map.addSource("routes-unmarked", { type: "geojson", data: routesUnmarkedGeoJSON });
+        map.addLayer({
+          id: "routes-line-unmarked",
+          type: "line",
+          source: "routes-unmarked",
+          layout: {
+            // Round caps + zero-length dash = dot. Each dot is line-width
+            // diameter; gap is 2× line-width.
+            "line-cap": "round",
+          },
+          paint: {
+            "line-color": "#1a7fc4",
+            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.2, 14, 3.5],
+            "line-opacity": 0.85,
+            "line-dasharray": [0, 2],
+          },
+        });
+      } else {
+        (map.getSource("routes-unmarked") as maplibregl.GeoJSONSource).setData(routesUnmarkedGeoJSON);
+      }
+
       // sites source + circle layer + hover popup
       if (!map.getSource("sites")) {
         map.addSource("sites", { type: "geojson", data: sitesGeoJSON });
@@ -343,7 +381,7 @@ export default function MapView({
       if (map.getLayer("routes-line-focused")) map.moveLayer("routes-line-focused");
     };
     whenStyleReady(map, setup);
-  }, [routesGeoJSON, sitesGeoJSON, onSelect]);
+  }, [routesGeoJSON, routesUnmarkedGeoJSON, sitesGeoJSON, onSelect]);
 
   // Map-level click for plain map (manual placement). Always wired — the
   // caller decides whether to act based on its mode.

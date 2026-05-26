@@ -200,11 +200,12 @@ export default function App() {
         const routeItems: RouteListItem[] = [];
         for (const s of summary.routes || []) {
           m.set(s.rutenummer, s);
-          if (s.route_geometry) {
+          if (s.route_geometry || s.route_geometry_unmarked) {
             routeItems.push({
               rutenummer: s.rutenummer,
               rutenavn: s.rutenavn ?? null,
               route_geometry: s.route_geometry,
+              route_geometry_unmarked: s.route_geometry_unmarked,
             });
           }
         }
