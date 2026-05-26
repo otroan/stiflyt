@@ -1,0 +1,24 @@
+# Per-area route membership overrides for the signs_app.
+#
+# By default an area's routes are anything whose rutenummer matches
+# `<area_code>%` (the prefix). This file lets a DNT chapter:
+#   - include foreign-prefix routes it maintains, AND/OR
+#   - exclude prefix-matching routes that have been reassigned to
+#     another chapter.
+#
+# Read by services/area_routes.py and applied to the signs_app area
+# pipeline (get_route_summary_for_area, get_sign_candidates_for_area,
+# get_area_stats). The loader is mtime-cached, so edits take effect
+# without restarting the backend. No database sync required.
+#
+# IMPORTANT: this file is for *editorial* membership decisions only.
+# Use data/route_errata.yaml for actual data corrections (Kartverket
+# mislabels, deleted routes, glacier/boat crossings) — those affect
+# the rutenummer itself everywhere in the pipeline.
+
+bre:
+  include:
+    # sun27 is maintained by DNT Breheimen even though Kartverket lists
+    # it under the Sunnmøre prefix.
+    - sun27
+  # exclude: []
