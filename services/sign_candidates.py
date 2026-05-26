@@ -38,6 +38,8 @@ from .operational_store import (
 )
 from .database import validate_schema_name, quote_identifier
 from ._timing import phase_timer
+from .area_routes import area_route_filter_sql, owner_area_for_rutenummer
+from .junctions import global_routes_for_local_nodes
 import os
 
 
@@ -1372,13 +1374,16 @@ def _parse_rutenavn_endpoints(rutenavn: Optional[str]) -> tuple:
     return (None, None)
 
 
-def _fetch_links_for_prefix_fast(conn, prefix: str) -> List[Dict[str, Any]]:
+def _fetch_links_for_prefix_fast(conn, area_code: str) -> List[Dict[str, Any]]:
     """Filter-first replacement for services.signs._get_links_for_prefix.
 
     The stock `stiflyt.links_with_routes` view does a GROUP BY across the
     whole link/segment graph before any prefix filter can apply, so even
-    a 78-row result takes ~700 ms. We push the prefix filter down to
-    `fotruteinfo` first and only then aggregate.
+    a 78-row result takes ~700 ms. We push the area filter down to
+    `fotruteinfo_patched` first and only then aggregate.
+
+    Area membership is the `<area_code>%` prefix plus any include/exclude
+    in data/area_routes.yaml — see services.area_routes.
 
     Returns the same shape: list of dicts with link_id, a_node, b_node,
     length_m, rutenummer_list. ~50 ms on bre instead of ~700 ms.
@@ -1388,19 +1393,20 @@ def _fetch_links_for_prefix_fast(conn, prefix: str) -> List[Dict[str, Any]]:
         raise ValueError(f"Invalid ROUTE_SCHEMA: {schema}")
     schema_quoted = quote_identifier(schema)
     from psycopg.rows import dict_row
-    # The rutenummer_list aggregation MUST filter to the area prefix too.
+    # The rutenummer_list aggregation MUST re-apply the area filter.
     # Otherwise a link shared between bre1 and (say) jot48 brings jot48 into
     # the report, and since jot48's other links aren't loaded, jot48 looks
     # like a 1-link route whose endpoints are interior bre1 nodes. The
     # endpoint detector then mis-classifies those nodes (see the anchor 71579
-    # / Turtagrø case). Restricting rutenummer_list to the same prefix keeps
+    # / Turtagrø case). Restricting rutenummer_list to the same area keeps
     # the per-route topology honest.
+    match_sql, match_params = area_route_filter_sql(area_code, "fi.rutenummer")
     sql = f"""
         WITH matched_links AS (
             SELECT DISTINCT ls.link_id
             FROM {schema_quoted}.link_segments ls
             JOIN {FOTRUTEINFO_VIEW} fi ON fi.fotrute_fk = ls.segment_id
-            WHERE fi.rutenummer LIKE %s
+            WHERE {match_sql}
         )
         SELECT
             l.link_id,
@@ -1408,7 +1414,7 @@ def _fetch_links_for_prefix_fast(conn, prefix: str) -> List[Dict[str, Any]]:
             l.b_node,
             l.length_m,
             array_agg(DISTINCT fi.rutenummer ORDER BY fi.rutenummer)
-                FILTER (WHERE fi.rutenummer IS NOT NULL AND fi.rutenummer LIKE %s)
+                FILTER (WHERE fi.rutenummer IS NOT NULL AND {match_sql})
                 AS rutenummer_list
         FROM matched_links m
         JOIN {schema_quoted}.links l USING (link_id)
@@ -1418,7 +1424,7 @@ def _fetch_links_for_prefix_fast(conn, prefix: str) -> List[Dict[str, Any]]:
         ORDER BY l.link_id;
     """
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(sql, (f"{prefix}%", f"{prefix}%"))
+        cur.execute(sql, match_params + match_params)
         return [dict(r) for r in cur.fetchall()]
 
 
@@ -1451,8 +1457,31 @@ def _get_signs_bare_for_prefix(conn, prefix: str, *, timings: Optional[list] = N
         anchor_nodes = _fetch_anchor_nodes(conn, anchor_ids)
     with phase_timer(_t, "anchor_names"):
         anchor_names = _resolve_anchor_names_for_prefix(conn, anchor_nodes, anchor_ids, routes)
+    # Cross-area junction discovery: for every node our filtered links touch,
+    # find the routes that ALSO touch it globally. Foreign routes => the node
+    # is a multi-route junction the local-degree test would miss (sun27 meets
+    # sun29 looks like degree-2 once sun29's link is stripped by the filter).
+    with phase_timer(_t, "cross_area_junctions"):
+        local_routes_by_node: Dict[int, set] = {}
+        for L in links:
+            rset = set(L.get("rutenummer_list") or [])
+            for n in (L.get("a_node"), L.get("b_node")):
+                if n is None:
+                    continue
+                local_routes_by_node.setdefault(int(n), set()).update(rset)
+        global_routes = global_routes_for_local_nodes(conn, anchor_ids)
+        foreign_routes_by_node: Dict[int, List[str]] = {}
+        for nid, gr in global_routes.items():
+            foreign = sorted(set(gr) - local_routes_by_node.get(nid, set()))
+            if foreign:
+                foreign_routes_by_node[nid] = foreign
+        extra_junction_nodes = set(foreign_routes_by_node.keys())
     with phase_timer(_t, "compute_report"):
-        report = compute_sign_report_from_links(links, anchor_nodes, anchor_names, sign_status={})
+        report = compute_sign_report_from_links(
+            links, anchor_nodes, anchor_names, sign_status={},
+            extra_junction_nodes=extra_junction_nodes,
+            foreign_routes_by_node=foreign_routes_by_node,
+        )
     report["scope"] = {"prefix": prefix, "routes": routes}
 
     # 3. Topology-aware destinations override (chain walk over each route).
@@ -1490,6 +1519,23 @@ def _get_signs_bare_for_prefix(conn, prefix: str, *, timings: Optional[list] = N
         sign["utm_coords"] = format_utm32v_block(lon, lat) if lon is not None and lat is not None else None
         sign.pop("route_km_by_route", None)
     return report
+
+
+def _group_foreign_routes_by_area(foreign_routes: List[str]) -> List[Dict[str, Any]]:
+    """Group foreign routes by resolved owner area, for cross-chapter coordination hints.
+
+    Output: list of {"owner_area": <code or None>, "route_numbers": [...]},
+    sorted by area code with the unattributed group last.
+    """
+    if not foreign_routes:
+        return []
+    by_area: Dict[Optional[str], List[str]] = {}
+    for r in foreign_routes:
+        by_area.setdefault(owner_area_for_rutenummer(r), []).append(r)
+    return [
+        {"owner_area": area, "route_numbers": sorted(routes)}
+        for area, routes in sorted(by_area.items(), key=lambda kv: (kv[0] is None, kv[0] or ""))
+    ]
 
 
 def get_sign_candidates_for_area(conn, area_code: str, *, timings: Optional[list] = None) -> Dict[str, Any]:
@@ -1544,9 +1590,14 @@ def get_sign_candidates_for_area(conn, area_code: str, *, timings: Optional[list
                     "status": status,
                     "is_endpoint": sign.get("is_endpoint", False),
                     "is_junction": sign.get("is_junction", False),
+                    "is_cross_area": sign.get("is_cross_area", False),
                     "is_manual": False,
                     "rutenummer": None,
                     "route_numbers": list(sign.get("rutenummer_list") or []),
+                    "foreign_route_numbers": list(sign.get("foreign_route_numbers") or []),
+                    "foreign_route_groups": _group_foreign_routes_by_area(
+                        list(sign.get("foreign_route_numbers") or [])
+                    ),
                     "back_text": format_sign_back(name, lon, lat),
                     "utm_coords": sign.get("utm_coords"),
                     "send_to_name": persisted_row.get("send_to_name") if persisted_row else None,

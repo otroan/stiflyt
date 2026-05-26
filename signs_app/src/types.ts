@@ -22,6 +22,11 @@ export interface SignPanel {
   direction?: string | null;
 }
 
+export interface ForeignRouteGroup {
+  owner_area: string | null;
+  route_numbers: string[];
+}
+
 export interface SignSite {
   sign_site_id: number | null;
   site_code: string | null;
@@ -32,9 +37,12 @@ export interface SignSite {
   status: SignStatus;
   is_endpoint: boolean;
   is_junction: boolean;
+  is_cross_area?: boolean;
   is_manual?: boolean;
   rutenummer?: string | null;
   route_numbers: string[];
+  foreign_route_numbers?: string[];
+  foreign_route_groups?: ForeignRouteGroup[];
   back_text: string;
   utm_coords: string | null;
   panels: SignPanel[];

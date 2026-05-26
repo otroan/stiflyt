@@ -63,6 +63,30 @@ body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #11
   white-space: pre-wrap;
 }
 
+.site-card .cross-area-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #6b4f00;
+  background: #fff8e0;
+  border: 1px solid #e8d28a;
+  border-radius: 4px;
+  padding: 4px 6px;
+  margin-bottom: 8px;
+}
+.site-card .cross-area-label { font-weight: 600; }
+.site-card .cross-area-chip {
+  background: white;
+  border: 1px solid #d8c178;
+  border-radius: 3px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.site-card .cross-area-chip strong { text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
+.site-card .cross-area-routes { color: #6b6b6b; }
+
 .panel-row {
   display: grid;
   grid-template-columns: 1fr 60px 80px 28px;

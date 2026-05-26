@@ -414,6 +414,8 @@ def compute_sign_report_from_links(
     anchor_nodes: Dict[int, Dict[str, Any]],
     anchor_names: Dict[int, Dict[str, Any]],
     sign_status: Optional[Dict[int, List[Dict[str, Any]]]] = None,
+    extra_junction_nodes: Optional[set] = None,
+    foreign_routes_by_node: Optional[Dict[int, List[str]]] = None,
 ) -> Dict[str, Any]:
     adjacency, degrees = _build_graph(links)
     
@@ -492,8 +494,14 @@ def compute_sign_report_from_links(
     # 2. Junctions (nodes with degree >= 3)
     endpoints_list = sorted(all_route_endpoints)
     endpoints_set = all_route_endpoints  # For fast lookup
-    junctions = sorted(node for node, degree in degrees.items() if degree >= 3)
-    sign_nodes = sorted(set(endpoints_list + junctions))
+    local_junctions = {node for node, degree in degrees.items() if degree >= 3}
+    # Cross-route junctions where the foreign-route links were stripped by
+    # the area filter — local degree looks like 2, but globally the node
+    # carries another route. Caller supplies these from junctions module.
+    extra = set(extra_junction_nodes or ())
+    junctions = sorted(local_junctions | extra)
+    junctions_set = set(junctions)
+    sign_nodes = sorted(set(endpoints_list) | junctions_set)
 
     # Cumulative km from route start at each node (from link lengths, no geometry)
     cumulative_km_per_route: Dict[str, Dict[int, float]] = {}
@@ -631,6 +639,9 @@ def compute_sign_report_from_links(
             }
             serialized_status.append(serialized)
 
+        sign_foreign = sorted(
+            (foreign_routes_by_node or {}).get(sign_node, []) or []
+        )
         signs.append(
             {
                 "anchor_node_id": sign_node,
@@ -640,7 +651,7 @@ def compute_sign_report_from_links(
                 ],
                 "link_count": degrees.get(sign_node, 0),
                 "is_endpoint": sign_node in endpoints_set,
-                "is_junction": sign_node in junctions,
+                "is_junction": sign_node in junctions_set,
                 "name": anchor_names.get(sign_node, {}).get("name"),
                 "destinations": sign_destinations,
                 "status": serialized_status,
@@ -650,6 +661,8 @@ def compute_sign_report_from_links(
                     for r in node_routes.get(sign_node, set())
                     if r in cumulative_km_per_route and sign_node in cumulative_km_per_route[r]
                 },
+                "foreign_route_numbers": sign_foreign,
+                "is_cross_area": bool(sign_foreign),
             }
         )
 

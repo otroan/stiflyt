@@ -84,23 +84,22 @@ git fetch "$GIT_REMOTE" "$GIT_BRANCH" || {
     exit 1
 }
 
-# Check if there are updates
+# Check if there are updates. We still pull when there are, but we do NOT
+# early-exit when up-to-date — the user may have pulled manually, leaving
+# pip install / npm build undone, so always run those steps below.
 LOCAL_COMMIT=$(git rev-parse HEAD)
 REMOTE_COMMIT=$(git rev-parse "${GIT_REMOTE}/${GIT_BRANCH}")
 
 if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ]; then
-    log "Already up to date (commit: $LOCAL_COMMIT)"
-    exit 0
+    log "Already at $LOCAL_COMMIT — skipping git pull, still rebuilding"
+else
+    log "Updating from $LOCAL_COMMIT to $REMOTE_COMMIT"
+    log "Pulling changes..."
+    git pull "$GIT_REMOTE" "$GIT_BRANCH" || {
+        log_error "Failed to pull changes"
+        exit 1
+    }
 fi
-
-log "Updating from $LOCAL_COMMIT to $REMOTE_COMMIT"
-
-# Pull changes
-log "Pulling changes..."
-git pull "$GIT_REMOTE" "$GIT_BRANCH" || {
-    log_error "Failed to pull changes"
-    exit 1
-}
 
 # Update virtual environment if needed
 if [ ! -d "$VENV_DIR" ]; then

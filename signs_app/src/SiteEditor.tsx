@@ -155,6 +155,18 @@ export default function SiteEditor({
         {kind} · {site.anchor_node_id != null ? `ankernode ${site.anchor_node_id}` : "punkt"} · {site.route_numbers.join(", ") || "ingen ruter"}
       </div>
 
+      {site.is_cross_area && site.foreign_route_groups && site.foreign_route_groups.length > 0 && (
+        <div className="cross-area-meta">
+          <span className="cross-area-label">Koordiner med:</span>
+          {site.foreign_route_groups.map((g, i) => (
+            <span key={i} className="cross-area-chip">
+              <strong>{g.owner_area ?? "ukjent"}</strong>
+              <span className="cross-area-routes"> · {g.route_numbers.join(", ")}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="back-text">{site.back_text || "(ingen baksidetekst)"}</div>
 
       <div>
