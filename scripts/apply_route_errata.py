@@ -1,14 +1,22 @@
-"""Sync data/route_errata.yaml into ops.rutenummer_remap + ops.unmarked_segment.
+"""Sync data/route_errata.yaml into the ops errata tables.
 
 Idempotent: deleting entries from the YAML and re-running this script removes
-them from the database too. Run via `make sync-route-errata` after editing
-the YAML.
+them from the database too. Run via `make sync-route-errata`.
+
+NOTE on direction: the signs_app UI writes link exclusions (and may write other
+corrections) directly to the database, so the DB is the runtime source of
+truth. This script applies YAML → DB, which OVERWRITES the DB to match the file
+— use it to bootstrap or restore a fresh environment, not routinely on a live
+one. The regular workflow is the inverse: `make dump-route-errata` exports the
+DB to YAML for git (see scripts/dump_route_errata.py).
 
 Schemas:
-    ops.rutenummer_remap   — migration 015 / 016
+    ops.rutenummer_remap     — migration 015 / 016
         (from_rutenummer PK, to_rutenummer, deleted, comment, reported_at, …)
-    ops.unmarked_segment   — migration 017
+    ops.unmarked_segment     — migration 017
         (fotrute_fk PK, kind, label, lokalid, comment, reported_at, …)
+    ops.route_link_exclusion — migration 020
+        ((rutenummer, link_id) PK, reason, comment, reported_at, …)
 """
 from __future__ import annotations
 
@@ -87,9 +95,40 @@ def load_unmarked() -> dict[int, dict]:
     return out
 
 
+def load_link_exclusions() -> list[dict]:
+    """YAML `link_exclusions:` is keyed by rutenummer with a list of entries:
+
+        link_exclusions:
+          fem30:
+            - { link_id: 266, reason: wrong_arm, comment: "...", reported_at: 2026-05-27 }
+    """
+    if not ERRATA_FILE.exists():
+        return []
+    raw = yaml.safe_load(ERRATA_FILE.read_text(encoding="utf-8")) or {}
+    items = raw.get("link_exclusions") or {}
+    out: list[dict] = []
+    for rutenummer, entries in items.items():
+        if not isinstance(entries, list):
+            raise ValueError(f"link_exclusions[{rutenummer!r}] must be a list of entries")
+        for e in entries:
+            if not isinstance(e, dict) or "link_id" not in e:
+                raise ValueError(
+                    f"link_exclusions[{rutenummer!r}] entries must be mappings with a link_id"
+                )
+            out.append({
+                "rutenummer": str(rutenummer),
+                "link_id": int(e["link_id"]),
+                "reason": e.get("reason"),
+                "comment": e.get("comment"),
+                "reported_at": e.get("reported_at"),
+            })
+    return out
+
+
 def sync(updated_by: str = "apply_route_errata") -> None:
     remaps = load_remaps()
     unmarked = load_unmarked()
+    link_exclusions = load_link_exclusions()
     with op_db_connection() as conn:
         with conn.cursor() as cur:
             # --- rutenummer_remap ---
@@ -164,6 +203,40 @@ def sync(updated_by: str = "apply_route_errata") -> None:
                     ),
                 )
 
+            # --- route_link_exclusion ---
+            yaml_excl_keys = {(x["rutenummer"], x["link_id"]) for x in link_exclusions}
+            cur.execute("SELECT rutenummer, link_id FROM ops.route_link_exclusion")
+            existing_excl = {(r[0], int(r[1])) for r in cur.fetchall()}
+            stale_excl = existing_excl - yaml_excl_keys
+            if stale_excl:
+                cur.executemany(
+                    "DELETE FROM ops.route_link_exclusion WHERE rutenummer = %s AND link_id = %s",
+                    [list(k) for k in stale_excl],
+                )
+                print(f"removed {len(stale_excl)} stale link exclusion(s): {sorted(stale_excl)}")
+            for x in link_exclusions:
+                cur.execute(
+                    """
+                    INSERT INTO ops.route_link_exclusion
+                        (rutenummer, link_id, reason, comment, reported_at, updated_by, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (rutenummer, link_id) DO UPDATE
+                        SET reason = EXCLUDED.reason,
+                            comment = EXCLUDED.comment,
+                            reported_at = EXCLUDED.reported_at,
+                            updated_by = EXCLUDED.updated_by,
+                            updated_at = NOW();
+                    """,
+                    (
+                        x["rutenummer"],
+                        x["link_id"],
+                        x.get("reason"),
+                        x.get("comment"),
+                        x.get("reported_at"),
+                        updated_by,
+                    ),
+                )
+
     n_remap = sum(1 for v in remaps.values() if not v.get("delete"))
     n_delete = sum(1 for v in remaps.values() if v.get("delete"))
     by_kind: dict[str, int] = {}
@@ -173,7 +246,8 @@ def sync(updated_by: str = "apply_route_errata") -> None:
     print(
         f"synced {n_remap} remap{'s' if n_remap != 1 else ''}, "
         f"{n_delete} deletion{'s' if n_delete != 1 else ''}, "
-        f"{len(unmarked)} unmarked ({unmarked_summary})"
+        f"{len(unmarked)} unmarked ({unmarked_summary}), "
+        f"{len(link_exclusions)} link exclusion{'s' if len(link_exclusions) != 1 else ''}"
     )
 
 

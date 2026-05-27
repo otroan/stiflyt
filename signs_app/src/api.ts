@@ -5,7 +5,12 @@ import type {
   FieldPhoto,
   FieldPhotosResponse,
   PlacenameCandidatesResponse,
+  LinkExclusionsResponse,
+  RouteAnnotation,
+  RouteAnnotationsResponse,
+  RouteValidationResponse,
   SessionUser,
+  WorkMarkersResponse,
 } from "./types";
 
 const BASE = "/api/v1";
@@ -13,6 +18,16 @@ const BASE = "/api/v1";
 // Suppressed once we've already triggered a redirect to the login flow, so a
 // burst of in-flight 401s doesn't replace `window.location` repeatedly.
 let didRedirectOn401 = false;
+
+// Authenticated user's email. The backend's mutation endpoints read it from
+// the `X-User` header (see api/routes.py:2276) and persist it as
+// `recorded_by` / `updated_by` / `uploaded_by`. App.tsx calls `setCurrentUser`
+// after the /auth/me round-trip; until then we send "signs_app" so the
+// header is always non-empty and server-side validation never breaks.
+let currentUserEmail: string | null = null;
+function xUser(): string {
+  return currentUserEmail || "signs_app";
+}
 
 class UnauthenticatedError extends Error {
   constructor() {
@@ -44,7 +59,7 @@ async function fetchWithAuth(input: RequestInfo | URL, init?: RequestInit): Prom
 
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", "X-User": "signs_app" },
+    headers: { "Content-Type": "application/json", "X-User": xUser() },
     ...init,
   });
   handleMaybeAuth(res);
@@ -61,7 +76,7 @@ async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
 async function timedJsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const t0 = performance.now();
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", "X-User": "signs_app" },
+    headers: { "Content-Type": "application/json", "X-User": xUser() },
     ...init,
   });
   const tNet = performance.now() - t0;
@@ -83,6 +98,11 @@ async function timedJsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  /** Set after successful /auth/me so subsequent writes carry the user's
+   *  identity in the X-User header (which the backend persists as
+   *  recorded_by / updated_by / uploaded_by). Null clears it. */
+  setCurrentUser: (email: string | null) => { currentUserEmail = email; },
+
   /** Current session user, or null if not logged in. Does NOT redirect — the
    *  caller decides whether to show a login screen or bounce to Google. */
   getMe: async (): Promise<SessionUser | null> => {
@@ -182,7 +202,7 @@ export const api = {
   deleteSite: async (signSiteId: number) => {
     const res = await fetchWithAuth(`${BASE}/signs/sites/${signSiteId}`, {
       method: "DELETE",
-      headers: { "X-User": "signs_app" },
+      headers: { "X-User": xUser() },
     });
     if (!res.ok && res.status !== 204) {
       const text = await res.text().catch(() => "");
@@ -197,10 +217,10 @@ export const api = {
     const res = panels && panels.length > 0
       ? await fetchWithAuth(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-User": "signs_app" },
+          headers: { "Content-Type": "application/json", "X-User": xUser() },
           body: JSON.stringify({ panels }),
         })
-      : await fetchWithAuth(url, { headers: { "X-User": "signs_app" } });
+      : await fetchWithAuth(url, { headers: { "X-User": xUser() } });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`API ${res.status} xlsx: ${text}`);
@@ -221,10 +241,10 @@ export const api = {
     const res = panels && panels.length > 0
       ? await fetchWithAuth(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-User": "signs_app" },
+          headers: { "Content-Type": "application/json", "X-User": xUser() },
           body: JSON.stringify({ panels }),
         })
-      : await fetchWithAuth(url, { headers: { "X-User": "signs_app" } });
+      : await fetchWithAuth(url, { headers: { "X-User": xUser() } });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`API ${res.status} field-pdf: ${text}`);
@@ -233,6 +253,102 @@ export const api = {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `feltkart-${area}${panels && panels.length > 0 ? "-valgte" : ""}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
+  },
+
+  // --- Route annotations (rutebok / inspeksjon / dugnad / arbeid) ---
+
+  listRouteAnnotations: (area: string, rutenummer: string, opts?: { kind?: string; includeResolved?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.kind) params.set("kind", opts.kind);
+    if (opts?.includeResolved === false) params.set("include_resolved", "false");
+    const q = params.toString();
+    return jsonFetch<RouteAnnotationsResponse>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/annotations${q ? `?${q}` : ""}`,
+    );
+  },
+
+  createRouteAnnotation: (area: string, rutenummer: string, payload: {
+    kind: string;
+    title?: string | null;
+    body?: string | null;
+    occurred_at?: string | null;
+    position_along_m?: number | null;
+    lon?: number | null;
+    lat?: number | null;
+  }) =>
+    jsonFetch<RouteAnnotation>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/annotations`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  updateRouteAnnotation: (id: number, patch: Partial<RouteAnnotation> & { lon?: number | null; lat?: number | null }) =>
+    jsonFetch<RouteAnnotation>(`/route-annotations/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  deleteRouteAnnotation: async (id: number) => {
+    const res = await fetchWithAuth(`${BASE}/route-annotations/${id}`, {
+      method: "DELETE",
+      headers: { "X-User": xUser() },
+    });
+    if (!res.ok && res.status !== 204) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`API ${res.status} delete annotation: ${text}`);
+    }
+  },
+
+  listWorkMarkers: (area: string, includeResolved = false) =>
+    jsonFetch<WorkMarkersResponse>(
+      `/routes/${area}/work-markers${includeResolved ? "?include_resolved=true" : ""}`,
+    ),
+
+  // --- Route validation + link-exclusion correction ---
+
+  getRouteValidation: (area: string, rutenummer: string) =>
+    jsonFetch<RouteValidationResponse>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/validation`,
+    ),
+
+  listLinkExclusions: (area: string, rutenummer: string) =>
+    jsonFetch<LinkExclusionsResponse>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/link-exclusions`,
+    ),
+
+  addLinkExclusions: (
+    area: string,
+    rutenummer: string,
+    payload: { link_ids: number[]; reason?: string; comment?: string },
+  ) =>
+    jsonFetch<LinkExclusionsResponse>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/link-exclusions`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  clearLinkExclusions: (area: string, rutenummer: string, linkIds?: number[]) => {
+    const q = linkIds && linkIds.length > 0 ? `?link_ids=${linkIds.join(",")}` : "";
+    return jsonFetch<{ area_code: string; rutenummer: string; deleted: number }>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/link-exclusions${q}`,
+      { method: "DELETE" },
+    );
+  },
+
+  /** Route-validation XLSX: one row per issue + a per-route summary sheet. */
+  downloadValidationXlsx: async (area: string) => {
+    const url = `${BASE}/signs/validation/${area}.xlsx`;
+    const res = await fetchWithAuth(url, { headers: { "X-User": xUser() } });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`API ${res.status} validation-xlsx: ${text}`);
+    }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `rutevalidering-${area}.xlsx`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -280,7 +396,7 @@ export const api = {
     for (const t of payload?.tags ?? []) form.append("tags", t);
     const res = await fetchWithAuth(`${BASE}/photos`, {
       method: "POST",
-      headers: { "X-User": "signs_app" },
+      headers: { "X-User": xUser() },
       body: form,
     });
     if (!res.ok) {
@@ -302,7 +418,7 @@ export const api = {
   deletePhoto: async (photoId: number) => {
     const res = await fetchWithAuth(`${BASE}/photos/${photoId}`, {
       method: "DELETE",
-      headers: { "X-User": "signs_app" },
+      headers: { "X-User": xUser() },
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");

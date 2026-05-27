@@ -339,6 +339,49 @@ def ensure_operational_schema(conn) -> None:
             ON {schema_quoted}.sign_site_skilt (sign_site_id);
             """
         )
+
+        # Polymorphic per-route annotations (Phase B of the signs_app expansion):
+        # rutebok diary, inspections, dugnad reports, and georeferenced work
+        # markers (klipping/bro/klopp/other) live in a single table keyed by
+        # `kind`. Empty geom = a free-text entry; non-null geom + kind=work_*
+        # also renders as a marker on the map.
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {schema_quoted}.route_annotations (
+                id BIGSERIAL PRIMARY KEY,
+                area_code TEXT NOT NULL,
+                rutenummer TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                position_along_m DOUBLE PRECISION NULL,
+                geom GEOMETRY(Point, 25833) NULL,
+                title TEXT NULL,
+                body TEXT NULL,
+                occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                recorded_by TEXT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                resolved_at TIMESTAMPTZ NULL
+            );
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS route_annotations_area_route_idx
+            ON {schema_quoted}.route_annotations (area_code, rutenummer);
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS route_annotations_area_kind_idx
+            ON {schema_quoted}.route_annotations (area_code, kind);
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS route_annotations_geom_idx
+            ON {schema_quoted}.route_annotations USING GIST (geom)
+            WHERE geom IS NOT NULL;
+            """
+        )
     except psycopg.errors.InsufficientPrivilege as e:
         raise RuntimeError(
             "ops schema is not initialized and the current DB user lacks DDL privileges. "

@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Button, Card, Group, Stack, Text } from "@mantine/core";
-import { IconDownload, IconFileTypePdf, IconFileTypeXls } from "@tabler/icons-react";
+import { IconDownload, IconFileTypePdf, IconFileTypeXls, IconChecklist } from "@tabler/icons-react";
 import { api } from "./api";
 import { notifyError } from "./notify";
 
@@ -9,14 +10,32 @@ interface Props {
   onClearSelection: () => void;
 }
 
-/** Sidebar tab that collects all bulk-export actions. Two cards:
- *  Excel manufacturing list (one row per panel) and field-installation PDF
- *  (one A4 spread per sign site). Each card supports both "alle" and
- *  "valgte" — the latter respects the panel selection set built up by
- *  ticking checkboxes in the SiteEditor. */
+/** Sidebar tab that collects all bulk-export actions. Three cards:
+ *  Excel manufacturing list (one row per panel), field-installation PDF
+ *  (one A4 spread per sign site), and the route-validation XLSX report.
+ *  Each download button tracks its own loading state (the backend runs
+ *  these on a threadpool so other UI events stay responsive). */
 export default function ExportTab({ areaCode, selectedPanels, onClearSelection }: Props) {
   const n = selectedPanels.size;
-  const handle = (p: Promise<unknown>) => p.catch((e) => notifyError(e));
+  // Per-button loading keys — the buttons are mutually independent but each
+  // download takes several seconds, so users need explicit per-click
+  // feedback ("noen form for tilbakemelding") to know the click registered.
+  const [running, setRunning] = useState<Set<string>>(new Set());
+  const isRunning = (k: string) => running.has(k);
+  const handle = async (key: string, p: Promise<unknown>) => {
+    setRunning((s) => new Set(s).add(key));
+    try {
+      await p;
+    } catch (e) {
+      notifyError(e);
+    } finally {
+      setRunning((s) => {
+        const next = new Set(s);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
 
   return (
     <Stack gap="md">
@@ -33,7 +52,9 @@ export default function ExportTab({ areaCode, selectedPanels, onClearSelection }
             leftSection={<IconDownload size={14} />}
             variant="default"
             size="xs"
-            onClick={() => handle(api.downloadManufacturingXlsx(areaCode))}
+            loading={isRunning("manuf-all")}
+            disabled={isRunning("manuf-all")}
+            onClick={() => handle("manuf-all", api.downloadManufacturingXlsx(areaCode))}
           >
             Last ned alle
           </Button>
@@ -41,8 +62,9 @@ export default function ExportTab({ areaCode, selectedPanels, onClearSelection }
             leftSection={<IconDownload size={14} />}
             variant="default"
             size="xs"
-            disabled={n === 0}
-            onClick={() => handle(api.downloadManufacturingXlsx(areaCode, Array.from(selectedPanels)))}
+            loading={isRunning("manuf-sel")}
+            disabled={n === 0 || isRunning("manuf-sel")}
+            onClick={() => handle("manuf-sel", api.downloadManufacturingXlsx(areaCode, Array.from(selectedPanels)))}
           >
             Valgte ({n})
           </Button>
@@ -62,7 +84,9 @@ export default function ExportTab({ areaCode, selectedPanels, onClearSelection }
             leftSection={<IconDownload size={14} />}
             variant="default"
             size="xs"
-            onClick={() => handle(api.downloadFieldPdf(areaCode))}
+            loading={isRunning("pdf-all")}
+            disabled={isRunning("pdf-all")}
+            onClick={() => handle("pdf-all", api.downloadFieldPdf(areaCode))}
           >
             Last ned alle
           </Button>
@@ -70,10 +94,33 @@ export default function ExportTab({ areaCode, selectedPanels, onClearSelection }
             leftSection={<IconDownload size={14} />}
             variant="default"
             size="xs"
-            disabled={n === 0}
-            onClick={() => handle(api.downloadFieldPdf(areaCode, Array.from(selectedPanels)))}
+            loading={isRunning("pdf-sel")}
+            disabled={n === 0 || isRunning("pdf-sel")}
+            onClick={() => handle("pdf-sel", api.downloadFieldPdf(areaCode, Array.from(selectedPanels)))}
           >
             Valgte ({n})
+          </Button>
+        </Group>
+      </Card>
+
+      <Card withBorder padding="md" radius="md">
+        <Group gap="sm" wrap="nowrap">
+          <IconChecklist size={28} stroke={1.5} color="#7a5a18" />
+          <Stack gap={2}>
+            <Text fw={600}>Rutevalideringsrapport (Excel)</Text>
+            <Text size="xs" c="dimmed">Funn per rute + sammendrag. Brukes som tilbakemelding til Kartverket. Kan ta 10–30 sekunder.</Text>
+          </Stack>
+        </Group>
+        <Group mt="md" gap="xs">
+          <Button
+            leftSection={<IconDownload size={14} />}
+            variant="default"
+            size="xs"
+            loading={isRunning("validation")}
+            disabled={isRunning("validation")}
+            onClick={() => handle("validation", api.downloadValidationXlsx(areaCode))}
+          >
+            {isRunning("validation") ? "Bygger rapport…" : "Last ned rapport"}
           </Button>
         </Group>
       </Card>

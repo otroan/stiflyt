@@ -45,17 +45,9 @@ def detect_multi_route_junctions(conn) -> List[Dict[str, Any]]:
 
     sql = f"""
         WITH node_routes AS (
-            SELECT l.a_node AS node_id, fi.rutenummer
-            FROM {schema_q}.links l
-            JOIN {schema_q}.link_segments ls ON ls.link_id = l.link_id
-            JOIN {FOTRUTEINFO_VIEW} fi ON fi.fotrute_fk = ls.segment_id
-            WHERE fi.rutenummer IS NOT NULL
+            SELECT a_node AS node_id, rutenummer FROM ops.route_link_graph
             UNION ALL
-            SELECT l.b_node, fi.rutenummer
-            FROM {schema_q}.links l
-            JOIN {schema_q}.link_segments ls ON ls.link_id = l.link_id
-            JOIN {FOTRUTEINFO_VIEW} fi ON fi.fotrute_fk = ls.segment_id
-            WHERE fi.rutenummer IS NOT NULL
+            SELECT b_node AS node_id, rutenummer FROM ops.route_link_graph
         )
         SELECT
             nr.node_id,
@@ -114,27 +106,15 @@ def global_routes_for_local_nodes(
         return {}
     from psycopg.rows import dict_row
 
-    schema = os.getenv("ROUTE_SCHEMA", "stiflyt")
-    if not validate_schema_name(schema):
-        raise ValueError(f"Invalid ROUTE_SCHEMA: {schema}")
-    schema_q = quote_identifier(schema)
-
-    sql = f"""
+    sql = """
         SELECT
             x.node_id,
-            ARRAY_AGG(DISTINCT fi.rutenummer ORDER BY fi.rutenummer) AS routes
+            ARRAY_AGG(DISTINCT x.rutenummer ORDER BY x.rutenummer) AS routes
         FROM (
-            SELECT l.a_node AS node_id, l.link_id
-            FROM {schema_q}.links l
-            WHERE l.a_node = ANY(%s)
+            SELECT a_node AS node_id, rutenummer FROM ops.route_link_graph WHERE a_node = ANY(%s)
             UNION ALL
-            SELECT l.b_node, l.link_id
-            FROM {schema_q}.links l
-            WHERE l.b_node = ANY(%s)
+            SELECT b_node AS node_id, rutenummer FROM ops.route_link_graph WHERE b_node = ANY(%s)
         ) x
-        JOIN {schema_q}.link_segments ls ON ls.link_id = x.link_id
-        JOIN {FOTRUTEINFO_VIEW} fi ON fi.fotrute_fk = ls.segment_id
-        WHERE fi.rutenummer IS NOT NULL
         GROUP BY x.node_id
     """
     with conn.cursor(row_factory=dict_row) as cur:

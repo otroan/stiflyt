@@ -100,7 +100,6 @@ class MetadataConsistencyValidator(BaseValidator):
         schema_quoted = quote_identifier(ROUTE_SCHEMA)
 
         # Collect all values across all segments
-        all_rutenummer = []
         all_rutenavn = []
         all_vedlikeholdsansvarlig = []
         all_rutetype = []
@@ -145,8 +144,6 @@ class MetadataConsistencyValidator(BaseValidator):
 
             # Collect values
             for row in fotruteinfo_rows:
-                if row.get('rutenummer'):
-                    all_rutenummer.append(row['rutenummer'])
                 if row.get('rutenavn'):
                     all_rutenavn.append(row.get('rutenavn'))
                 if row.get('vedlikeholdsansvarlig'):
@@ -155,16 +152,6 @@ class MetadataConsistencyValidator(BaseValidator):
                     all_rutetype.append(row.get('rutetype'))
                 if row.get('gradering'):
                     all_gradering.append(row.get('gradering'))
-
-        # Check rutenummer consistency
-        rutenummer_values = set(all_rutenummer)
-        if len(rutenummer_values) > 1:
-            result.add_issue(ValidationIssue(
-                type='INCONSISTENT_RUTENUMMER',
-                message=f'Route has segments with different rutenummer values: {sorted(rutenummer_values)}',
-                severity=Severity.ERROR,
-                metadata={'values': sorted(rutenummer_values)}
-            ))
 
         # Check rutenavn consistency
         rutenavn_values = set(all_rutenavn)

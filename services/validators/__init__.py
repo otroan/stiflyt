@@ -18,6 +18,7 @@ from .geometry import (
     LinkConnectivityValidator,
     SegmentGapValidator,
 )
+from .topology import RouteLoopValidator, RouteDisconnectedValidator
 
 # Auto-register validators
 def _register_default_validators():
@@ -38,6 +39,10 @@ def _register_default_validators():
     registry.register(LinkConnectivityValidator(), enabled=True)
     registry.register(SegmentGapValidator(), enabled=True)
 
+    # Register topology validators
+    registry.register(RouteLoopValidator(), enabled=True)
+    registry.register(RouteDisconnectedValidator(), enabled=True)
+
 # Auto-register on import
 _register_default_validators()
 
@@ -56,4 +61,6 @@ __all__ = [
     'RouteGeometryValidator',
     'LinkConnectivityValidator',
     'SegmentGapValidator',
+    'RouteLoopValidator',
+    'RouteDisconnectedValidator',
 ]

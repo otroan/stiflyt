@@ -88,6 +88,7 @@ from services._timing import format_server_timing
 from services import field_photos as fp_svc
 from services.sign_excel import build_manufacturing_workbook
 from services.sign_pdf import build_field_pdf
+from services.route_validation_report import build_validation_workbook
 from services.route_service import snap_point_to_full_route
 from services.route_service import point_on_route_km_and_geom
 from services.validators import get_validator_registry
@@ -1885,7 +1886,7 @@ async def get_signs_by_prefix(
 
 
 @router.get("/signs/manufacturing/{area_code}.xlsx")
-async def get_manufacturing_xlsx(area_code: str):
+def get_manufacturing_xlsx(area_code: str):
     """Excel manufacturing list (one row per panel) for an area."""
     if not re.match(r"^[a-z]{2,5}$", area_code or ""):
         raise HTTPException(status_code=400, detail="Invalid area_code")
@@ -1906,7 +1907,7 @@ async def get_manufacturing_xlsx(area_code: str):
 
 
 @router.post("/signs/manufacturing/{area_code}.xlsx")
-async def post_manufacturing_xlsx(area_code: str, payload: Dict):
+def post_manufacturing_xlsx(area_code: str, payload: Dict):
     """Excel manufacturing list filtered to a user-supplied selection.
 
     Body: {"panels": ["<sign_site_id>:<destination_anchor_node_id>", ...]}
@@ -1932,8 +1933,32 @@ async def post_manufacturing_xlsx(area_code: str, payload: Dict):
         raise HTTPException(status_code=500, detail=f"Error generating manufacturing.xlsx: {e}")
 
 
+@router.get("/signs/validation/{area_code}.xlsx")
+def get_validation_xlsx(area_code: str):
+    """Per-area route-validation report (one row per issue + a summary sheet).
+
+    Runs the registered validators (services.validators) on every route in
+    the area plus a ferry-/boat-track heuristic, and produces an XLSX
+    suitable for forwarding to Kartverket. See services/route_validation_report.py.
+    """
+    if not re.match(r"^[a-z]{2,5}$", area_code or ""):
+        raise HTTPException(status_code=400, detail="Invalid area_code")
+    try:
+        with db_connection() as conn:
+            data = build_validation_workbook(conn, area_code)
+        return Response(
+            content=data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=rutevalidering-{area_code}.xlsx"},
+        )
+    except Exception as e:
+        print(f"Error generating validation.xlsx for {area_code}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error generating validation.xlsx: {e}")
+
+
 @router.get("/signs/field-pdf/{area_code}.pdf")
-async def get_field_pdf(area_code: str):
+def get_field_pdf(area_code: str):
     """Field PDF for an area — one A4 page per sign site with map snippet,
     route memberships, endpoint distances, panels, and nearby photos."""
     if not re.match(r"^[a-z]{2,5}$", area_code or ""):
@@ -1953,7 +1978,7 @@ async def get_field_pdf(area_code: str):
 
 
 @router.post("/signs/field-pdf/{area_code}.pdf")
-async def post_field_pdf(area_code: str, payload: Dict):
+def post_field_pdf(area_code: str, payload: Dict):
     """Field PDF filtered to a selection. Body matches the Excel POST shape:
     ``{"panels": ["<sign_site_id>:<destination_anchor_node_id>:<first_link_id>", ...]}``.
     Empty / missing selection returns the same content as the GET variant."""
@@ -2354,6 +2379,265 @@ async def get_signs_area_stats(area_code: str) -> Dict:
         print(f"Error getting area stats for {area_code}: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error getting area stats: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Route annotations — rutebok diary, inspection, dugnad, work-marker
+# ---------------------------------------------------------------------------
+
+
+def _validate_rutenummer(rutenummer: str) -> None:
+    # rutenummer is canonically `<area_prefix><number>` (e.g. "bre1"); also
+    # allow the `<area><digits><letter?>` Kartverket suffix forms. Anything
+    # outside [a-z0-9_] is rejected.
+    if not re.match(r"^[a-z0-9_]+$", rutenummer or "") or len(rutenummer) > 32:
+        raise HTTPException(status_code=400, detail="Invalid rutenummer")
+
+
+@router.get("/routes/{area_code}/{rutenummer}/annotations")
+async def list_route_annotations(
+    area_code: str,
+    rutenummer: str,
+    kind: Optional[str] = None,
+    include_resolved: bool = True,
+):
+    """List rutebok/inspection/dugnad/work entries for one route.
+
+    `kind=` accepts a comma-separated list (e.g. `kind=diary,inspection`).
+    """
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    kinds = [k.strip() for k in kind.split(",")] if kind else None
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_annotations import list_for_route
+            rows = list_for_route(
+                op_conn, area_code, rutenummer,
+                kinds=kinds, include_resolved=include_resolved,
+            )
+        return {"area_code": area_code, "rutenummer": rutenummer, "annotations": rows}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error listing route annotations: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error listing route annotations: {e}")
+
+
+@router.get("/routes/{area_code}/work-markers")
+async def list_work_markers(
+    area_code: str,
+    include_resolved: bool = False,
+):
+    """All work_* annotations with geom across the area — the map-layer feed."""
+    _validate_area_code(area_code)
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_annotations import list_work_markers_for_area
+            rows = list_work_markers_for_area(
+                op_conn, area_code, include_resolved=include_resolved,
+            )
+        return {"area_code": area_code, "markers": rows}
+    except Exception as e:
+        print(f"Error listing work markers: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error listing work markers: {e}")
+
+
+@router.post("/routes/{area_code}/{rutenummer}/annotations")
+async def create_route_annotation(
+    area_code: str,
+    rutenummer: str,
+    payload: Dict,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Create a new annotation for the route.
+
+    Body fields:
+    - kind (required): diary | inspection | dugnad | work_klipping |
+      work_bridge | work_klopper | work_other
+    - title, body, occurred_at, position_along_m, lon, lat (all optional)
+    """
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    kind = payload.get("kind")
+    if not kind:
+        raise HTTPException(status_code=400, detail="`kind` is required")
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_annotations import insert
+            row = insert(
+                op_conn,
+                area_code=area_code,
+                rutenummer=rutenummer,
+                kind=kind,
+                title=payload.get("title"),
+                body=payload.get("body"),
+                occurred_at=payload.get("occurred_at"),
+                position_along_m=payload.get("position_along_m"),
+                lon=payload.get("lon"),
+                lat=payload.get("lat"),
+                recorded_by=x_user,
+            )
+        return row
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error creating route annotation: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error creating route annotation: {e}")
+
+
+@router.patch("/route-annotations/{annotation_id}")
+async def update_route_annotation(
+    annotation_id: int,
+    payload: Dict,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Patch an annotation (mark resolved, edit body/title, move marker, etc.)."""
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_annotations import update
+            row = update(op_conn, annotation_id, payload or {})
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Annotation {annotation_id} not found")
+        return row
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error updating route annotation {annotation_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error updating route annotation: {e}")
+
+
+@router.delete("/route-annotations/{annotation_id}", status_code=204)
+async def delete_route_annotation(
+    annotation_id: int,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_annotations import delete
+            deleted = delete(op_conn, annotation_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Annotation {annotation_id} not found")
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting route annotation {annotation_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error deleting route annotation: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Route corrections — link exclusions + single-route validation
+# ---------------------------------------------------------------------------
+
+
+@router.get("/routes/{area_code}/{rutenummer}/validation")
+async def get_route_validation(area_code: str, rutenummer: str):
+    """Run all validators on one route and return findings.
+
+    ROUTE_HAS_LOOP (when present) carries the loop's arm decomposition in its
+    metadata (`arm_groups`, `fork_nodes`, `decomposable`), which the UI uses to
+    highlight arms and offer per-arm exclusion.
+    """
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        with db_connection() as conn:
+            from services.route_corrections import validate_route
+            result = validate_route(conn, rutenummer)
+        return {"area_code": area_code, **result}
+    except Exception as e:
+        print(f"Error validating route {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error validating route: {e}")
+
+
+@router.get("/routes/{area_code}/{rutenummer}/link-exclusions")
+async def list_route_link_exclusions(area_code: str, rutenummer: str):
+    """Current link exclusions for the route."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_corrections import list_exclusions
+            rows = list_exclusions(op_conn, rutenummer)
+        return {"area_code": area_code, "rutenummer": rutenummer, "exclusions": rows}
+    except Exception as e:
+        print(f"Error listing link exclusions for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error listing link exclusions: {e}")
+
+
+@router.post("/routes/{area_code}/{rutenummer}/link-exclusions")
+async def create_route_link_exclusions(
+    area_code: str,
+    rutenummer: str,
+    payload: Dict,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Exclude one or more links from the route.
+
+    Body: `{"link_ids": [int, ...], "reason": str?, "comment": str?}`.
+    Returns the route's full exclusion set after the write.
+    """
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    link_ids = (payload or {}).get("link_ids")
+    if not isinstance(link_ids, list) or not link_ids:
+        raise HTTPException(status_code=400, detail="`link_ids` must be a non-empty list")
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_corrections import add_exclusions
+            rows = add_exclusions(
+                op_conn,
+                rutenummer=rutenummer,
+                link_ids=link_ids,
+                reason=payload.get("reason"),
+                comment=payload.get("comment"),
+                updated_by=x_user,
+            )
+        return {"area_code": area_code, "rutenummer": rutenummer, "exclusions": rows}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error creating link exclusions for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error creating link exclusions: {e}")
+
+
+@router.delete("/routes/{area_code}/{rutenummer}/link-exclusions")
+async def delete_route_link_exclusions(
+    area_code: str,
+    rutenummer: str,
+    link_ids: Optional[str] = Query(None, description="Comma-separated link_ids; omit to clear all"),
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Remove exclusions for the route. Without `link_ids`, clears all of them."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    ids: Optional[List[int]] = None
+    if link_ids:
+        try:
+            ids = [int(x) for x in link_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="`link_ids` must be comma-separated integers")
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_corrections import remove_exclusions
+            deleted = remove_exclusions(op_conn, rutenummer=rutenummer, link_ids=ids)
+        return {"area_code": area_code, "rutenummer": rutenummer, "deleted": deleted}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error deleting link exclusions for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error deleting link exclusions: {e}")
 
 
 # ---------------------------------------------------------------------------

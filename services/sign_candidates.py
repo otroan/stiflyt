@@ -40,6 +40,7 @@ from .database import validate_schema_name, quote_identifier
 from ._timing import phase_timer
 from .area_routes import area_route_filter_sql, owner_area_for_rutenummer
 from .junctions import global_routes_for_local_nodes
+from .route_topology import route_connectivity
 import os
 
 
@@ -443,16 +444,13 @@ def _snap_to_route_chain(
         cur.execute(
             f"""
             WITH route_links AS (
-                SELECT l.link_id, l.a_node, l.b_node,
-                       ST_LineMerge(l.geom) AS line_geom,
-                       l.length_m,
+                SELECT rlg.link_id, rlg.a_node, rlg.b_node,
+                       ST_LineMerge(rlg.geom) AS line_geom,
+                       rlg.length_m,
                        n_a.geom AS a_geom
-                FROM {FOTRUTEINFO_VIEW} fi
-                JOIN {schema_quoted}.link_segments ls ON ls.segment_id = fi.fotrute_fk
-                JOIN {schema_quoted}.links l ON l.link_id = ls.link_id
-                JOIN {schema_quoted}.nodes n_a ON n_a.node_id = l.a_node
-                WHERE fi.rutenummer = %s
-                GROUP BY l.link_id, l.a_node, l.b_node, l.geom, l.length_m, n_a.geom
+                FROM ops.route_link_graph rlg
+                JOIN {schema_quoted}.nodes n_a ON n_a.node_id = rlg.a_node
+                WHERE rlg.rutenummer = %s
             ),
             click AS (
                 SELECT ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833) AS p
@@ -928,12 +926,9 @@ def _route_endpoints_bulk(conn, rutenummers: List[str]) -> Dict[str, Dict[str, A
     # logical extremes.
     sql = f"""
         WITH route_links AS (
-            SELECT fi.rutenummer, l.link_id, l.a_node, l.b_node
-            FROM {FOTRUTEINFO_VIEW} fi
-            JOIN {schema_quoted}.link_segments ls ON ls.segment_id = fi.fotrute_fk
-            JOIN {schema_quoted}.links l ON l.link_id = ls.link_id
-            WHERE fi.rutenummer = ANY(%s)
-            GROUP BY fi.rutenummer, l.link_id, l.a_node, l.b_node
+            SELECT rutenummer, link_id, a_node, b_node
+            FROM ops.route_link_graph
+            WHERE rutenummer = ANY(%s)
         ),
         degrees AS (
             SELECT rutenummer, node_id, COUNT(*) AS deg
@@ -971,15 +966,10 @@ def _route_endpoints_bulk(conn, rutenummers: List[str]) -> Dict[str, Dict[str, A
             -- reflects ops.rutenummer_remap edits (stiflyt.routes.total_length_m
             -- is a pre-patch materialized aggregate and would understate any
             -- route that has absorbed patched segments).
-            SELECT rl.rutenummer, SUM(rl.length_m) AS length_m
-            FROM (
-                SELECT DISTINCT fi.rutenummer, l.link_id, l.length_m
-                FROM {FOTRUTEINFO_VIEW} fi
-                JOIN {schema_quoted}.link_segments ls ON ls.segment_id = fi.fotrute_fk
-                JOIN {schema_quoted}.links l ON l.link_id = ls.link_id
-                WHERE fi.rutenummer = ANY(%s)
-            ) rl
-            GROUP BY rl.rutenummer
+            SELECT rutenummer, SUM(length_m) AS length_m
+            FROM ops.route_link_graph
+            WHERE rutenummer = ANY(%s)
+            GROUP BY rutenummer
         )
         SELECT
             p.rutenummer,
@@ -1144,6 +1134,15 @@ def get_route_summary_for_area(conn, area_code: str, *, timings: Optional[list] 
         return {"area_code": area_code, "routes": []}
     with phase_timer(_t, "route_endpoints"):
         endpoints = _route_endpoints_bulk(conn, rutenummers)
+    # Disconnected routes have no continuous path, so the "endpoint pair" the
+    # detector picks spans two unconnected components and any A→B distance is
+    # meaningless. Flag them and suppress the bogus endpoint names; the total
+    # length below is a plain link-sum so it stays valid. See RouteDisconnectedValidator.
+    route_links_by_route, _ = _build_route_topology(links)
+    disconnected_routes = {
+        rn for rn, ll in route_links_by_route.items()
+        if not route_connectivity(ll)["connected"]
+    }
     # Pull total_length_m + rutenavn from stiflyt.routes (sum of all segments).
     with phase_timer(_t, "route_meta"):
         route_meta = _route_total_lengths_and_names(conn, rutenummers)
@@ -1174,9 +1173,11 @@ def get_route_summary_for_area(conn, area_code: str, *, timings: Optional[list] 
         meta = route_meta.get(rn) or {}
         total_m = meta.get("total_length_m") or 0.0
         rutenavn = meta.get("rutenavn")
-        # 1) validated name from ops.endpoint_names
-        start_name = (names.get(first) or {}).get("name") if first is not None else None
-        end_name = (names.get(last) or {}).get("name") if last is not None else None
+        is_disconnected = rn in disconnected_routes
+        # 1) validated name from ops.endpoint_names — skipped for disconnected
+        #    routes, where (first, last) is a meaningless cross-component pair.
+        start_name = None if is_disconnected else ((names.get(first) or {}).get("name") if first is not None else None)
+        end_name = None if is_disconnected else ((names.get(last) or {}).get("name") if last is not None else None)
         # 2) fall back to parsed rutenavn ('Skjolden - Arentzbu'); we don't
         #    know which half maps to which endpoint, so the popup also gets
         #    the raw rutenavn so it can show it bidirectionally.
@@ -1195,6 +1196,7 @@ def get_route_summary_for_area(conn, area_code: str, *, timings: Optional[list] 
             "end_name": end_name,
             "length_m": total_m,
             "length_km_displayed": correct_distance_km(total_m, correction_factor),
+            "disconnected": is_disconnected,
             "route_geometry": geom.get("route_geometry"),
             "route_geometry_unmarked": geom.get("route_geometry_unmarked"),
         })
@@ -1251,30 +1253,25 @@ def _route_geometries_for_rutenummers(conn, rutenummers: List[str]) -> Dict[str,
     """
     if not rutenummers:
         return {}
-    schema = os.getenv("ROUTE_SCHEMA", "stiflyt")
-    if not validate_schema_name(schema):
-        return {}
-    schema_quoted = quote_identifier(schema)
     from psycopg.rows import dict_row
     sql = f"""
         SELECT
-            fi.rutenummer,
+            rutenummer,
             ST_AsGeoJSON(
-                ST_Multi(ST_Transform(
-                    ST_Collect(f.senterlinje) FILTER (WHERE NOT COALESCE(fi.is_unmarked, FALSE)),
+                ST_Transform(
+                    ST_CollectionExtract(ST_Collect(geom) FILTER (WHERE NOT is_unmarked), 2),
                     4326
-                ))
+                )
             )::json AS route_geometry,
             ST_AsGeoJSON(
-                ST_Multi(ST_Transform(
-                    ST_Collect(f.senterlinje) FILTER (WHERE COALESCE(fi.is_unmarked, FALSE)),
+                ST_Transform(
+                    ST_CollectionExtract(ST_Collect(geom) FILTER (WHERE is_unmarked), 2),
                     4326
-                ))
+                )
             )::json AS route_geometry_unmarked
-        FROM {FOTRUTEINFO_VIEW} fi
-        JOIN {schema_quoted}.fotrute f ON f.objid = fi.fotrute_fk
-        WHERE fi.rutenummer = ANY(%s)
-        GROUP BY fi.rutenummer;
+        FROM ops.route_link_graph
+        WHERE rutenummer = ANY(%s)
+        GROUP BY rutenummer;
     """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql, (rutenummers,))
@@ -1307,15 +1304,10 @@ def _route_total_lengths_and_names(conn, rutenummers: List[str]) -> Dict[str, Di
         cur.execute(
             f"""
             WITH lengths AS (
-                SELECT rl.rutenummer, SUM(rl.length_m) AS length_m
-                FROM (
-                    SELECT DISTINCT fi.rutenummer, l.link_id, l.length_m
-                    FROM {FOTRUTEINFO_VIEW} fi
-                    JOIN {schema_quoted}.link_segments ls ON ls.segment_id = fi.fotrute_fk
-                    JOIN {schema_quoted}.links l ON l.link_id = ls.link_id
-                    WHERE fi.rutenummer = ANY(%s)
-                ) rl
-                GROUP BY rl.rutenummer
+                SELECT rutenummer, SUM(length_m) AS length_m
+                FROM ops.route_link_graph
+                WHERE rutenummer = ANY(%s)
+                GROUP BY rutenummer
             ),
             names AS (
                 -- Pick any one rutenavn per remapped rutenummer (deterministic
@@ -1388,43 +1380,28 @@ def _fetch_links_for_prefix_fast(conn, area_code: str) -> List[Dict[str, Any]]:
     Returns the same shape: list of dicts with link_id, a_node, b_node,
     length_m, rutenummer_list. ~50 ms on bre instead of ~700 ms.
     """
-    schema = os.getenv("ROUTE_SCHEMA", "stiflyt")
-    if not validate_schema_name(schema):
-        raise ValueError(f"Invalid ROUTE_SCHEMA: {schema}")
-    schema_quoted = quote_identifier(schema)
     from psycopg.rows import dict_row
-    # The rutenummer_list aggregation MUST re-apply the area filter.
-    # Otherwise a link shared between bre1 and (say) jot48 brings jot48 into
-    # the report, and since jot48's other links aren't loaded, jot48 looks
-    # like a 1-link route whose endpoints are interior bre1 nodes. The
-    # endpoint detector then mis-classifies those nodes (see the anchor 71579
-    # / Turtagrø case). Restricting rutenummer_list to the same area keeps
-    # the per-route topology honest.
-    match_sql, match_params = area_route_filter_sql(area_code, "fi.rutenummer")
+    # route_link_graph is already filtered to the corrected per-route link set
+    # (remaps + exclusions applied), so selecting the area's rutenummers and
+    # grouping by link yields each link with exactly the area routes that use
+    # it. This also keeps the per-route topology honest: a link shared with a
+    # foreign route (say jot48) only contributes jot48 if jot48 is in-area,
+    # otherwise the link's rutenummer_list stays area-local.
+    match_sql, match_params = area_route_filter_sql(area_code, "rutenummer")
     sql = f"""
-        WITH matched_links AS (
-            SELECT DISTINCT ls.link_id
-            FROM {schema_quoted}.link_segments ls
-            JOIN {FOTRUTEINFO_VIEW} fi ON fi.fotrute_fk = ls.segment_id
-            WHERE {match_sql}
-        )
         SELECT
-            l.link_id,
-            l.a_node,
-            l.b_node,
-            l.length_m,
-            array_agg(DISTINCT fi.rutenummer ORDER BY fi.rutenummer)
-                FILTER (WHERE fi.rutenummer IS NOT NULL AND {match_sql})
-                AS rutenummer_list
-        FROM matched_links m
-        JOIN {schema_quoted}.links l USING (link_id)
-        JOIN {schema_quoted}.link_segments ls USING (link_id)
-        JOIN {FOTRUTEINFO_VIEW} fi ON fi.fotrute_fk = ls.segment_id
-        GROUP BY l.link_id, l.a_node, l.b_node, l.length_m
-        ORDER BY l.link_id;
+            link_id,
+            a_node,
+            b_node,
+            length_m,
+            array_agg(DISTINCT rutenummer ORDER BY rutenummer) AS rutenummer_list
+        FROM ops.route_link_graph
+        WHERE {match_sql}
+        GROUP BY link_id, a_node, b_node, length_m
+        ORDER BY link_id;
     """
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(sql, match_params + match_params)
+        cur.execute(sql, match_params)
         return [dict(r) for r in cur.fetchall()]
 
 

@@ -137,10 +137,15 @@ setup: install-dev ## Setup development environment
 	@echo "Run 'make backend' to start the API server"
 	@echo "Run 'make frontend' to start the changeset editor frontend"
 
-sync-route-errata: ## Sync data/route_errata.yaml into ops.rutenummer_remap
+sync-route-errata: ## Apply data/route_errata.yaml into the ops errata tables (bootstrap/restore; OVERWRITES DB)
 	@export DB_USER=$(DB_USER) && \
 	. $(VENV)/bin/activate && \
 	$(PYTHON) scripts/apply_route_errata.py
+
+dump-route-errata: ## Export the ops errata tables to data/route_errata.yaml (regular workflow; DB is source of truth)
+	@export DB_USER=$(DB_USER) && \
+	. $(VENV)/bin/activate && \
+	$(PYTHON) scripts/dump_route_errata.py
 
 db-test: ## Test database connection
 	@export DB_USER=$(DB_USER) && \

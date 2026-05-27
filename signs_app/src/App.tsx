@@ -14,18 +14,19 @@ import {
   Text,
   Title,
 } from "@mantine/core";
-import { IconCamera, IconDownload, IconInfoCircle, IconMapPin } from "@tabler/icons-react";
+import { IconCamera, IconDownload, IconInfoCircle, IconMapPin, IconRoute } from "@tabler/icons-react";
 import { api } from "./api";
-import type { CandidatesResponse, FieldPhoto, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
+import type { CandidatesResponse, FieldPhoto, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
 import SiteEditor from "./SiteEditor";
 import AreaReport from "./AreaReport";
 import PhotoPanel, { PhotoLightbox } from "./PhotoPanel";
 import FloatingToolbar from "./FloatingToolbar";
 import ExportTab from "./ExportTab";
+import RoutePanel from "./RoutePanel";
 import { notifyError } from "./notify";
 
-type SidebarTab = "sites" | "photos" | "export" | "about";
+type SidebarTab = "sites" | "rute" | "photos" | "export" | "about";
 
 const LOGIN_ERROR_MESSAGES: Record<string, string> = {
   not_allowed: "E-postadressen din står ikke i tilgangslisten. Kontakt en administrator.",
@@ -73,7 +74,7 @@ const BASE_LAYER_LABELS: Record<BaseLayerId, string> = {
 
 const DEFAULT_AREA = "bre";
 
-type Mode = "browse" | "add-manual" | "place-photo";
+type Mode = "browse" | "add-manual" | "place-photo" | "place-work-marker";
 
 export default function App() {
   // Auth state. `me` is null until we've checked; once set we render the
@@ -88,7 +89,13 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     api.getMe()
-      .then((u) => { if (!cancelled) setMe(u); })
+      .then((u) => {
+        if (cancelled) return;
+        setMe(u);
+        // Propagate the authenticated identity into api.ts so writes carry
+        // X-User: <email> (persisted as recorded_by/updated_by/uploaded_by).
+        api.setCurrentUser(u?.email ?? null);
+      })
       .catch(() => { /* network / 5xx — leave login screen up so user can retry */ })
       .finally(() => { if (!cancelled) setAuthChecking(false); });
     return () => { cancelled = true; };
@@ -130,6 +137,12 @@ export default function App() {
   });
   useEffect(() => { localStorage.setItem(BASE_LAYER_STORAGE_KEY, baseLayer); }, [baseLayer]);
   const [focusedRoute, setFocusedRoute] = useState<string | null>(null);
+  // Loop arms highlighted on the map by the Validering sub-tab (one coloured
+  // line per arm). Empty when no loop route is being inspected.
+  const [loopArms, setLoopArms] = useState<{ color: string; geometry: GeoJSON.Geometry }[]>([]);
+  // Bumped to force an area reload (route geometries + candidates) after a
+  // correction changes a route's shape — e.g. excluding a loop arm.
+  const [areaReloadKey, setAreaReloadKey] = useState(0);
   // Escape clears route focus — backup for users who can't quickly relocate
   // the hovered popup. Only binds when a route is actually focused so we
   // don't fight with text-input Escape elsewhere.
@@ -146,6 +159,18 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [focusedRoute]);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("sites");
+
+  // Auto-open the Rute tab when the user focuses a route on the map. Don't
+  // hijack the tab if they're in the middle of editing a site or placing a
+  // photo — those modes take precedence.
+  useEffect(() => {
+    if (!focusedRoute) return;
+    if (mode !== "browse") return;
+    setSidebarTab("rute");
+    // mode lives below; we deliberately read it from the closure here. The
+    // effect re-runs only when focusedRoute changes, which is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedRoute]);
 
   // --- Field photos state ---
   const [photos, setPhotos] = useState<FieldPhoto[]>([]);
@@ -169,6 +194,23 @@ export default function App() {
     }
   };
   useEffect(() => { if (me) refreshPhotos(); }, [areaCode, me]);
+
+  // --- Work markers (route_annotations of kind work_*) ---
+  const [workMarkers, setWorkMarkers] = useState<RouteAnnotation[]>([]);
+  const [workMarkersVisible, setWorkMarkersVisible] = useState(true);
+  // Selected work-kind for the next placement click. Set by the kind picker
+  // in RoutePanel's Arbeid sub-tab; the toolbar's IconTool button defaults to
+  // work_other.
+  const [pendingWorkKind, setPendingWorkKind] = useState<RouteAnnotation["kind"]>("work_other");
+  const refreshWorkMarkers = async () => {
+    try {
+      const r = await api.listWorkMarkers(areaCode);
+      setWorkMarkers(r.markers);
+    } catch (e) {
+      notifyError(e);
+    }
+  };
+  useEffect(() => { if (me) refreshWorkMarkers(); }, [areaCode, me]);
   // Set of "<sign_site_id>:<destination_anchor_node_id>" strings — panels the
   // user has earmarked for the next manufacturing export.
   const [selectedPanels, setSelectedPanels] = useState<Set<string>>(new Set());
@@ -215,7 +257,7 @@ export default function App() {
       .catch((e) => { if (!cancelled) notifyError(e, "Klarte ikke å laste området"); })
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [areaCode, me]);
+  }, [areaCode, me, areaReloadKey]);
 
   const refreshCandidates = async (): Promise<CandidatesResponse | null> => {
     try {
@@ -270,6 +312,27 @@ export default function App() {
         setPendingPlacementId(null);
         setMode("browse");
         await refreshPhotos();
+      } catch (e) {
+        notifyError(e);
+      }
+      return;
+    }
+    if (mode === "place-work-marker") {
+      // Drop a marker of the currently-armed kind on the focused route. The
+      // kind is set by the Arbeid sub-tab buttons (or defaults to work_other
+      // when the user enters the mode via the toolbar).
+      if (!focusedRoute) { setMode("browse"); return; }
+      try {
+        await api.createRouteAnnotation(areaCode, focusedRoute, {
+          kind: pendingWorkKind,
+          title: null,
+          lon,
+          lat,
+        });
+        setMode("browse");
+        setPendingWorkKind("work_other");
+        await refreshWorkMarkers();
+        setSidebarTab("rute");
       } catch (e) {
         notifyError(e);
       }
@@ -382,6 +445,7 @@ export default function App() {
           data={[
             { value: "bre", label: "Breheimen og Jostedalsbreen" },
             { value: "fem", label: "Femundsmarka" },
+            { value: "ron", label: "Rondane" },
           ]}
           size="xs"
           allowDeselect={false}
@@ -434,6 +498,7 @@ export default function App() {
             setMode(m);
           }}
           pendingPlacementId={pendingPlacementId}
+          focusedRoute={focusedRoute}
         />
         <MapView
           routes={routes}
@@ -441,8 +506,9 @@ export default function App() {
           sites={candidates?.sites ?? []}
           selectedIdx={selectedSiteIdx}
           onSelect={selectSiteByIdx}
-          onMapClick={(mode === "add-manual" || mode === "place-photo") ? handleMapClick : undefined}
-          cursor={(mode === "add-manual" || mode === "place-photo") ? "crosshair" : undefined}
+          onMapClick={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker") ? handleMapClick : undefined}
+          cursor={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker") ? "crosshair" : undefined}
+          placementActive={mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker"}
           baseLayer={baseLayer}
           focusedRoute={focusedRoute}
           onFocusRoute={setFocusedRoute}
@@ -451,6 +517,17 @@ export default function App() {
           photosVisible={photosVisible}
           onPhotosVisibleChange={setPhotosVisible}
           onPhotosOpen={handleMapPhotosOpen}
+          workMarkers={workMarkers}
+          workMarkersVisible={workMarkersVisible}
+          onWorkMarkersVisibleChange={setWorkMarkersVisible}
+          onWorkMarkerOpen={(annotationId) => {
+            const m = workMarkers.find((w) => w.id === annotationId);
+            if (m) {
+              setFocusedRoute(m.rutenummer);
+              setSidebarTab("rute");
+            }
+          }}
+          loopArms={loopArms}
         />
       </div>
 
@@ -464,6 +541,13 @@ export default function App() {
         <Tabs.List grow>
           <Tabs.Tab value="sites" leftSection={<IconMapPin size={14} />}>
             Skiltsteder
+          </Tabs.Tab>
+          <Tabs.Tab
+            value="rute"
+            leftSection={<IconRoute size={14} />}
+            rightSection={focusedRoute ? <Badge size="xs" color="brand" variant="light">{focusedRoute}</Badge> : null}
+          >
+            Rute
           </Tabs.Tab>
           <Tabs.Tab
             value="photos"
@@ -508,6 +592,31 @@ export default function App() {
               onChanged={refreshCandidates}
               selectedPanels={selectedPanels}
               onTogglePanel={togglePanelSelection}
+            />
+          )}
+        </Tabs.Panel>
+
+        <Tabs.Panel value="rute" className="side-panel">
+          {!focusedRoute && (
+            <Text c="dimmed" size="sm" p="lg" ta="center">
+              Velg en rute på kartet for å se rutebok, inspeksjoner, dugnader og arbeidsbehov.
+            </Text>
+          )}
+          {focusedRoute && (
+            <RoutePanel
+              areaCode={areaCode}
+              rutenummer={focusedRoute}
+              routeSummary={routeSummaries.get(focusedRoute)}
+              onClose={() => setFocusedRoute(null)}
+              onChanged={refreshWorkMarkers}
+              onArmPlaceWorkMarker={(kind) => {
+                setPendingWorkKind(kind);
+                setMode("place-work-marker");
+              }}
+              placeWorkMarkerArmed={mode === "place-work-marker"}
+              armedWorkKind={mode === "place-work-marker" ? pendingWorkKind : null}
+              onLoopArmsChange={setLoopArms}
+              onRouteShapeChanged={() => setAreaReloadKey((k) => k + 1)}
             />
           )}
         </Tabs.Panel>

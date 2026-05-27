@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import { api } from "./api";
-import type { FieldPhoto, RouteListItem, RouteSummary, SignSite } from "./types";
+import type { FieldPhoto, RouteAnnotation, RouteListItem, RouteSummary, SignSite } from "./types";
 
 export type BaseLayerId = "osm" | "topo4" | "topo4graatone";
 
@@ -16,6 +16,10 @@ interface Props {
    *  rutenumre under the click point. Caller can pick one or prompt the user. */
   onMapClick?: (lon: number, lat: number, routesAtPoint: string[]) => void;
   cursor?: string;
+  /** True while a placement mode is active (add-manual / place-photo /
+   *  place-work-marker). All layer-specific click handlers no-op so the user
+   *  can drop a feature anywhere — including on top of existing markers. */
+  placementActive?: boolean;
   baseLayer: BaseLayerId;
   /** Rutenummer that's persistently "focused": highlighted while every other
    *  route fades. Null = no focus. */
@@ -33,6 +37,18 @@ interface Props {
    *  map's top-left). */
   photosVisible?: boolean;
   onPhotosVisibleChange?: (v: boolean) => void;
+  /** Open work-marker annotations across the area, rendered as a coloured
+   *  point layer keyed on kind (klipping/bro/klopp/other). */
+  workMarkers?: RouteAnnotation[];
+  workMarkersVisible?: boolean;
+  onWorkMarkersVisibleChange?: (v: boolean) => void;
+  /** Click handler on a work-marker — typically focuses its route + opens
+   *  the Rute → Arbeid sub-tab. */
+  onWorkMarkerOpen?: (annotationId: number) => void;
+  /** Loop arms to highlight (Validering tab). Each arm is drawn in its own
+   *  colour over the focused route so the user can compare and pick which to
+   *  exclude. Empty / undefined = nothing drawn. */
+  loopArms?: { color: string; geometry: GeoJSON.Geometry }[];
 }
 
 const BREHEIMEN_CENTER: [number, number] = [7.5, 61.7];
@@ -163,6 +179,7 @@ export default function MapView({
   onSelect,
   onMapClick,
   cursor,
+  placementActive,
   baseLayer,
   focusedRoute,
   onFocusRoute,
@@ -171,6 +188,11 @@ export default function MapView({
   onPhotosOpen,
   photosVisible,
   onPhotosVisibleChange,
+  workMarkers,
+  workMarkersVisible,
+  onWorkMarkersVisibleChange,
+  onWorkMarkerOpen,
+  loopArms,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -186,6 +208,10 @@ export default function MapView({
   onSelectRef.current = onSelect;
   const routeSummariesRef = useRef(routeSummaries);
   routeSummariesRef.current = routeSummaries;
+  // Mirrored to a ref so layer-specific click handlers (which close over the
+  // ref once at map setup) read the live value instead of the stale closure.
+  const placementActiveRef = useRef(!!placementActive);
+  placementActiveRef.current = !!placementActive;
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -236,11 +262,26 @@ export default function MapView({
       })),
   }), [routes]);
 
+  const loopArmsGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => ({
+    type: "FeatureCollection",
+    features: (loopArms ?? [])
+      .filter((a) => a.geometry)
+      .map((a, i) => ({
+        type: "Feature",
+        geometry: a.geometry,
+        properties: { color: a.color, idx: i },
+      })),
+  }), [loopArms]);
+
   const sitesGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => ({
     type: "FeatureCollection",
+    // idx must be the index into the unfiltered `sites` array — callers
+    // (onSelect) treat it as a candidates.sites position. Filtering before
+    // .map would renumber after any null-coord site and select the wrong row.
     features: sites
-      .filter((s) => s.lon != null && s.lat != null)
-      .map((s, idx) => ({
+      .map((s, idx) => ({ s, idx }))
+      .filter(({ s }) => s.lon != null && s.lat != null)
+      .map(({ s, idx }) => ({
         type: "Feature",
         geometry: { type: "Point", coordinates: [s.lon!, s.lat!] },
         properties: {
@@ -302,7 +343,7 @@ export default function MapView({
             "line-opacity": 1.0,
           },
         });
-        attachRouteHoverHandlers(map, hoverPopupRef, focusedRouteRef, onFocusRouteRef, routeSummariesRef);
+        attachRouteHoverHandlers(map, hoverPopupRef, focusedRouteRef, onFocusRouteRef, routeSummariesRef, placementActiveRef);
       } else {
         (map.getSource("routes") as maplibregl.GeoJSONSource).setData(routesGeoJSON);
       }
@@ -358,6 +399,10 @@ export default function MapView({
           },
         });
         map.on("click", "sites-circle", (e) => {
+          // Placement modes own every click so the user can drop a feature
+          // anywhere; selecting a marker would steal the click and switch
+          // the sidebar tab mid-placement.
+          if (placementActiveRef.current) return;
           // Single-marker click: select directly. For overlapping markers the
           // user picks via the hover popup buttons instead.
           const features = map.queryRenderedFeatures(e.point, { layers: ["sites-circle"] });
@@ -367,7 +412,7 @@ export default function MapView({
           }
           // If >1, the hover popup is already showing the list; do nothing.
         });
-        attachSiteHoverHandlers(map, hoverPopupRef, onSelectRef);
+        attachSiteHoverHandlers(map, hoverPopupRef, onSelectRef, placementActiveRef);
       } else {
         (map.getSource("sites") as maplibregl.GeoJSONSource).setData(sitesGeoJSON);
       }
@@ -394,14 +439,12 @@ export default function MapView({
     }
     map.getCanvas().style.cursor = cursor || "crosshair";
     const handler = (e: maplibregl.MapMouseEvent) => {
-      // Don't fire if the click landed on a sign-site marker or a photo
-      // dot/cluster — those layers have their own handlers, and re-firing
-      // placement here would (e.g. in place-photo mode) drop a pin on top
-      // of the photo the user actually meant to open.
-      const layers = ["sites-circle", "photos-single", "photos-cluster-icon"]
-        .filter((id) => map.getLayer(id));
-      const hit = map.queryRenderedFeatures(e.point, { layers });
-      if (hit.length > 0) return;
+      // In placement mode the user wants the click to land — even on top of
+      // an existing marker. The layer-specific click handlers no-op when
+      // placementActiveRef is true, so re-firing here is safe and necessary.
+      // When placement is *not* active there's no onMapClick wired anyway,
+      // so this effect's handler won't even be attached.
+      // (No skip-list needed here.)
       // Look at all routes under a small box around the click point — picks
       // up shared segments.
       const box: [maplibregl.PointLike, maplibregl.PointLike] = [
@@ -457,6 +500,34 @@ export default function MapView({
     };
     whenStyleReady(map, apply);
   }, [focusedRoute]);
+
+  // Loop-arm highlight — one coloured line per arm, drawn above the focused
+  // route so the user can compare arms and pick one to exclude (Validering tab).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      if (!map.getSource("loop-arms")) {
+        map.addSource("loop-arms", { type: "geojson", data: loopArmsGeoJSON });
+        map.addLayer({
+          id: "loop-arms-line",
+          type: "line",
+          source: "loop-arms",
+          layout: { "line-cap": "round", "line-join": "round" },
+          paint: {
+            "line-color": ["get", "color"],
+            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 6, 14, 12],
+            "line-opacity": 0.9,
+          },
+        });
+      } else {
+        (map.getSource("loop-arms") as maplibregl.GeoJSONSource).setData(loopArmsGeoJSON);
+      }
+      if (map.getLayer("loop-arms-line")) map.moveLayer("loop-arms-line");
+      map.triggerRepaint();
+    };
+    whenStyleReady(map, apply);
+  }, [loopArmsGeoJSON]);
 
   // Switch base-map visibility when the user changes it
   useEffect(() => {
@@ -632,6 +703,7 @@ export default function MapView({
         });
 
         map.on("click", "photos-single", (e) => {
+          if (placementActiveRef.current) return;
           const f = e.features?.[0];
           const id = f && (f.properties as { id?: number })?.id;
           if (typeof id === "number") {
@@ -640,6 +712,7 @@ export default function MapView({
           }
         });
         map.on("click", "photos-cluster-icon", (e) => {
+          if (placementActiveRef.current) return;
           const f = e.features?.[0];
           const clusterId = f && (f.properties as { cluster_id?: number })?.cluster_id;
           if (clusterId == null) return;
@@ -660,8 +733,14 @@ export default function MapView({
         });
 
         for (const lid of ["photos-cluster-icon", "photos-single"]) {
-          map.on("mouseenter", lid, () => { map.getCanvas().style.cursor = "pointer"; });
-          map.on("mouseleave", lid, () => { map.getCanvas().style.cursor = ""; });
+          map.on("mouseenter", lid, () => {
+            if (placementActiveRef.current) return;
+            map.getCanvas().style.cursor = "pointer";
+          });
+          map.on("mouseleave", lid, () => {
+            if (placementActiveRef.current) return;
+            map.getCanvas().style.cursor = "";
+          });
         }
       } else {
         (map.getSource("photos-src") as maplibregl.GeoJSONSource).setData(photosGeoJSON);
@@ -801,6 +880,125 @@ export default function MapView({
     whenStyleReady(map, apply);
   }, [photosVisible]);
 
+  // --- Work markers (route_annotations of kind work_*) ---
+  const onWorkMarkerOpenRef = useRef(onWorkMarkerOpen);
+  onWorkMarkerOpenRef.current = onWorkMarkerOpen;
+  const workMarkersGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => ({
+    type: "FeatureCollection",
+    features: (workMarkers ?? [])
+      .filter((m) => m.lon != null && m.lat != null)
+      .map((m) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [m.lon as number, m.lat as number] },
+        properties: {
+          id: m.id,
+          kind: m.kind,
+          rutenummer: m.rutenummer,
+          title: m.title || "",
+          resolved: !!m.resolved_at,
+        },
+      })),
+  }), [workMarkers]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const setup = () => {
+      if (!map.getSource("work-markers-src")) {
+        map.addSource("work-markers-src", { type: "geojson", data: workMarkersGeoJSON });
+        map.addLayer({
+          id: "work-markers-halo",
+          type: "circle",
+          source: "work-markers-src",
+          paint: {
+            "circle-radius": 12,
+            "circle-color": "#000",
+            "circle-opacity": 0.15,
+            "circle-translate": [0, 0],
+          },
+        });
+        map.addLayer({
+          id: "work-markers-dot",
+          type: "circle",
+          source: "work-markers-src",
+          paint: {
+            "circle-radius": 8,
+            "circle-stroke-width": 2,
+            "circle-stroke-color": "#ffffff",
+            "circle-color": [
+              "match",
+              ["get", "kind"],
+              "work_klipping", "#2e8540",
+              "work_bridge", "#a05a00",
+              "work_klopper", "#8c6d1f",
+              "work_other", "#7a5a18",
+              "#7a5a18",
+            ],
+            "circle-opacity": ["case", ["get", "resolved"], 0.4, 1.0],
+          },
+        });
+        map.addLayer({
+          id: "work-markers-label",
+          type: "symbol",
+          source: "work-markers-src",
+          layout: {
+            "text-field": [
+              "match",
+              ["get", "kind"],
+              "work_klipping", "✂",
+              "work_bridge", "B",
+              "work_klopper", "K",
+              "work_other", "•",
+              "•",
+            ],
+            "text-font": ["Noto Sans Bold"],
+            "text-size": 11,
+            "text-allow-overlap": true,
+            "text-ignore-placement": true,
+          },
+          paint: { "text-color": "#ffffff" },
+        });
+        map.on("click", "work-markers-dot", (e) => {
+          if (placementActiveRef.current) return;
+          const f = e.features?.[0];
+          const id = f && (f.properties as { id?: number })?.id;
+          if (typeof id === "number") {
+            e.originalEvent?.stopPropagation?.();
+            onWorkMarkerOpenRef.current?.(id);
+          }
+        });
+        map.on("mouseenter", "work-markers-dot", () => {
+          // Don't override the crosshair while placement is active.
+          if (placementActiveRef.current) return;
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", "work-markers-dot", () => {
+          if (placementActiveRef.current) return;
+          map.getCanvas().style.cursor = "";
+        });
+      } else {
+        (map.getSource("work-markers-src") as maplibregl.GeoJSONSource).setData(workMarkersGeoJSON);
+      }
+      // Keep sites + focused route above markers.
+      if (map.getLayer("sites-circle")) map.moveLayer("sites-circle");
+      if (map.getLayer("routes-line-focused")) map.moveLayer("routes-line-focused");
+    };
+    whenStyleReady(map, setup);
+  }, [workMarkersGeoJSON]);
+
+  // Toggle work-marker layer visibility.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const v = workMarkersVisible !== false ? "visible" : "none";
+      for (const lid of ["work-markers-halo", "work-markers-dot", "work-markers-label"]) {
+        if (map.getLayer(lid)) map.setLayoutProperty(lid, "visibility", v);
+      }
+    };
+    whenStyleReady(map, apply);
+  }, [workMarkersVisible]);
+
   // Recentre on selected site
   useEffect(() => {
     const map = mapRef.current;
@@ -810,6 +1008,41 @@ export default function MapView({
       map.easeTo({ center: [s.lon, s.lat], zoom: Math.max(map.getZoom(), 12) });
     }
   }, [selectedIdx, sites]);
+
+  // Fit the map to the new area's routes+sites. Two-step: arm a pending-fit
+  // flag when areaCode changes, then consume it the next time the route/site
+  // data updates. This avoids fitting to the *previous* area's geometry that
+  // is still in props between the area switch and the data refetch.
+  const pendingFitRef = useRef(true);
+  useEffect(() => {
+    pendingFitRef.current = true;
+  }, [areaCode]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !pendingFitRef.current) return;
+    if (routesGeoJSON.features.length === 0 && sitesGeoJSON.features.length === 0) return;
+
+    const bounds = new maplibregl.LngLatBounds();
+    const extend = (coords: GeoJSON.Position | GeoJSON.Position[] | GeoJSON.Position[][]) => {
+      if (typeof coords[0] === "number") {
+        bounds.extend(coords as [number, number]);
+      } else {
+        for (const c of coords as GeoJSON.Position[] | GeoJSON.Position[][]) extend(c);
+      }
+    };
+    for (const f of routesGeoJSON.features) {
+      const g = f.geometry as GeoJSON.LineString | GeoJSON.MultiLineString | null;
+      if (g) extend(g.coordinates);
+    }
+    for (const f of sitesGeoJSON.features) {
+      const p = f.geometry as GeoJSON.Point;
+      bounds.extend(p.coordinates as [number, number]);
+    }
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, { padding: 40, maxZoom: 13, animate: true });
+      pendingFitRef.current = false;
+    }
+  }, [routesGeoJSON, sitesGeoJSON]);
 
   return (
     <div style={{ position: "absolute", inset: 0 }}>
@@ -831,6 +1064,15 @@ export default function MapView({
           />
           <span>📷 Bilder</span>
           <span style={{ color: "#666" }}>({(photos ?? []).filter((p) => p.lon != null && p.lat != null).length})</span>
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginTop: 4 }}>
+          <input
+            type="checkbox"
+            checked={workMarkersVisible !== false}
+            onChange={(e) => onWorkMarkersVisibleChange?.(e.target.checked)}
+          />
+          <span>🔧 Arbeidsbehov</span>
+          <span style={{ color: "#666" }}>({(workMarkers ?? []).filter((m) => m.lon != null && m.lat != null && !m.resolved_at).length})</span>
         </label>
       </div>
     </div>
@@ -855,6 +1097,7 @@ function attachSiteHoverHandlers(
   map: maplibregl.Map,
   popupRef: React.MutableRefObject<maplibregl.Popup | null>,
   onSelectRef: React.MutableRefObject<(idx: number | null) => void>,
+  placementActiveRef: React.MutableRefObject<boolean>,
 ) {
   let lastKey = "";
   let closeTimer: number | null = null;
@@ -862,13 +1105,18 @@ function attachSiteHoverHandlers(
   const scheduleClose = (ms: number) => {
     cancelClose();
     closeTimer = window.setTimeout(() => {
-      map.getCanvas().style.cursor = "";
+      // Don't clear a placement crosshair just because the hover popup closed.
+      if (!placementActiveRef.current) map.getCanvas().style.cursor = "";
       popupRef.current?.remove();
       lastKey = "";
     }, ms);
   };
 
   const onMove = (e: maplibregl.MapLayerMouseEvent) => {
+    // In placement mode the user wants to drop a feature anywhere — including
+    // on top of an existing sign-site marker. Don't show the hover popup or
+    // switch the cursor.
+    if (placementActiveRef.current) { cancelClose(); return; }
     cancelClose();
     // Box-query so we catch overlapping markers, not just the topmost one.
     const features = map.queryRenderedFeatures(
@@ -976,6 +1224,7 @@ function attachRouteHoverHandlers(
   focusedRouteRef: React.MutableRefObject<string | null>,
   onFocusRouteRef: React.MutableRefObject<(r: string | null) => void>,
   routeSummariesRef: React.MutableRefObject<Map<string, RouteSummary>>,
+  placementActiveRef: React.MutableRefObject<boolean>,
 ) {
   // We rebuild the popup DOM each move; track the last rendered route set so
   // we don't churn the DOM (and lose hover-on-popup) when the cursor moves
@@ -987,13 +1236,15 @@ function attachRouteHoverHandlers(
     cancelClose();
     closeTimer = window.setTimeout(() => {
       map.setFilter("routes-line-hover", ["==", ["get", "rutenummer"], "__none__"]);
-      map.getCanvas().style.cursor = "";
+      if (!placementActiveRef.current) map.getCanvas().style.cursor = "";
       popupRef.current?.remove();
       lastKey = "";
     }, ms);
   };
 
   const onMove = (e: maplibregl.MapLayerMouseEvent) => {
+    // Placement mode owns the cursor; don't surface the route hover popup.
+    if (placementActiveRef.current) { cancelClose(); return; }
     cancelClose();
     const features = map.queryRenderedFeatures(
       [

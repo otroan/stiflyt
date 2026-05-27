@@ -182,15 +182,11 @@ def _site_pos_m_by_route_bulk(
     if not by_anchor:
         return {}
 
-    schema = os.getenv("ROUTE_SCHEMA", "stiflyt")
-    sql = f"""
+    sql = """
         WITH route_links AS (
-            SELECT fi.rutenummer, l.link_id, l.a_node, l.b_node, l.length_m
-            FROM ops.fotruteinfo_patched fi
-            JOIN {schema}.link_segments ls ON ls.segment_id = fi.fotrute_fk
-            JOIN {schema}.links l ON l.link_id = ls.link_id
-            WHERE fi.rutenummer = ANY(%s)
-            GROUP BY fi.rutenummer, l.link_id, l.a_node, l.b_node, l.length_m
+            SELECT rutenummer, link_id, a_node, b_node, length_m
+            FROM ops.route_link_graph
+            WHERE rutenummer = ANY(%s)
         ),
         node_pos AS (
             -- BFS pos_m along each route from the min-degree-1 node. This
