@@ -71,7 +71,8 @@ class ValidatorRegistry:
         route_data: Dict[str, Any],
         conn,
         validator_names: Optional[List[str]] = None,
-        categories: Optional[List[str]] = None
+        categories: Optional[List[str]] = None,
+        skip: Optional[List[str]] = None,
     ) -> ValidationResult:
         """
         Run validators on route data.
@@ -81,6 +82,9 @@ class ValidatorRegistry:
             conn: Database connection
             validator_names: If provided, only run these validators
             categories: If provided, only run validators in these categories
+            skip: If provided, exclude these validators by name (applied after
+                  selection + dependency resolution). Used by the area pass to
+                  drop slow INFO-only validators it doesn't need.
 
         Returns:
             Combined ValidationResult from all validators
@@ -108,6 +112,12 @@ class ValidatorRegistry:
 
         # Resolve dependencies
         validators_to_run = self._resolve_dependencies(validators_to_run)
+
+        # Apply skip-list last so excluded validators never run, even if pulled
+        # in as a dependency.
+        if skip:
+            skip_set = set(skip)
+            validators_to_run = [v for v in validators_to_run if v.get_name() not in skip_set]
 
         # Run validators with savepoints to isolate failures
         for idx, validator in enumerate(validators_to_run):

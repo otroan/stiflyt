@@ -195,6 +195,97 @@ def _write_header(ws, columns: List[Tuple[str, str, int]]) -> None:
     ws.freeze_panes = "A2"
 
 
+import threading
+import time as _time
+from datetime import datetime, timezone
+
+# Running all validators across an area is ~3s/route (the geometry/name
+# validators dominate), so an area takes minutes. Too slow to recompute on every
+# request, so we cache the summary in-process and recompute in a background
+# thread. Corrections are infrequent; the OK refreshes after editing. Keyed by
+# area_code; a single worker process is assumed (fine for this tool).
+_area_cache: Dict[str, Dict[str, Any]] = {}
+_area_cache_lock = threading.Lock()
+
+
+def _compute_area_validation_async(area_code: str) -> None:
+    from .database import get_db_connection
+    started = _time.time()
+    conn = get_db_connection()
+    try:
+        routes = area_validation_summary(conn, area_code)
+        with _area_cache_lock:
+            _area_cache[area_code] = {
+                "status": "ready",
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+                "compute_seconds": round(_time.time() - started, 1),
+                "routes": routes,
+            }
+    except Exception as e:  # leave prior cache; surface the error state
+        with _area_cache_lock:
+            prev = _area_cache.get(area_code, {})
+            _area_cache[area_code] = {**prev, "status": "error", "error": str(e)}
+    finally:
+        conn.close()
+
+
+def get_area_validation_cached(area_code: str, *, refresh: bool = False) -> Dict[str, Any]:
+    """Return the cached area summary, kicking off a background recompute when
+    missing/stale/forced. Shape: {status: computing|ready|error, computed_at,
+    routes, compute_seconds?}. The UI polls until status == 'ready'."""
+    with _area_cache_lock:
+        entry = _area_cache.get(area_code)
+        computing = bool(entry and entry.get("status") == "computing")
+        need = refresh or entry is None
+        if need and not computing:
+            _area_cache[area_code] = {
+                "status": "computing",
+                "computed_at": entry.get("computed_at") if entry else None,
+                "routes": entry.get("routes", []) if entry else [],
+            }
+            spawn = True
+        else:
+            spawn = False
+        snapshot = dict(_area_cache[area_code])
+    if spawn:
+        threading.Thread(target=_compute_area_validation_async, args=(area_code,), daemon=True).start()
+    return snapshot
+
+
+def area_validation_summary(conn, area_code: str) -> List[Dict[str, Any]]:
+    """Per-route validation summary for the signs_app Problemruter list — one
+    row per route with status, issue counts, and the set of issue types so the
+    UI can show which corrections are needed and link to the route."""
+    registry = get_validator_registry()
+    out: List[Dict[str, Any]] = []
+    # route_name_suggestion only emits the RUTENAVN_SUGGESTION *info*, which the
+    # summary excludes from issue_types anyway — and it's the slowest validator
+    # (loads geometry + endpoint names). Skip it in the area pass; the per-route
+    # Validering tab still runs it for the metadata form's suggestion.
+    for rn in _list_rutenummers(conn, area_code):
+        segments_dict = _load_segments_dict(conn, rn)
+        rutenavn, vedl = _route_meta(segments_dict)
+        r = registry.run_validators(
+            {"rutenummer": rn, "segments_dict": segments_dict},
+            conn,
+            skip=["route_name_suggestion"],
+        )
+        out.append({
+            "rutenummer": rn,
+            "rutenavn": rutenavn,
+            "vedlikeholdsansvarlig": vedl,
+            "status": r.get_status(),
+            "errors": len(r.errors),
+            "warnings": len(r.warnings),
+            "info": len(r.info),
+            "issue_types": sorted({i.type for i in (r.errors + r.warnings)}),
+        })
+    # Worst first: ERROR, then WARNING, then OK; alphabetical within.
+    order = {"ERROR": 0, "WARNING": 1, "OK": 2}
+    out.sort(key=lambda s: (order.get(s["status"], 3), s["rutenummer"] or ""))
+    return out
+
+
 def build_validation_workbook(conn, area_code: str) -> bytes:
     """Build the validation XLSX for one area and return its bytes."""
     registry = get_validator_registry()

@@ -237,6 +237,100 @@ def remove_bridges(
     return deleted
 
 
+_METADATA_FIELDS = ("rutenavn", "vedlikeholdsansvarlig", "rutetype", "gradering")
+
+
+def get_metadata_override(op_conn, rutenummer: str) -> Optional[Dict[str, Any]]:
+    with op_conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT rutenummer, rutenavn, vedlikeholdsansvarlig, rutetype, gradering,
+                   comment, reported_at, updated_by, updated_at
+            FROM ops.route_metadata_override
+            WHERE rutenummer = %s
+            """,
+            (rutenummer,),
+        )
+        r = cur.fetchone()
+    if not r:
+        return None
+    return {
+        "rutenummer": r["rutenummer"],
+        "rutenavn": r.get("rutenavn"),
+        "vedlikeholdsansvarlig": r.get("vedlikeholdsansvarlig"),
+        "rutetype": r.get("rutetype"),
+        "gradering": r.get("gradering"),
+        "comment": r.get("comment"),
+        "reported_at": r["reported_at"].isoformat() if r.get("reported_at") else None,
+        "updated_by": r.get("updated_by"),
+        "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
+    }
+
+
+def set_metadata_override(
+    op_conn,
+    *,
+    rutenummer: str,
+    rutenavn: Optional[str] = None,
+    vedlikeholdsansvarlig: Optional[str] = None,
+    rutetype: Optional[str] = None,
+    gradering: Optional[str] = None,
+    comment: Optional[str] = None,
+    updated_by: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Upsert the route's metadata override. Each value column is set to the
+    given value (blank → NULL = "leave Kartverket's value for that field"). If
+    all four override fields end up NULL the override is removed entirely."""
+    def _norm(v: Optional[str]) -> Optional[str]:
+        return v.strip() if isinstance(v, str) and v.strip() else None
+
+    vals = {
+        "rutenavn": _norm(rutenavn),
+        "vedlikeholdsansvarlig": _norm(vedlikeholdsansvarlig),
+        "rutetype": _norm(rutetype),
+        "gradering": _norm(gradering),
+    }
+    if all(vals[f] is None for f in _METADATA_FIELDS):
+        clear_metadata_override(op_conn, rutenummer)
+        return None
+    with op_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO ops.route_metadata_override
+                (rutenummer, rutenavn, vedlikeholdsansvarlig, rutetype, gradering,
+                 comment, updated_by, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (rutenummer) DO UPDATE
+                SET rutenavn = EXCLUDED.rutenavn,
+                    vedlikeholdsansvarlig = EXCLUDED.vedlikeholdsansvarlig,
+                    rutetype = EXCLUDED.rutetype,
+                    gradering = EXCLUDED.gradering,
+                    comment = EXCLUDED.comment,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+            """,
+            (
+                rutenummer,
+                vals["rutenavn"],
+                vals["vedlikeholdsansvarlig"],
+                vals["rutetype"],
+                vals["gradering"],
+                _norm(comment),
+                updated_by,
+            ),
+        )
+    op_conn.commit()
+    return get_metadata_override(op_conn, rutenummer)
+
+
+def clear_metadata_override(op_conn, rutenummer: str) -> bool:
+    with op_conn.cursor() as cur:
+        cur.execute("DELETE FROM ops.route_metadata_override WHERE rutenummer = %s", (rutenummer,))
+        deleted = cur.rowcount > 0
+    op_conn.commit()
+    return deleted
+
+
 def validate_route(conn, rutenummer: str) -> Dict[str, Any]:
     """Run all registered validators on one route and return the result as a
     dict (status + errors/warnings/info). Mirrors the per-route logic in

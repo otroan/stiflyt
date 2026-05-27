@@ -8,6 +8,38 @@ from ..database import ROUTE_SCHEMA, quote_identifier, validate_schema_name
 from ..route_connections import find_segment_connections
 from psycopg.rows import dict_row
 
+# Schema shape is constant per process, but the validators run per-route and
+# were re-querying information_schema on every call. Cache the existence checks
+# (keyed by schema/table[/column]) so an area pass doesn't pay for them N times.
+_table_exists_cache: Dict[tuple, bool] = {}
+_column_exists_cache: Dict[tuple, bool] = {}
+
+
+def _table_exists(conn, schema: str, table: str) -> bool:
+    key = (schema, table)
+    if key not in _table_exists_cache:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT FROM information_schema.tables "
+                "WHERE table_schema = %s AND table_name = %s)",
+                (schema, table),
+            )
+            _table_exists_cache[key] = bool(cur.fetchone()[0])
+    return _table_exists_cache[key]
+
+
+def _column_exists(conn, schema: str, table: str, column: str) -> bool:
+    key = (schema, table, column)
+    if key not in _column_exists_cache:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = %s AND table_name = %s AND column_name = %s)",
+                (schema, table, column),
+            )
+            _column_exists_cache[key] = bool(cur.fetchone()[0])
+    return _column_exists_cache[key]
+
 
 class RouteGeometryValidator(BaseValidator):
     """Validates route geometry from route_geometries."""
@@ -56,52 +88,33 @@ class RouteGeometryValidator(BaseValidator):
         multilinestring_reason = None
         column_exists = False  # Track if column exists for validation
         try:
-            with conn.cursor(row_factory=dict_row) as cur:
-                # Check if table exists first
-                table_check_query = """
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables
-                        WHERE table_schema = %s AND table_name = 'route_continuous_geometries'
-                    ) as exists
-                """
-                cur.execute(table_check_query, (ROUTE_SCHEMA,))
-                table_exists_row = cur.fetchone()
-                table_exists = table_exists_row.get('exists') if table_exists_row else False
-
-                if table_exists:
-                    # Check if column exists (it might not exist if build-links hasn't run with latest version)
-                    # Use dynamic schema check for turogfriluftsruter_* schemas
-                    column_check_query = """
-                        SELECT EXISTS (
-                            SELECT 1 FROM information_schema.columns
-                            WHERE table_schema = %s
-                              AND table_name = 'route_continuous_geometries'
-                              AND column_name = 'multilinestring_reason'
-                        ) as exists
-                    """
-                    cur.execute(column_check_query, (ROUTE_SCHEMA,))
-                    column_exists_row = cur.fetchone()
-                    column_exists = column_exists_row.get('exists') if column_exists_row else False
-
-                    if column_exists:
-                        reason_query = f"""
+            # Existence checks are cached per process (constant schema shape).
+            if _table_exists(conn, ROUTE_SCHEMA, 'route_continuous_geometries'):
+                column_exists = _column_exists(
+                    conn, ROUTE_SCHEMA, 'route_continuous_geometries', 'multilinestring_reason'
+                )
+                if column_exists:
+                    with conn.cursor(row_factory=dict_row) as cur:
+                        cur.execute(
+                            f"""
                             SELECT multilinestring_reason
                             FROM {schema_quoted}.route_continuous_geometries
                             WHERE rutenummer = %s
                             LIMIT 1
-                        """
-                        cur.execute(reason_query, (rutenummer,))
+                            """,
+                            (rutenummer,),
+                        )
                         reason_row = cur.fetchone()
                         if reason_row:
                             multilinestring_reason = reason_row.get('multilinestring_reason')
-                    else:
-                        # Column doesn't exist - log warning
-                        result.add_issue(ValidationIssue(
-                            type='MULTILINESTRING_REASON_COLUMN_MISSING',
-                            message=f'Column multilinestring_reason does not exist in route_continuous_geometries. This may indicate that build-links has not run with the latest version. Reason validation will be skipped.',
-                            severity=Severity.WARNING,
-                            metadata={'table': 'route_continuous_geometries', 'column': 'multilinestring_reason'}
-                        ))
+                else:
+                    # Column doesn't exist - log warning
+                    result.add_issue(ValidationIssue(
+                        type='MULTILINESTRING_REASON_COLUMN_MISSING',
+                        message=f'Column multilinestring_reason does not exist in route_continuous_geometries. This may indicate that build-links has not run with the latest version. Reason validation will be skipped.',
+                        severity=Severity.WARNING,
+                        metadata={'table': 'route_continuous_geometries', 'column': 'multilinestring_reason'}
+                    ))
         except Exception:
             # Table might not exist yet or other error, ignore
             pass

@@ -315,3 +315,41 @@ export interface LinkBridgesResponse {
   rutenummer: string;
   bridges: LinkBridge[];
 }
+
+export interface AreaValidationRoute {
+  rutenummer: string;
+  rutenavn: string | null;
+  vedlikeholdsansvarlig: string | null;
+  status: "ERROR" | "WARNING" | "OK";
+  errors: number;
+  warnings: number;
+  info: number;
+  issue_types: string[];
+}
+
+export interface AreaValidationResponse {
+  area_code: string;
+  status: "computing" | "ready" | "error";
+  computed_at: string | null;
+  compute_seconds?: number;
+  error?: string;
+  routes: AreaValidationRoute[];
+}
+
+export interface MetadataOverride {
+  rutenummer: string;
+  rutenavn: string | null;
+  vedlikeholdsansvarlig: string | null;
+  rutetype: string | null;
+  gradering: string | null;
+  comment: string | null;
+  reported_at: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+export interface MetadataOverrideResponse {
+  area_code: string;
+  rutenummer: string;
+  override: MetadataOverride | null;
+}

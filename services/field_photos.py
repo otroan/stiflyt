@@ -281,6 +281,43 @@ def list_photos(
         return [_row_to_api(r) for r in cur.fetchall()]
 
 
+def list_photos_near_route(
+    conn, area_code: str, rutenummer: str, *, radius_m: float = 75.0
+) -> List[Dict[str, Any]]:
+    """Placed photos within `radius_m` of the route's (corrected) geometry.
+
+    Derived, not stored: a photo "belongs" to a route by proximity to its line,
+    computed via ST_DWithin against ops.route_link_graph (metres, SRID 25833) so
+    it tracks corrections (exclusions/bridges) and stays accurate at northern
+    latitudes (where a degree-based client-side filter would be skewed).
+    """
+    from psycopg.rows import dict_row
+
+    sql = """
+        WITH route AS (
+            SELECT ST_Collect(geom) AS geom
+            FROM ops.route_link_graph
+            WHERE rutenummer = %s
+        )
+        SELECT p.id, p.area_code, p.lon, p.lat, p.file_path, p.display_path, p.thumb_path,
+               p.mime_type, p.bytes, p.taken_at, p.exif_heading_deg, p.tags, p.caption,
+               p.uploaded_at, p.uploaded_by
+        FROM ops.field_photos p, route r
+        WHERE p.area_code = %s
+          AND p.lon IS NOT NULL AND p.lat IS NOT NULL
+          AND r.geom IS NOT NULL
+          AND ST_DWithin(
+                r.geom,
+                ST_Transform(ST_SetSRID(ST_MakePoint(p.lon, p.lat), 4326), 25833),
+                %s
+          )
+        ORDER BY COALESCE(p.taken_at, p.uploaded_at) DESC
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(sql, (rutenummer, area_code, radius_m))
+        return [_row_to_api(r) for r in cur.fetchall()]
+
+
 def list_placed_thumbnail_paths(
     op_conn,
     area_code: str,

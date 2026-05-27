@@ -14,7 +14,7 @@ import {
   Text,
   Title,
 } from "@mantine/core";
-import { IconCamera, IconDownload, IconInfoCircle, IconMapPin, IconRoute } from "@tabler/icons-react";
+import { IconAlertTriangle, IconCamera, IconDownload, IconInfoCircle, IconMapPin, IconRoute } from "@tabler/icons-react";
 import { api } from "./api";
 import type { CandidatesResponse, FieldPhoto, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
@@ -24,9 +24,10 @@ import PhotoPanel, { PhotoLightbox } from "./PhotoPanel";
 import FloatingToolbar from "./FloatingToolbar";
 import ExportTab from "./ExportTab";
 import RoutePanel from "./RoutePanel";
+import AreaValidationPanel from "./AreaValidationPanel";
 import { notifyError } from "./notify";
 
-type SidebarTab = "sites" | "rute" | "photos" | "export" | "about";
+type SidebarTab = "sites" | "rute" | "kvalitet" | "photos" | "export" | "about";
 
 const LOGIN_ERROR_MESSAGES: Record<string, string> = {
   not_allowed: "E-postadressen din står ikke i tilgangslisten. Kontakt en administrator.",
@@ -143,6 +144,9 @@ export default function App() {
   // Bumped to force an area reload (route geometries + candidates) after a
   // correction changes a route's shape — e.g. excluding a loop arm.
   const [areaReloadKey, setAreaReloadKey] = useState(0);
+  // When navigating from the Kvalitet list, open the route panel directly on
+  // its Validering sub-tab. Cleared after it's consumed.
+  const [routeInitialSubTab, setRouteInitialSubTab] = useState<"validation" | null>(null);
   // Escape clears route focus — backup for users who can't quickly relocate
   // the hovered popup. Only binds when a route is actually focused so we
   // don't fight with text-input Escape elsewhere.
@@ -549,6 +553,9 @@ export default function App() {
           >
             Rute
           </Tabs.Tab>
+          <Tabs.Tab value="kvalitet" leftSection={<IconAlertTriangle size={14} />}>
+            Kvalitet
+          </Tabs.Tab>
           <Tabs.Tab
             value="photos"
             leftSection={<IconCamera size={14} />}
@@ -617,8 +624,22 @@ export default function App() {
               armedWorkKind={mode === "place-work-marker" ? pendingWorkKind : null}
               onLoopArmsChange={setLoopArms}
               onRouteShapeChanged={() => setAreaReloadKey((k) => k + 1)}
+              initialSubTab={routeInitialSubTab}
+              onInitialSubTabConsumed={() => setRouteInitialSubTab(null)}
+              onOpenPhotos={(photos, index) => setLightboxState({ photos, index })}
             />
           )}
+        </Tabs.Panel>
+
+        <Tabs.Panel value="kvalitet" className="side-panel">
+          <AreaValidationPanel
+            areaCode={areaCode}
+            onOpenRoute={(rn) => {
+              setFocusedRoute(rn);
+              setRouteInitialSubTab("validation");
+              setSidebarTab("rute");
+            }}
+          />
         </Tabs.Panel>
 
         <Tabs.Panel value="photos" className="side-panel">

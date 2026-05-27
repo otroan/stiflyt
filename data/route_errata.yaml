@@ -1,14 +1,15 @@
 # Local errata for Kartverket turrutebasen data.
 #
 # Covers ops.rutenummer_remap, ops.unmarked_segment, ops.route_link_exclusion,
-# and ops.route_link_bridge. The signs_app UI writes link exclusions and bridges
-# directly to the database, so the DB is the runtime source of truth; this file
-# is the version-controlled snapshot. Regular workflow:
+# ops.route_link_bridge, and ops.route_metadata_override. The signs_app UI
+# writes link exclusions, bridges, and metadata overrides directly to the
+# database, so the DB is the runtime source of truth; this file is the
+# version-controlled snapshot. Regular workflow:
 #
 #     make dump-route-errata     # DB  -> this file (commit the result)
 #     make sync-route-errata     # this file -> DB  (bootstrap/restore; OVERWRITES)
 #
-# Four sections:
+# Five sections:
 #
 #   rutenummer_remaps:    rename/hide a Kartverket rutenummer (string-keyed)
 #   unmarked_segments:    flag a fotrute_fk as boat / glacier / other unmarked
@@ -21,6 +22,9 @@
 #                          rutenummer with a list of { a_node, b_node, reason,
 #                          comment, reported_at } — used to repair routes (e.g.
 #                          fem22) flagged by the disconnected validator.
+#   metadata_overrides:   canonical rutenavn / vedlikeholdsansvarlig / rutetype /
+#                          gradering for a route, keyed by rutenummer — used to
+#                          fix INCONSISTENT_* / MISSING_* / RUTENAVN_UKJENT.
 #
 # For rutenummer_remaps each entry takes one of:
 #

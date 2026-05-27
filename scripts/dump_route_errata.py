@@ -42,6 +42,8 @@ HEADER = """\
 #   unmarked_segments:    flag a fotrute_fk as boat/glacier/other (int-keyed)
 #   link_exclusions:      drop link(s) from one route's graph (rutenummer-keyed)
 #   bridges:              connect parts of a disconnected route (rutenummer-keyed)
+#   metadata_overrides:   canonical rutenavn / vedlikeholdsansvarlig / rutetype /
+#                         gradering for a route (rutenummer-keyed)
 """
 
 
@@ -73,6 +75,11 @@ def dump() -> None:
                 "FROM ops.route_link_bridge ORDER BY rutenummer, a_node, b_node"
             )
             bridge_rows = cur.fetchall()
+            cur.execute(
+                "SELECT rutenummer, rutenavn, vedlikeholdsansvarlig, rutetype, gradering, comment, reported_at "
+                "FROM ops.route_metadata_override ORDER BY rutenummer"
+            )
+            md_rows = cur.fetchall()
 
     remaps: dict = {}
     for r in remap_rows:
@@ -114,6 +121,17 @@ def dump() -> None:
             "reported_at": r["reported_at"],
         }))
 
+    metadata_overrides: dict = {}
+    for r in md_rows:
+        metadata_overrides[r["rutenummer"]] = _clean({
+            "rutenavn": r["rutenavn"],
+            "vedlikeholdsansvarlig": r["vedlikeholdsansvarlig"],
+            "rutetype": r["rutetype"],
+            "gradering": r["gradering"],
+            "comment": r["comment"],
+            "reported_at": r["reported_at"],
+        })
+
     data: dict = {}
     if remaps:
         data["rutenummer_remaps"] = remaps
@@ -123,13 +141,16 @@ def dump() -> None:
         data["link_exclusions"] = link_exclusions
     if bridges:
         data["bridges"] = bridges
+    if metadata_overrides:
+        data["metadata_overrides"] = metadata_overrides
 
     body = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
     ERRATA_FILE.write_text(HEADER + "\n" + body, encoding="utf-8")
     print(
         f"dumped {len(remaps)} remap(s), {len(unmarked)} unmarked, "
         f"{sum(len(v) for v in link_exclusions.values())} link exclusion(s), "
-        f"{sum(len(v) for v in bridges.values())} bridge(s) -> {ERRATA_FILE.relative_to(ROOT)}"
+        f"{sum(len(v) for v in bridges.values())} bridge(s), "
+        f"{len(metadata_overrides)} metadata override(s) -> {ERRATA_FILE.relative_to(ROOT)}"
     )
 
 

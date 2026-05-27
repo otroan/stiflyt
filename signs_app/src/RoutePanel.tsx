@@ -19,6 +19,7 @@ import {
   IconCheck,
   IconNotebook,
   IconPencil,
+  IconPhoto,
   IconPlus,
   IconReportAnalytics,
   IconTool,
@@ -29,13 +30,32 @@ import { api } from "./api";
 import { notifyError } from "./notify";
 import {
   ROUTE_ANNOTATION_KIND_LABEL_NB,
+  type FieldPhoto,
   type LinkBridge,
   type LinkExclusion,
+  type MetadataOverride,
   type RouteAnnotation,
   type RouteAnnotationKind,
   type RouteSummary,
   type RouteValidationResponse,
 } from "./types";
+
+// Metadata issues resolved by setting a canonical route value (vs. those that
+// need a Kartverket row deletion, which the override can't fix).
+const METADATA_FIXABLE = new Set([
+  "INCONSISTENT_RUTENAVN", "INCONSISTENT_VEDLIKEHOLDSANSVARLIG",
+  "INCONSISTENT_RUTETYPE", "INCONSISTENT_GRADERING",
+  "RUTENAVN_UKJENT", "MISSING_RUTENAVN", "MISSING_RUTENAVN_SOME_SEGMENTS",
+  "MISSING_VEDLIKEHOLDSANSVARLIG", "MISSING_VEDLIKEHOLDSANSVARLIG_SOME_SEGMENTS",
+  "RUTENAVN_SUGGESTION",
+]);
+
+const METADATA_FIELDS: { key: "rutenavn" | "vedlikeholdsansvarlig" | "rutetype" | "gradering"; label: string }[] = [
+  { key: "rutenavn", label: "Rutenavn" },
+  { key: "vedlikeholdsansvarlig", label: "Vedlikeholdsansvarlig" },
+  { key: "rutetype", label: "Rutetype" },
+  { key: "gradering", label: "Gradering" },
+];
 
 interface Props {
   areaCode: string;
@@ -56,15 +76,22 @@ interface Props {
   /** Called after a correction changes the route's shape (exclude/undo) so the
    *  app reloads the route geometry and the map redraws the single path. */
   onRouteShapeChanged?: () => void;
+  /** When set, open the panel directly on this sub-tab (e.g. navigating from
+   *  the Kvalitet list opens "validation"). */
+  initialSubTab?: "validation" | null;
+  /** Called once initialSubTab has been applied, so the parent can clear it. */
+  onInitialSubTabConsumed?: () => void;
+  /** Open the shared photo lightbox (App owns it). */
+  onOpenPhotos?: (photos: FieldPhoto[], index: number) => void;
 }
 
-type SubTab = "diary" | "inspection" | "dugnad" | "work" | "validation";
+type SubTab = "diary" | "inspection" | "dugnad" | "work" | "validation" | "bilder";
 
 // Distinct colours for loop arms — kept clear of the focused-route blue and
 // the gold hover line so arm overlays read as their own thing.
 const ARM_COLORS = ["#e8590c", "#9c36b5", "#2b8a3e", "#c2255c", "#1098ad"];
 
-const SUBTAB_KINDS: Record<Exclude<SubTab, "validation">, RouteAnnotationKind[]> = {
+const SUBTAB_KINDS: Record<Exclude<SubTab, "validation" | "bilder">, RouteAnnotationKind[]> = {
   diary: ["diary"],
   inspection: ["inspection"],
   dugnad: ["dugnad"],
@@ -103,8 +130,18 @@ export default function RoutePanel({
   armedWorkKind,
   onLoopArmsChange,
   onRouteShapeChanged,
+  initialSubTab,
+  onInitialSubTabConsumed,
+  onOpenPhotos,
 }: Props) {
-  const [tab, setTab] = useState<SubTab>("diary");
+  const [tab, setTab] = useState<SubTab>(initialSubTab ?? "diary");
+
+  useEffect(() => {
+    if (initialSubTab) {
+      setTab(initialSubTab);
+      onInitialSubTabConsumed?.();
+    }
+  }, [initialSubTab, onInitialSubTabConsumed]);
   const [annotations, setAnnotations] = useState<RouteAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -131,7 +168,7 @@ export default function RoutePanel({
     return out;
   }, [annotations]);
 
-  const tabKinds = tab === "validation" ? [] : SUBTAB_KINDS[tab];
+  const tabKinds = tab === "validation" || tab === "bilder" ? [] : SUBTAB_KINDS[tab];
   const filtered = useMemo(
     () => annotations.filter((a) => tabKinds.includes(a.kind)),
     [annotations, tabKinds],
@@ -194,6 +231,7 @@ export default function RoutePanel({
           <Tabs.Tab value="inspection" leftSection={<IconReportAnalytics size={14} />}>Inspeksjon</Tabs.Tab>
           <Tabs.Tab value="dugnad" leftSection={<IconUsersGroup size={14} />}>Dugnad</Tabs.Tab>
           <Tabs.Tab value="work" leftSection={<IconTool size={14} />}>Arbeid</Tabs.Tab>
+          <Tabs.Tab value="bilder" leftSection={<IconPhoto size={14} />}>Bilder</Tabs.Tab>
           <Tabs.Tab value="validation" leftSection={<IconAlertTriangle size={14} />}>Validering</Tabs.Tab>
         </Tabs.List>
 
@@ -206,6 +244,8 @@ export default function RoutePanel({
               onLoopArmsChange={onLoopArmsChange}
               onRouteShapeChanged={() => { onRouteShapeChanged?.(); onChanged?.(); }}
             />
+          ) : tab === "bilder" ? (
+            <PhotosTab key={rutenummer} areaCode={areaCode} rutenummer={rutenummer} onOpenPhotos={onOpenPhotos} />
           ) : (
           <Stack gap="xs">
             {tab !== "work" && !adding && (
@@ -533,20 +573,23 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
   const [val, setVal] = useState<RouteValidationResponse | null>(null);
   const [exclusions, setExclusions] = useState<LinkExclusion[]>([]);
   const [bridges, setBridges] = useState<LinkBridge[]>([]);
+  const [override, setOverride] = useState<MetadataOverride | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [v, ex, br] = await Promise.all([
+      const [v, ex, br, mo] = await Promise.all([
         api.getRouteValidation(areaCode, rutenummer),
         api.listLinkExclusions(areaCode, rutenummer),
         api.listLinkBridges(areaCode, rutenummer),
+        api.getMetadataOverride(areaCode, rutenummer),
       ]);
       setVal(v);
       setExclusions(ex.exclusions);
       setBridges(br.bridges);
+      setOverride(mo.override);
     } catch (e) {
       notifyError(e);
     } finally {
@@ -641,10 +684,40 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
     }
   };
 
+  // Suggested rutenavn (from RUTENAVN_SUGGESTION) + distinct values seen per
+  // field (from INCONSISTENT_*), to prefill / offer in the metadata form.
+  const metadataHints = useMemo(() => {
+    const suggestions: Record<string, string[]> = {};
+    let suggestedRutenavn: string | null = null;
+    if (val) {
+      for (const i of [...val.errors, ...val.warnings, ...val.info]) {
+        if (i.type === "RUTENAVN_SUGGESTION" && typeof i.suggested_rutenavn === "string") {
+          suggestedRutenavn = i.suggested_rutenavn;
+        }
+        const m: Record<string, string> = {
+          INCONSISTENT_RUTENAVN: "rutenavn",
+          INCONSISTENT_VEDLIKEHOLDSANSVARLIG: "vedlikeholdsansvarlig",
+          INCONSISTENT_RUTETYPE: "rutetype",
+          INCONSISTENT_GRADERING: "gradering",
+        };
+        const field = m[i.type];
+        if (field && Array.isArray(i.values)) {
+          suggestions[field] = (i.values as unknown[]).map(String);
+        }
+      }
+    }
+    return { suggestions, suggestedRutenavn };
+  }, [val]);
+
+  const hasMetadataIssue = useMemo(
+    () => !!val && [...val.errors, ...val.warnings, ...val.info].some((i) => METADATA_FIXABLE.has(i.type)),
+    [val],
+  );
+
   const otherIssues = useMemo(() => {
     if (!val) return [];
     return [...val.errors, ...val.warnings, ...val.info].filter(
-      (i) => i.type !== "ROUTE_HAS_LOOP" && i.type !== "ROUTE_DISCONNECTED",
+      (i) => i.type !== "ROUTE_HAS_LOOP" && i.type !== "ROUTE_DISCONNECTED" && !METADATA_FIXABLE.has(i.type),
     );
   }, [val]);
 
@@ -740,6 +813,17 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
         </Card>
       )}
 
+      {(hasMetadataIssue || override) && (
+        <MetadataFixCard
+          areaCode={areaCode}
+          rutenummer={rutenummer}
+          override={override}
+          suggestions={metadataHints.suggestions}
+          suggestedRutenavn={metadataHints.suggestedRutenavn}
+          onSaved={async () => { await refresh(); onRouteShapeChanged(); }}
+        />
+      )}
+
       {otherIssues.length > 0 && (
         <Stack gap={4}>
           {otherIssues.map((i, idx) => (
@@ -753,9 +837,134 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
         </Stack>
       )}
 
-      {val.status === "OK" && exclusions.length === 0 && bridges.length === 0 && (
+      {val.status === "OK" && exclusions.length === 0 && bridges.length === 0 && !override && (
         <Text size="xs" c="dimmed">Ingen feil funnet.</Text>
       )}
+    </Stack>
+  );
+}
+
+function MetadataFixCard({ areaCode, rutenummer, override, suggestions, suggestedRutenavn, onSaved }: {
+  areaCode: string;
+  rutenummer: string;
+  override: MetadataOverride | null;
+  suggestions: Record<string, string[]>;
+  suggestedRutenavn: string | null;
+  onSaved: () => void;
+}) {
+  const initial = useMemo(() => ({
+    rutenavn: override?.rutenavn ?? "",
+    vedlikeholdsansvarlig: override?.vedlikeholdsansvarlig ?? "",
+    rutetype: override?.rutetype ?? "",
+    gradering: override?.gradering ?? "",
+  }), [override]);
+  const [vals, setVals] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setVals(initial); }, [initial]);
+
+  const set = (k: keyof typeof vals, v: string) => setVals((p) => ({ ...p, [k]: v }));
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.putMetadataOverride(areaCode, rutenummer, vals);
+      onSaved();
+    } catch (e) { notifyError(e); } finally { setBusy(false); }
+  };
+
+  const reset = async () => {
+    setBusy(true);
+    try {
+      await api.clearMetadataOverride(areaCode, rutenummer);
+      onSaved();
+    } catch (e) { notifyError(e); } finally { setBusy(false); }
+  };
+
+  return (
+    <Card withBorder padding="sm" radius="md">
+      <Group justify="space-between" mb={6}>
+        <Text fw={600} size="sm">Metadata</Text>
+        {override && <Badge size="xs" color="blue" variant="light">overstyrt</Badge>}
+      </Group>
+      <Stack gap={8}>
+        {METADATA_FIELDS.map(({ key, label }) => {
+          const chips = key === "rutenavn"
+            ? [...(suggestedRutenavn ? [suggestedRutenavn] : []), ...(suggestions.rutenavn ?? [])]
+            : (suggestions[key] ?? []);
+          const uniqueChips = Array.from(new Set(chips)).filter((c) => c && c.toLowerCase() !== "ukjent");
+          return (
+            <div key={key}>
+              <TextInput
+                size="xs"
+                label={label}
+                value={vals[key]}
+                placeholder="(behold Kartverket-verdi)"
+                onChange={(e) => set(key, e.currentTarget.value)}
+              />
+              {uniqueChips.length > 0 && (
+                <Group gap={4} mt={2}>
+                  {uniqueChips.map((c) => (
+                    <Badge key={c} size="xs" variant="light" style={{ cursor: "pointer" }} onClick={() => set(key, c)}>
+                      {c}
+                    </Badge>
+                  ))}
+                </Group>
+              )}
+            </div>
+          );
+        })}
+        <Group justify="flex-end" gap="xs">
+          {override && (
+            <Button size="xs" variant="subtle" color="gray" loading={busy} onClick={reset}>
+              Tilbakestill
+            </Button>
+          )}
+          <Button size="xs" loading={busy} onClick={save}>Lagre</Button>
+        </Group>
+      </Stack>
+    </Card>
+  );
+}
+
+function PhotosTab({ areaCode, rutenummer, onOpenPhotos }: {
+  areaCode: string;
+  rutenummer: string;
+  onOpenPhotos?: (photos: FieldPhoto[], index: number) => void;
+}) {
+  const [photos, setPhotos] = useState<FieldPhoto[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.getRoutePhotos(areaCode, rutenummer)
+      .then((r) => { if (!cancelled) setPhotos(r.photos); })
+      .catch((e) => { if (!cancelled) notifyError(e); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [areaCode, rutenummer]);
+
+  if (loading) return <Text size="xs" c="dimmed">Laster bilder…</Text>;
+  if (photos.length === 0) {
+    return <Text size="xs" c="dimmed">Ingen bilder i nærheten av ruta. Plasser bilder på kartet i Bilder-fanen.</Text>;
+  }
+
+  return (
+    <Stack gap={6}>
+      <Text size="xs" c="dimmed">{photos.length} bilde{photos.length === 1 ? "" : "r"} nær ruta</Text>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
+        {photos.map((p, i) => (
+          <img
+            key={p.id}
+            src={p.thumb_url}
+            alt={p.caption ?? ""}
+            title={p.caption ?? ""}
+            loading="lazy"
+            style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 4, cursor: "pointer", display: "block" }}
+            onClick={() => onOpenPhotos?.(photos, i)}
+          />
+        ))}
+      </div>
     </Stack>
   );
 }

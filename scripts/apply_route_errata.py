@@ -3,12 +3,16 @@
 Idempotent: deleting entries from the YAML and re-running this script removes
 them from the database too. Run via `make sync-route-errata`.
 
-NOTE on direction: the signs_app UI writes link exclusions (and may write other
-corrections) directly to the database, so the DB is the runtime source of
-truth. This script applies YAML → DB, which OVERWRITES the DB to match the file
-— use it to bootstrap or restore a fresh environment, not routinely on a live
-one. The regular workflow is the inverse: `make dump-route-errata` exports the
-DB to YAML for git (see scripts/dump_route_errata.py).
+NOTE on direction: the signs_app UI writes corrections (link exclusions,
+bridges, metadata overrides) directly to the database, so the DB is the runtime
+source of truth. This script applies YAML → DB to bootstrap or restore a fresh
+environment. The regular workflow is the inverse: `make dump-route-errata`
+exports the DB to YAML for git (see scripts/dump_route_errata.py).
+
+GUARD: because a sync deletes DB rows not present in the YAML, it would wipe
+UI-authored corrections. So sync ABORTS if any DB correction is missing from the
+file, listing what would be deleted, unless run with `--force`. Run
+`make dump-route-errata` first to snapshot UI edits, then sync is safe.
 
 Schemas:
     ops.rutenummer_remap     — migration 015 / 016
@@ -161,12 +165,93 @@ def load_bridges() -> list[dict]:
     return out
 
 
-def sync(updated_by: str = "apply_route_errata") -> None:
+_METADATA_OVERRIDE_FIELDS = ("rutenavn", "vedlikeholdsansvarlig", "rutetype", "gradering")
+
+
+def load_metadata_overrides() -> dict[str, dict]:
+    """YAML `metadata_overrides:` is keyed by rutenummer with a mapping of the
+    canonical values to force across the route:
+
+        metadata_overrides:
+          fem22:
+            rutenavn: "Synnervika - Svukuriset"
+            reported_at: 2026-05-27
+    """
+    if not ERRATA_FILE.exists():
+        return {}
+    raw = yaml.safe_load(ERRATA_FILE.read_text(encoding="utf-8")) or {}
+    items = raw.get("metadata_overrides") or {}
+    out: dict[str, dict] = {}
+    for rutenummer, val in items.items():
+        if not isinstance(val, dict):
+            raise ValueError(f"metadata_overrides[{rutenummer!r}] must be a mapping")
+        if all(val.get(f) in (None, "") for f in _METADATA_OVERRIDE_FIELDS):
+            raise ValueError(
+                f"metadata_overrides[{rutenummer!r}] must set at least one of {_METADATA_OVERRIDE_FIELDS}"
+            )
+        out[str(rutenummer)] = {
+            "rutenavn": val.get("rutenavn"),
+            "vedlikeholdsansvarlig": val.get("vedlikeholdsansvarlig"),
+            "rutetype": val.get("rutetype"),
+            "gradering": val.get("gradering"),
+            "comment": val.get("comment"),
+            "reported_at": val.get("reported_at"),
+        }
+    return out
+
+
+def _would_delete(conn, remaps, unmarked, link_exclusions, bridges, metadata_overrides) -> dict:
+    """Corrections present in the DB but absent from the YAML — i.e. rows a sync
+    would delete. Used to guard against wiping UI-authored corrections."""
+    out: dict = {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT from_rutenummer FROM ops.rutenummer_remap")
+        s = {r[0] for r in cur.fetchall()} - set(remaps)
+        if s:
+            out["rutenummer_remap"] = sorted(s)
+        cur.execute("SELECT fotrute_fk FROM ops.unmarked_segment")
+        s = {int(r[0]) for r in cur.fetchall()} - set(unmarked)
+        if s:
+            out["unmarked_segment"] = sorted(s)
+        cur.execute("SELECT rutenummer, link_id FROM ops.route_link_exclusion")
+        s = {(r[0], int(r[1])) for r in cur.fetchall()} - {(x["rutenummer"], x["link_id"]) for x in link_exclusions}
+        if s:
+            out["route_link_exclusion"] = sorted(s)
+        cur.execute("SELECT rutenummer, a_node, b_node FROM ops.route_link_bridge")
+        s = {(r[0], int(r[1]), int(r[2])) for r in cur.fetchall()} - {(x["rutenummer"], x["a_node"], x["b_node"]) for x in bridges}
+        if s:
+            out["route_link_bridge"] = sorted(s)
+        cur.execute("SELECT rutenummer FROM ops.route_metadata_override")
+        s = {r[0] for r in cur.fetchall()} - set(metadata_overrides)
+        if s:
+            out["route_metadata_override"] = sorted(s)
+    return out
+
+
+def sync(updated_by: str = "apply_route_errata", force: bool = False) -> None:
     remaps = load_remaps()
     unmarked = load_unmarked()
     link_exclusions = load_link_exclusions()
     bridges = load_bridges()
+    metadata_overrides = load_metadata_overrides()
     with op_db_connection() as conn:
+        # Guard: applying the YAML deletes DB rows not in the file. With the UI
+        # writing corrections straight to the DB, a blind sync would wipe them.
+        # Abort if anything would be deleted, unless --force.
+        stale = _would_delete(conn, remaps, unmarked, link_exclusions, bridges, metadata_overrides)
+        if stale and not force:
+            total = sum(len(v) for v in stale.values())
+            print(
+                f"ABORT: this sync would delete {total} DB correction(s) not present in "
+                f"{ERRATA_FILE.name}:"
+            )
+            for table, items in stale.items():
+                print(f"  {table}: {items}")
+            print(
+                "These are likely UI-authored corrections. Run `make dump-route-errata` to "
+                "snapshot them into the YAML first, or re-run with --force to overwrite the DB."
+            )
+            raise SystemExit(2)
         with conn.cursor() as cur:
             # --- rutenummer_remap ---
             yaml_keys = list(remaps.keys())
@@ -309,6 +394,46 @@ def sync(updated_by: str = "apply_route_errata") -> None:
                     ),
                 )
 
+            # --- route_metadata_override ---
+            yaml_md_keys = list(metadata_overrides.keys())
+            cur.execute("SELECT rutenummer FROM ops.route_metadata_override")
+            existing_md = {r[0] for r in cur.fetchall()}
+            stale_md = existing_md - set(yaml_md_keys)
+            if stale_md:
+                cur.execute(
+                    "DELETE FROM ops.route_metadata_override WHERE rutenummer = ANY(%s)",
+                    (list(stale_md),),
+                )
+                print(f"removed {len(stale_md)} stale metadata override(s): {sorted(stale_md)}")
+            for rn, v in metadata_overrides.items():
+                cur.execute(
+                    """
+                    INSERT INTO ops.route_metadata_override
+                        (rutenummer, rutenavn, vedlikeholdsansvarlig, rutetype, gradering,
+                         comment, reported_at, updated_by, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (rutenummer) DO UPDATE
+                        SET rutenavn = EXCLUDED.rutenavn,
+                            vedlikeholdsansvarlig = EXCLUDED.vedlikeholdsansvarlig,
+                            rutetype = EXCLUDED.rutetype,
+                            gradering = EXCLUDED.gradering,
+                            comment = EXCLUDED.comment,
+                            reported_at = EXCLUDED.reported_at,
+                            updated_by = EXCLUDED.updated_by,
+                            updated_at = NOW();
+                    """,
+                    (
+                        rn,
+                        v.get("rutenavn"),
+                        v.get("vedlikeholdsansvarlig"),
+                        v.get("rutetype"),
+                        v.get("gradering"),
+                        v.get("comment"),
+                        v.get("reported_at"),
+                        updated_by,
+                    ),
+                )
+
     n_remap = sum(1 for v in remaps.values() if not v.get("delete"))
     n_delete = sum(1 for v in remaps.values() if v.get("delete"))
     by_kind: dict[str, int] = {}
@@ -320,9 +445,13 @@ def sync(updated_by: str = "apply_route_errata") -> None:
         f"{n_delete} deletion{'s' if n_delete != 1 else ''}, "
         f"{len(unmarked)} unmarked ({unmarked_summary}), "
         f"{len(link_exclusions)} link exclusion{'s' if len(link_exclusions) != 1 else ''}, "
-        f"{len(bridges)} bridge{'s' if len(bridges) != 1 else ''}"
+        f"{len(bridges)} bridge{'s' if len(bridges) != 1 else ''}, "
+        f"{len(metadata_overrides)} metadata override{'s' if len(metadata_overrides) != 1 else ''}"
     )
 
 
 if __name__ == "__main__":
-    sync(updated_by=os.environ.get("USER", "apply_route_errata"))
+    sync(
+        updated_by=os.environ.get("USER", "apply_route_errata"),
+        force="--force" in sys.argv,
+    )

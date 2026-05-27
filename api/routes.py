@@ -2381,6 +2381,26 @@ async def get_signs_area_stats(area_code: str) -> Dict:
         raise HTTPException(status_code=500, detail=f"Error getting area stats: {e}")
 
 
+@router.get("/signs/area/{area_code}/validation")
+async def get_area_validation(area_code: str, refresh: bool = False):
+    """Per-route validation summary for the area (Problemruter list).
+
+    Running all validators across an area takes minutes, so the result is
+    cached in-process and recomputed in the background. Returns
+    `{status: computing|ready|error, computed_at, routes, ...}`; the UI polls
+    until `status == "ready"`. `?refresh=1` forces a recompute.
+    """
+    _validate_area_code(area_code)
+    try:
+        from services.route_validation_report import get_area_validation_cached
+        snap = get_area_validation_cached(area_code, refresh=refresh)
+        return {"area_code": area_code, **snap}
+    except Exception as e:
+        print(f"Error getting area validation for {area_code}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting area validation: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Route annotations — rutebok diary, inspection, dugnad, work-marker
 # ---------------------------------------------------------------------------
@@ -2733,6 +2753,96 @@ async def delete_route_link_bridges(
         print(f"Error deleting link bridges for {rutenummer}: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error deleting link bridges: {e}")
+
+
+@router.get("/routes/{area_code}/{rutenummer}/photos")
+async def get_route_photos(area_code: str, rutenummer: str, radius_m: float = 75.0):
+    """Photos near the route's geometry (derived by proximity, not stored).
+
+    Radius is in metres against the corrected route line, so it reflects
+    exclusions/bridges and is accurate at northern latitudes.
+    """
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        with db_connection() as conn:
+            rows = fp_svc.list_photos_near_route(conn, area_code, rutenummer, radius_m=radius_m)
+        return {"area_code": area_code, "rutenummer": rutenummer, "photos": rows}
+    except Exception as e:
+        print(f"Error getting route photos for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting route photos: {e}")
+
+
+@router.get("/routes/{area_code}/{rutenummer}/metadata-override")
+async def get_route_metadata_override(area_code: str, rutenummer: str):
+    """Current metadata override for the route (rutenavn / vedlikeholdsansvarlig
+    / rutetype / gradering), or null if none."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_corrections import get_metadata_override
+            ov = get_metadata_override(op_conn, rutenummer)
+        return {"area_code": area_code, "rutenummer": rutenummer, "override": ov}
+    except Exception as e:
+        print(f"Error getting metadata override for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting metadata override: {e}")
+
+
+@router.put("/routes/{area_code}/{rutenummer}/metadata-override")
+async def put_route_metadata_override(
+    area_code: str,
+    rutenummer: str,
+    payload: Dict,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Set the route's canonical metadata. Body may include any of
+    `rutenavn`, `vedlikeholdsansvarlig`, `rutetype`, `gradering`, `comment`.
+    Blank/omitted fields leave Kartverket's value; if all four are blank the
+    override is removed. Returns the resulting override (or null)."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    payload = payload or {}
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_corrections import set_metadata_override
+            ov = set_metadata_override(
+                op_conn,
+                rutenummer=rutenummer,
+                rutenavn=payload.get("rutenavn"),
+                vedlikeholdsansvarlig=payload.get("vedlikeholdsansvarlig"),
+                rutetype=payload.get("rutetype"),
+                gradering=payload.get("gradering"),
+                comment=payload.get("comment"),
+                updated_by=x_user,
+            )
+        return {"area_code": area_code, "rutenummer": rutenummer, "override": ov}
+    except Exception as e:
+        print(f"Error setting metadata override for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error setting metadata override: {e}")
+
+
+@router.delete("/routes/{area_code}/{rutenummer}/metadata-override")
+async def delete_route_metadata_override(
+    area_code: str,
+    rutenummer: str,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Remove the route's metadata override (restore Kartverket values)."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_corrections import clear_metadata_override
+            deleted = clear_metadata_override(op_conn, rutenummer)
+        return {"area_code": area_code, "rutenummer": rutenummer, "deleted": deleted}
+    except Exception as e:
+        print(f"Error deleting metadata override for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error deleting metadata override: {e}")
 
 
 # ---------------------------------------------------------------------------

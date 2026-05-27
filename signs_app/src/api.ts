@@ -5,8 +5,10 @@ import type {
   FieldPhoto,
   FieldPhotosResponse,
   PlacenameCandidatesResponse,
+  AreaValidationResponse,
   LinkBridgesResponse,
   LinkExclusionsResponse,
+  MetadataOverrideResponse,
   RouteAnnotation,
   RouteAnnotationsResponse,
   RouteValidationResponse,
@@ -360,6 +362,38 @@ export const api = {
       { method: "DELETE" },
     );
   },
+
+  getAreaValidation: (area: string, refresh = false) =>
+    jsonFetch<AreaValidationResponse>(
+      `/signs/area/${area}/validation${refresh ? "?refresh=1" : ""}`,
+    ),
+
+  /** Photos near a route's geometry (derived by proximity, not stored). */
+  getRoutePhotos: (area: string, rutenummer: string) =>
+    jsonFetch<{ area_code: string; rutenummer: string; photos: FieldPhoto[] }>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/photos`,
+    ),
+
+  getMetadataOverride: (area: string, rutenummer: string) =>
+    jsonFetch<MetadataOverrideResponse>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/metadata-override`,
+    ),
+
+  putMetadataOverride: (
+    area: string,
+    rutenummer: string,
+    payload: { rutenavn?: string | null; vedlikeholdsansvarlig?: string | null; rutetype?: string | null; gradering?: string | null; comment?: string | null },
+  ) =>
+    jsonFetch<MetadataOverrideResponse>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/metadata-override`,
+      { method: "PUT", body: JSON.stringify(payload) },
+    ),
+
+  clearMetadataOverride: (area: string, rutenummer: string) =>
+    jsonFetch<{ area_code: string; rutenummer: string; deleted: boolean }>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/metadata-override`,
+      { method: "DELETE" },
+    ),
 
   /** Route-validation XLSX: one row per issue + a per-route summary sheet. */
   downloadValidationXlsx: async (area: string) => {
