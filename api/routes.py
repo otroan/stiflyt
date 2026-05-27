@@ -2846,6 +2846,76 @@ async def delete_route_metadata_override(
 
 
 # ---------------------------------------------------------------------------
+# GPX tracks — actually-walked overlay
+# ---------------------------------------------------------------------------
+
+
+@router.get("/gpx")
+async def list_gpx_tracks(area: str):
+    """All GPX tracks for an area (geometry as WGS84 GeoJSON for the map)."""
+    _validate_area_code(area)
+    try:
+        with op_db_connection() as op_conn:
+            from services import gpx_tracks as gpx_svc
+            tracks = gpx_svc.list_tracks(op_conn, area)
+        return {"area_code": area, "tracks": tracks}
+    except Exception as e:
+        print(f"Error listing gpx tracks for {area}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error listing gpx tracks: {e}")
+
+
+@router.post("/gpx")
+async def upload_gpx_track(
+    area: Annotated[str, Form(...)],
+    file: Annotated[UploadFile, File(...)],
+    name: Annotated[Optional[str], Form()] = None,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+) -> Dict:
+    """Upload one GPX file; it's parsed to a track geometry and stored for the
+    area. `name` falls back to the GPX's own name, then the filename."""
+    _validate_area_code(area)
+    try:
+        raw = await file.read()
+        from services import gpx_tracks as gpx_svc
+        segments, gpx_name = gpx_svc.parse_gpx(raw)
+        track_name = (name or "").strip() or gpx_name or (file.filename or "tur").rsplit(".", 1)[0]
+        with op_db_connection() as op_conn:
+            track = gpx_svc.insert_track(
+                op_conn,
+                area_code=area,
+                name=track_name,
+                segments=segments,
+                uploaded_by=x_user,
+            )
+        return track
+    except Exception as e:
+        from services.gpx_tracks import GpxParseError
+        if isinstance(e, GpxParseError):
+            raise HTTPException(status_code=400, detail=str(e))
+        print(f"Error uploading gpx for {area}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error uploading gpx: {e}")
+
+
+@router.delete("/gpx/{track_id}", status_code=204)
+async def delete_gpx_track(track_id: int, x_user: Optional[str] = Header(None, alias="X-User")):
+    try:
+        with op_db_connection() as op_conn:
+            from services import gpx_tracks as gpx_svc
+            deleted = gpx_svc.delete_track(op_conn, track_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"GPX track {track_id} not found")
+        return Response(status_code=204)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting gpx track {track_id}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error deleting gpx track: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Field photos — uncoupled photo layer (sign documentation + route condition)
 # ---------------------------------------------------------------------------
 

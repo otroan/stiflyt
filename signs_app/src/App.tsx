@@ -16,7 +16,7 @@ import {
 } from "@mantine/core";
 import { IconAlertTriangle, IconCamera, IconDownload, IconInfoCircle, IconMapPin, IconRoute } from "@tabler/icons-react";
 import { api } from "./api";
-import type { CandidatesResponse, FieldPhoto, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
+import type { CandidatesResponse, FieldPhoto, GpxTrack, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
 import SiteEditor from "./SiteEditor";
 import AreaReport from "./AreaReport";
@@ -198,6 +198,35 @@ export default function App() {
     }
   };
   useEffect(() => { if (me) refreshPhotos(); }, [areaCode, me]);
+
+  // --- GPX tracks (actually-walked overlay) ---
+  const [gpxTracks, setGpxTracks] = useState<GpxTrack[]>([]);
+  const [gpxVisible, setGpxVisible] = useState(true);
+  const refreshGpx = async () => {
+    try {
+      const r = await api.listGpxTracks(areaCode);
+      setGpxTracks(r.tracks);
+    } catch (e) {
+      notifyError(e);
+    }
+  };
+  useEffect(() => { if (me) refreshGpx(); }, [areaCode, me]);
+  const handleUploadGpx = async (file: File) => {
+    try {
+      await api.uploadGpx(areaCode, file);
+      await refreshGpx();
+    } catch (e) {
+      notifyError(e);
+    }
+  };
+  const handleDeleteGpx = async (id: number) => {
+    try {
+      await api.deleteGpx(id);
+      await refreshGpx();
+    } catch (e) {
+      notifyError(e);
+    }
+  };
 
   // --- Work markers (route_annotations of kind work_*) ---
   const [workMarkers, setWorkMarkers] = useState<RouteAnnotation[]>([]);
@@ -532,6 +561,11 @@ export default function App() {
             }
           }}
           loopArms={loopArms}
+          gpxTracks={gpxTracks}
+          gpxVisible={gpxVisible}
+          onGpxVisibleChange={setGpxVisible}
+          onUploadGpx={handleUploadGpx}
+          onDeleteGpx={handleDeleteGpx}
         />
       </div>
 

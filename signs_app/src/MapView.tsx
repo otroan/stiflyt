@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import { api } from "./api";
-import type { FieldPhoto, RouteAnnotation, RouteListItem, RouteSummary, SignSite } from "./types";
+import type { FieldPhoto, GpxTrack, RouteAnnotation, RouteListItem, RouteSummary, SignSite } from "./types";
 
 export type BaseLayerId = "osm" | "topo4" | "topo4graatone";
 
@@ -49,6 +49,14 @@ interface Props {
    *  colour over the focused route so the user can compare and pick which to
    *  exclude. Empty / undefined = nothing drawn. */
   loopArms?: { color: string; geometry: GeoJSON.Geometry }[];
+  /** Uploaded GPX tracks (actually-walked overlay), rendered as a green layer. */
+  gpxTracks?: GpxTrack[];
+  gpxVisible?: boolean;
+  onGpxVisibleChange?: (v: boolean) => void;
+  /** Upload a GPX file (from the layer panel's upload button). */
+  onUploadGpx?: (file: File) => void;
+  /** Delete a GPX track by id. */
+  onDeleteGpx?: (id: number) => void;
 }
 
 const BREHEIMEN_CENTER: [number, number] = [7.5, 61.7];
@@ -193,6 +201,11 @@ export default function MapView({
   onWorkMarkersVisibleChange,
   onWorkMarkerOpen,
   loopArms,
+  gpxTracks,
+  gpxVisible,
+  onGpxVisibleChange,
+  onUploadGpx,
+  onDeleteGpx,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -272,6 +285,17 @@ export default function MapView({
         properties: { color: a.color, idx: i },
       })),
   }), [loopArms]);
+
+  const gpxGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => ({
+    type: "FeatureCollection",
+    features: (gpxTracks ?? [])
+      .filter((t) => t.geometry)
+      .map((t) => ({
+        type: "Feature",
+        geometry: t.geometry as GeoJSON.Geometry,
+        properties: { id: t.id, name: t.name || "" },
+      })),
+  }), [gpxTracks]);
 
   const sitesGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => ({
     type: "FeatureCollection",
@@ -528,6 +552,36 @@ export default function MapView({
     };
     whenStyleReady(map, apply);
   }, [loopArmsGeoJSON]);
+
+  // GPX overlay — uploaded walked tracks in green over the Kartverket routes.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      if (!map.getSource("gpx")) {
+        map.addSource("gpx", { type: "geojson", data: gpxGeoJSON });
+        map.addLayer({
+          id: "gpx-line",
+          type: "line",
+          source: "gpx",
+          layout: { "line-cap": "round", "line-join": "round" },
+          paint: {
+            "line-color": "#2f9e44",
+            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 14, 4],
+            "line-opacity": 0.9,
+          },
+        });
+      } else {
+        (map.getSource("gpx") as maplibregl.GeoJSONSource).setData(gpxGeoJSON);
+      }
+      if (map.getLayer("gpx-line")) {
+        map.setLayoutProperty("gpx-line", "visibility", gpxVisible !== false ? "visible" : "none");
+        map.moveLayer("gpx-line");
+      }
+      map.triggerRepaint();
+    };
+    whenStyleReady(map, apply);
+  }, [gpxGeoJSON, gpxVisible]);
 
   // Switch base-map visibility when the user changes it
   useEffect(() => {
@@ -1074,6 +1128,50 @@ export default function MapView({
           <span>🔧 Arbeidsbehov</span>
           <span style={{ color: "#666" }}>({(workMarkers ?? []).filter((m) => m.lon != null && m.lat != null && !m.resolved_at).length})</span>
         </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginTop: 4 }}>
+          <input
+            type="checkbox"
+            checked={gpxVisible !== false}
+            onChange={(e) => onGpxVisibleChange?.(e.target.checked)}
+          />
+          <span style={{ color: "#2f9e44" }}>🥾 GPX-spor</span>
+          <span style={{ color: "#666" }}>({(gpxTracks ?? []).length})</span>
+        </label>
+        <label
+          style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: "pointer", color: "#1a7fc4" }}
+          title="Last opp en GPX-fil"
+        >
+          <span>⬆ Last opp GPX</span>
+          <input
+            type="file"
+            accept=".gpx,application/gpx+xml,application/xml"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) onUploadGpx?.(f);
+              e.target.value = "";  // allow re-uploading the same file
+            }}
+          />
+        </label>
+        {(gpxTracks ?? []).length > 0 && gpxVisible !== false && (
+          <div style={{ marginTop: 4, maxHeight: 120, overflowY: "auto" }}>
+            {(gpxTracks ?? []).map((t) => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 4, color: "#444" }}>
+                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {t.name || `spor ${t.id}`}{t.length_km != null ? ` · ${t.length_km} km` : ""}
+                </span>
+                <span
+                  role="button"
+                  title="Slett spor"
+                  style={{ cursor: "pointer", color: "#c43d3d", padding: "0 2px" }}
+                  onClick={() => onDeleteGpx?.(t.id)}
+                >
+                  ✕
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

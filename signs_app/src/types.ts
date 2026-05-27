@@ -353,3 +353,20 @@ export interface MetadataOverrideResponse {
   rutenummer: string;
   override: MetadataOverride | null;
 }
+
+export interface GpxTrack {
+  id: number;
+  area_code: string;
+  name: string | null;
+  point_count: number | null;
+  length_m: number | null;
+  length_km: number | null;
+  uploaded_by: string | null;
+  uploaded_at: string | null;
+  geometry: GeoJSON.Geometry | null;
+}
+
+export interface GpxTracksResponse {
+  area_code: string;
+  tracks: GpxTrack[];
+}

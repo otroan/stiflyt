@@ -6,6 +6,8 @@ import type {
   FieldPhotosResponse,
   PlacenameCandidatesResponse,
   AreaValidationResponse,
+  GpxTrack,
+  GpxTracksResponse,
   LinkBridgesResponse,
   LinkExclusionsResponse,
   MetadataOverrideResponse,
@@ -373,6 +375,39 @@ export const api = {
     jsonFetch<{ area_code: string; rutenummer: string; photos: FieldPhoto[] }>(
       `/routes/${area}/${encodeURIComponent(rutenummer)}/photos`,
     ),
+
+  // --- GPX tracks (actually-walked overlay) ---
+
+  listGpxTracks: (area: string) =>
+    jsonFetch<GpxTracksResponse>(`/gpx?area=${area}`),
+
+  uploadGpx: async (area: string, file: File, name?: string): Promise<GpxTrack> => {
+    const form = new FormData();
+    form.append("area", area);
+    form.append("file", file);
+    if (name) form.append("name", name);
+    const res = await fetchWithAuth(`${BASE}/gpx`, {
+      method: "POST",
+      headers: { "X-User": xUser() },
+      body: form,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`API ${res.status} gpx upload: ${text}`);
+    }
+    return res.json();
+  },
+
+  deleteGpx: async (trackId: number) => {
+    const res = await fetchWithAuth(`${BASE}/gpx/${trackId}`, {
+      method: "DELETE",
+      headers: { "X-User": xUser() },
+    });
+    if (!res.ok && res.status !== 204) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`API ${res.status} delete gpx: ${text}`);
+    }
+  },
 
   getMetadataOverride: (area: string, rutenummer: string) =>
     jsonFetch<MetadataOverrideResponse>(
