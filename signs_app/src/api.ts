@@ -5,6 +5,7 @@ import type {
   FieldPhoto,
   FieldPhotosResponse,
   PlacenameCandidatesResponse,
+  LinkBridgesResponse,
   LinkExclusionsResponse,
   RouteAnnotation,
   RouteAnnotationsResponse,
@@ -333,6 +334,29 @@ export const api = {
     const q = linkIds && linkIds.length > 0 ? `?link_ids=${linkIds.join(",")}` : "";
     return jsonFetch<{ area_code: string; rutenummer: string; deleted: number }>(
       `/routes/${area}/${encodeURIComponent(rutenummer)}/link-exclusions${q}`,
+      { method: "DELETE" },
+    );
+  },
+
+  listLinkBridges: (area: string, rutenummer: string) =>
+    jsonFetch<LinkBridgesResponse>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/link-bridges`,
+    ),
+
+  addLinkBridge: (
+    area: string,
+    rutenummer: string,
+    payload: { a_node: number; b_node: number; reason?: string; comment?: string },
+  ) =>
+    jsonFetch<LinkBridgesResponse>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/link-bridges`,
+      { method: "POST", body: JSON.stringify(payload) },
+    ),
+
+  clearLinkBridges: (area: string, rutenummer: string, nodePair?: [number, number]) => {
+    const q = nodePair ? `?nodes=${nodePair[0]}-${nodePair[1]}` : "";
+    return jsonFetch<{ area_code: string; rutenummer: string; deleted: number }>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/link-bridges${q}`,
       { method: "DELETE" },
     );
   },

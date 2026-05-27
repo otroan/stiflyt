@@ -29,6 +29,7 @@ import { api } from "./api";
 import { notifyError } from "./notify";
 import {
   ROUTE_ANNOTATION_KIND_LABEL_NB,
+  type LinkBridge,
   type LinkExclusion,
   type RouteAnnotation,
   type RouteAnnotationKind,
@@ -531,18 +532,21 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
 }) {
   const [val, setVal] = useState<RouteValidationResponse | null>(null);
   const [exclusions, setExclusions] = useState<LinkExclusion[]>([]);
+  const [bridges, setBridges] = useState<LinkBridge[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [v, ex] = await Promise.all([
+      const [v, ex, br] = await Promise.all([
         api.getRouteValidation(areaCode, rutenummer),
         api.listLinkExclusions(areaCode, rutenummer),
+        api.listLinkBridges(areaCode, rutenummer),
       ]);
       setVal(v);
       setExclusions(ex.exclusions);
+      setBridges(br.bridges);
     } catch (e) {
       notifyError(e);
     } finally {
@@ -609,9 +613,39 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
     }
   };
 
+  const disconnectedIssue = val?.errors.find((e) => e.type === "ROUTE_DISCONNECTED");
+
+  const addBridge = async (a_node: number, b_node: number) => {
+    setBusy(true);
+    try {
+      await api.addLinkBridge(areaCode, rutenummer, { a_node, b_node, reason: "digitizing_gap" });
+      onRouteShapeChanged();
+      await refresh();
+    } catch (e) {
+      notifyError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeBridge = async (a_node: number, b_node: number) => {
+    setBusy(true);
+    try {
+      await api.clearLinkBridges(areaCode, rutenummer, [a_node, b_node]);
+      onRouteShapeChanged();
+      await refresh();
+    } catch (e) {
+      notifyError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const otherIssues = useMemo(() => {
     if (!val) return [];
-    return [...val.errors, ...val.warnings, ...val.info].filter((i) => i.type !== "ROUTE_HAS_LOOP");
+    return [...val.errors, ...val.warnings, ...val.info].filter(
+      (i) => i.type !== "ROUTE_HAS_LOOP" && i.type !== "ROUTE_DISCONNECTED",
+    );
   }, [val]);
 
   if (loading && !val) return <Text size="xs" c="dimmed">Laster validering…</Text>;
@@ -658,6 +692,42 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
         </Card>
       )}
 
+      {disconnectedIssue && (
+        <Card withBorder padding="sm" radius="md">
+          <Group gap={6} mb={6}>
+            <IconAlertTriangle size={16} color="#e8590c" />
+            <Text fw={600} size="sm">Usammenhengende rute ({disconnectedIssue.component_count} deler)</Text>
+          </Group>
+          <Text size="xs" c="dimmed" mb="xs">{disconnectedIssue.message}</Text>
+          <Stack gap={6}>
+            {(disconnectedIssue.bridge_suggestions ?? []).map((s) => (
+              <Group key={`${s.a_node}-${s.b_node}`} justify="space-between" wrap="nowrap">
+                <Text size="sm">Brudd: {formatLength(s.gap_m)}</Text>
+                <Button size="compact-xs" variant="light" loading={busy} onClick={() => addBridge(s.a_node, s.b_node)}>
+                  Koble sammen
+                </Button>
+              </Group>
+            ))}
+          </Stack>
+        </Card>
+      )}
+
+      {bridges.length > 0 && (
+        <Card withBorder padding="sm" radius="md" bg="gray.0">
+          <Text fw={600} size="sm" mb={6}>Broer ({bridges.length})</Text>
+          <Stack gap={4}>
+            {bridges.map((b) => (
+              <Group key={`${b.a_node}-${b.b_node}`} justify="space-between" wrap="nowrap">
+                <Text size="xs" c="dimmed">{b.a_node} ↔ {b.b_node}{b.comment ? ` · ${b.comment}` : ""}</Text>
+                <Button size="compact-xs" variant="subtle" leftSection={<IconArrowBackUp size={14} />} loading={busy} onClick={() => removeBridge(b.a_node, b.b_node)}>
+                  Angre
+                </Button>
+              </Group>
+            ))}
+          </Stack>
+        </Card>
+      )}
+
       {exclusions.length > 0 && (
         <Card withBorder padding="sm" radius="md" bg="gray.0">
           <Group justify="space-between" mb={6}>
@@ -683,7 +753,7 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
         </Stack>
       )}
 
-      {val.status === "OK" && exclusions.length === 0 && (
+      {val.status === "OK" && exclusions.length === 0 && bridges.length === 0 && (
         <Text size="xs" c="dimmed">Ingen feil funnet.</Text>
       )}
     </Stack>

@@ -125,10 +125,47 @@ def load_link_exclusions() -> list[dict]:
     return out
 
 
+def load_bridges() -> list[dict]:
+    """YAML `bridges:` is keyed by rutenummer with a list of entries:
+
+        bridges:
+          fem22:
+            - { a_node: 25159, b_node: 93510, reason: digitizing_gap, reported_at: 2026-05-27 }
+
+    The node pair is stored sorted (a_node < b_node) to match the table PK/CHECK.
+    """
+    if not ERRATA_FILE.exists():
+        return []
+    raw = yaml.safe_load(ERRATA_FILE.read_text(encoding="utf-8")) or {}
+    items = raw.get("bridges") or {}
+    out: list[dict] = []
+    for rutenummer, entries in items.items():
+        if not isinstance(entries, list):
+            raise ValueError(f"bridges[{rutenummer!r}] must be a list of entries")
+        for e in entries:
+            if not isinstance(e, dict) or "a_node" not in e or "b_node" not in e:
+                raise ValueError(
+                    f"bridges[{rutenummer!r}] entries must be mappings with a_node and b_node"
+                )
+            a, b = sorted((int(e["a_node"]), int(e["b_node"])))
+            if a == b:
+                raise ValueError(f"bridges[{rutenummer!r}] a_node and b_node must differ")
+            out.append({
+                "rutenummer": str(rutenummer),
+                "a_node": a,
+                "b_node": b,
+                "reason": e.get("reason"),
+                "comment": e.get("comment"),
+                "reported_at": e.get("reported_at"),
+            })
+    return out
+
+
 def sync(updated_by: str = "apply_route_errata") -> None:
     remaps = load_remaps()
     unmarked = load_unmarked()
     link_exclusions = load_link_exclusions()
+    bridges = load_bridges()
     with op_db_connection() as conn:
         with conn.cursor() as cur:
             # --- rutenummer_remap ---
@@ -237,6 +274,41 @@ def sync(updated_by: str = "apply_route_errata") -> None:
                     ),
                 )
 
+            # --- route_link_bridge ---
+            yaml_bridge_keys = {(x["rutenummer"], x["a_node"], x["b_node"]) for x in bridges}
+            cur.execute("SELECT rutenummer, a_node, b_node FROM ops.route_link_bridge")
+            existing_bridges = {(r[0], int(r[1]), int(r[2])) for r in cur.fetchall()}
+            stale_bridges = existing_bridges - yaml_bridge_keys
+            if stale_bridges:
+                cur.executemany(
+                    "DELETE FROM ops.route_link_bridge WHERE rutenummer = %s AND a_node = %s AND b_node = %s",
+                    [list(k) for k in stale_bridges],
+                )
+                print(f"removed {len(stale_bridges)} stale bridge(s): {sorted(stale_bridges)}")
+            for x in bridges:
+                cur.execute(
+                    """
+                    INSERT INTO ops.route_link_bridge
+                        (rutenummer, a_node, b_node, reason, comment, reported_at, updated_by, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (rutenummer, a_node, b_node) DO UPDATE
+                        SET reason = EXCLUDED.reason,
+                            comment = EXCLUDED.comment,
+                            reported_at = EXCLUDED.reported_at,
+                            updated_by = EXCLUDED.updated_by,
+                            updated_at = NOW();
+                    """,
+                    (
+                        x["rutenummer"],
+                        x["a_node"],
+                        x["b_node"],
+                        x.get("reason"),
+                        x.get("comment"),
+                        x.get("reported_at"),
+                        updated_by,
+                    ),
+                )
+
     n_remap = sum(1 for v in remaps.values() if not v.get("delete"))
     n_delete = sum(1 for v in remaps.values() if v.get("delete"))
     by_kind: dict[str, int] = {}
@@ -247,7 +319,8 @@ def sync(updated_by: str = "apply_route_errata") -> None:
         f"synced {n_remap} remap{'s' if n_remap != 1 else ''}, "
         f"{n_delete} deletion{'s' if n_delete != 1 else ''}, "
         f"{len(unmarked)} unmarked ({unmarked_summary}), "
-        f"{len(link_exclusions)} link exclusion{'s' if len(link_exclusions) != 1 else ''}"
+        f"{len(link_exclusions)} link exclusion{'s' if len(link_exclusions) != 1 else ''}, "
+        f"{len(bridges)} bridge{'s' if len(bridges) != 1 else ''}"
     )
 
 

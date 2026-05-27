@@ -34,10 +34,10 @@ def _node_coords(conn, node_ids: List[int]) -> Dict[int, tuple]:
         return {int(r[0]): (float(r[1]), float(r[2])) for r in cur.fetchall()}
 
 
-def _min_gap(coords: Dict[int, tuple], comp_a: List[int], comp_b: List[int]) -> float:
-    """Smallest straight-line distance (m) between any node of comp_a and any
-    node of comp_b."""
-    best = float("inf")
+def _min_gap_pair(coords: Dict[int, tuple], comp_a: List[int], comp_b: List[int]) -> tuple:
+    """(distance_m, a_node, b_node) for the closest node pair across two
+    components — the node pair a bridge would connect."""
+    best = (float("inf"), None, None)
     for na in comp_a:
         pa = coords.get(na)
         if not pa:
@@ -47,21 +47,30 @@ def _min_gap(coords: Dict[int, tuple], comp_a: List[int], comp_b: List[int]) -> 
             if not pb:
                 continue
             d = ((pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2) ** 0.5
-            if d < best:
-                best = d
+            if d < best[0]:
+                best = (d, na, nb)
     return best
 
 
-def _nearest_neighbor_gaps(conn, comps: List[Dict[str, Any]]) -> List[float]:
-    """For each component after the first, the gap to its nearest already-seen
-    component — i.e. the bridge length needed to attach it. For a chain of parts
-    A—B—C this yields the two small consecutive gaps, not the (large) A–C span."""
+def _bridge_suggestions(conn, comps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """For each component after the first, the closest node pair to any
+    already-seen component — i.e. the bridge that would attach it. For a chain
+    A—B—C this yields the two small consecutive gaps, not the (large) A–C span.
+    Each suggestion: {a_node, b_node, gap_m} with a_node < b_node."""
     coords = _node_coords(conn, [n for c in comps for n in c["nodes"]])
-    gaps: List[float] = []
+    out: List[Dict[str, Any]] = []
     for i in range(1, len(comps)):
-        nn = min(_min_gap(coords, comps[i]["nodes"], comps[j]["nodes"]) for j in range(i))
-        gaps.append(nn)
-    return gaps
+        best = (float("inf"), None, None)
+        for j in range(i):
+            cand = _min_gap_pair(coords, comps[i]["nodes"], comps[j]["nodes"])
+            if cand[0] < best[0]:
+                best = cand
+        gap, na, nb = best
+        if na is None or nb is None:
+            continue
+        lo, hi = sorted((int(na), int(nb)))
+        out.append({"a_node": lo, "b_node": hi, "gap_m": gap})
+    return out
 
 
 class RouteLoopValidator(BaseValidator):
@@ -159,10 +168,10 @@ class RouteDisconnectedValidator(BaseValidator):
             return result
 
         comps = conn_info["components"]
-        # Bridge gaps (nearest-neighbour) — the lengths a repair would span.
-        # Small gaps are digitizing artifacts; large ones may be separate trails.
-        gaps = _nearest_neighbor_gaps(conn, comps)
-        gap_txt = ", ".join(f"{g:.0f} m" for g in sorted(gaps)) if gaps else "?"
+        # Per-gap bridge suggestions (nearest cross-component node pair). Small
+        # gaps are digitizing artifacts; large ones may be separate trails.
+        suggestions = _bridge_suggestions(conn, comps)
+        gap_txt = ", ".join(f"{s['gap_m']:.0f} m" for s in sorted(suggestions, key=lambda s: s["gap_m"])) if suggestions else "?"
 
         message = (
             f"Ruta er usammenhengende: {conn_info['component_count']} adskilte deler. "
@@ -178,7 +187,7 @@ class RouteDisconnectedValidator(BaseValidator):
             metadata={
                 "component_count": conn_info["component_count"],
                 "components": comps,
-                "bridge_gaps_m": sorted(gaps),
+                "bridge_suggestions": suggestions,
             },
         ))
         return result

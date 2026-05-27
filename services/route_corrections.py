@@ -130,6 +130,113 @@ def _arm_geometry(conn, rutenummer: str, link_ids: List[int]) -> Optional[Dict[s
         return row[0] if row else None
 
 
+def _bridge_row_to_api(r: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "rutenummer": r["rutenummer"],
+        "a_node": int(r["a_node"]),
+        "b_node": int(r["b_node"]),
+        "reason": r.get("reason"),
+        "comment": r.get("comment"),
+        "reported_at": r["reported_at"].isoformat() if r.get("reported_at") else None,
+        "updated_by": r.get("updated_by"),
+        "updated_at": r["updated_at"].isoformat() if r.get("updated_at") else None,
+    }
+
+
+def list_bridges(op_conn, rutenummer: str) -> List[Dict[str, Any]]:
+    with op_conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT rutenummer, a_node, b_node, reason, comment, reported_at, updated_by, updated_at
+            FROM ops.route_link_bridge
+            WHERE rutenummer = %s
+            ORDER BY a_node, b_node
+            """,
+            (rutenummer,),
+        )
+        return [_bridge_row_to_api(dict(r)) for r in cur.fetchall()]
+
+
+def route_node_components(conn, rutenummer: str) -> Dict[int, int]:
+    """node_id -> component index for the route's CURRENT corrected graph
+    (exclusions + existing bridges already applied). Used to validate that a
+    new bridge actually joins two different components."""
+    from .route_topology import build_adjacency, components
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT link_id, a_node, b_node, length_m FROM ops.route_link_graph WHERE rutenummer = %s",
+            (rutenummer,),
+        )
+        links = [dict(r) for r in cur.fetchall()]
+    node_comp: Dict[int, int] = {}
+    for i, comp in enumerate(components(build_adjacency(links))):
+        for n in comp:
+            node_comp[int(n)] = i
+    return node_comp
+
+
+def add_bridge(
+    op_conn,
+    *,
+    rutenummer: str,
+    a_node: int,
+    b_node: int,
+    reason: Optional[str] = None,
+    comment: Optional[str] = None,
+    updated_by: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Insert a bridge between two nodes of a route. Node pair is stored sorted
+    (a_node < b_node) to match the table's PK/CHECK. Idempotent per pair.
+
+    Caller must have validated the nodes are in different components (see
+    route_node_components) — the DB CHECK only enforces a_node < b_node."""
+    a, b = sorted((int(a_node), int(b_node)))
+    if a == b:
+        raise ValueError("a_node and b_node must differ")
+    with op_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO ops.route_link_bridge
+                (rutenummer, a_node, b_node, reason, comment, updated_by, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (rutenummer, a_node, b_node) DO UPDATE
+                SET reason = EXCLUDED.reason,
+                    comment = EXCLUDED.comment,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW()
+            """,
+            (rutenummer, a, b, reason, comment, updated_by),
+        )
+    op_conn.commit()
+    return list_bridges(op_conn, rutenummer)
+
+
+def remove_bridges(
+    op_conn,
+    *,
+    rutenummer: str,
+    pairs: Optional[List[tuple]] = None,
+) -> int:
+    """Remove bridges for a route. With pairs=None, clears all. Each pair is
+    (a_node, b_node) in any order. Returns rows deleted."""
+    with op_conn.cursor() as cur:
+        if pairs is None:
+            cur.execute("DELETE FROM ops.route_link_bridge WHERE rutenummer = %s", (rutenummer,))
+            deleted = cur.rowcount
+        else:
+            deleted = 0
+            for a_node, b_node in pairs:
+                a, b = sorted((int(a_node), int(b_node)))
+                cur.execute(
+                    "DELETE FROM ops.route_link_bridge WHERE rutenummer = %s AND a_node = %s AND b_node = %s",
+                    (rutenummer, a, b),
+                )
+                deleted += cur.rowcount
+    op_conn.commit()
+    return deleted
+
+
 def validate_route(conn, rutenummer: str) -> Dict[str, Any]:
     """Run all registered validators on one route and return the result as a
     dict (status + errors/warnings/info). Mirrors the per-route logic in

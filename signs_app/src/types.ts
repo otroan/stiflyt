@@ -242,6 +242,17 @@ export interface LoopArmGroup {
   arms: LoopArm[];
 }
 
+export interface RouteComponent {
+  nodes: number[];
+  endpoints: number[];
+}
+
+export interface BridgeSuggestion {
+  a_node: number;
+  b_node: number;
+  gap_m: number;
+}
+
 /** One validator finding. Validator metadata is merged in at the top level
  *  (see ValidationIssue.to_dict on the backend), so loop-specific fields like
  *  `arm_groups` ride alongside the common ones. */
@@ -256,6 +267,10 @@ export interface ValidationIssue {
   fork_nodes?: number[];
   arm_groups?: LoopArmGroup[];
   decomposable?: boolean;
+  // ROUTE_DISCONNECTED extras:
+  component_count?: number;
+  components?: RouteComponent[];
+  bridge_suggestions?: BridgeSuggestion[];
   [key: string]: unknown;
 }
 
@@ -282,4 +297,21 @@ export interface LinkExclusionsResponse {
   area_code: string;
   rutenummer: string;
   exclusions: LinkExclusion[];
+}
+
+export interface LinkBridge {
+  rutenummer: string;
+  a_node: number;
+  b_node: number;
+  reason: string | null;
+  comment: string | null;
+  reported_at: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+export interface LinkBridgesResponse {
+  area_code: string;
+  rutenummer: string;
+  bridges: LinkBridge[];
 }

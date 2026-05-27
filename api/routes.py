@@ -2640,6 +2640,101 @@ async def delete_route_link_exclusions(
         raise HTTPException(status_code=500, detail=f"Error deleting link exclusions: {e}")
 
 
+@router.get("/routes/{area_code}/{rutenummer}/link-bridges")
+async def list_route_link_bridges(area_code: str, rutenummer: str):
+    """Current bridges (synthetic connectors) for the route."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_corrections import list_bridges
+            rows = list_bridges(op_conn, rutenummer)
+        return {"area_code": area_code, "rutenummer": rutenummer, "bridges": rows}
+    except Exception as e:
+        print(f"Error listing link bridges for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error listing link bridges: {e}")
+
+
+@router.post("/routes/{area_code}/{rutenummer}/link-bridges")
+async def create_route_link_bridge(
+    area_code: str,
+    rutenummer: str,
+    payload: Dict,
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Bridge two nodes of a disconnected route.
+
+    Body: `{"a_node": int, "b_node": int, "reason": str?, "comment": str?}`.
+    The two nodes must belong to the route and currently sit in different
+    components. Returns the route's full bridge set after the write.
+    """
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    a_node = (payload or {}).get("a_node")
+    b_node = (payload or {}).get("b_node")
+    if not isinstance(a_node, int) or not isinstance(b_node, int):
+        raise HTTPException(status_code=400, detail="`a_node` and `b_node` (integers) are required")
+    try:
+        from services.route_corrections import route_node_components, add_bridge
+        with db_connection() as conn:
+            node_comp = route_node_components(conn, rutenummer)
+        if a_node not in node_comp or b_node not in node_comp:
+            raise HTTPException(status_code=400, detail="Both nodes must belong to the route")
+        if node_comp[a_node] == node_comp[b_node]:
+            raise HTTPException(status_code=400, detail="Nodes are already connected; a bridge would create a loop")
+        with op_db_connection() as op_conn:
+            rows = add_bridge(
+                op_conn,
+                rutenummer=rutenummer,
+                a_node=a_node,
+                b_node=b_node,
+                reason=payload.get("reason"),
+                comment=payload.get("comment"),
+                updated_by=x_user,
+            )
+        return {"area_code": area_code, "rutenummer": rutenummer, "bridges": rows}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error creating link bridge for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error creating link bridge: {e}")
+
+
+@router.delete("/routes/{area_code}/{rutenummer}/link-bridges")
+async def delete_route_link_bridges(
+    area_code: str,
+    rutenummer: str,
+    nodes: Optional[str] = Query(None, description="'a-b' node pair; omit to clear all"),
+    x_user: Optional[str] = Header(None, alias="X-User"),
+):
+    """Remove bridges for the route. Without `nodes`, clears all of them.
+    `nodes=a-b` removes one specific bridge."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    pairs: Optional[List[tuple]] = None
+    if nodes:
+        try:
+            a_s, b_s = nodes.split("-")
+            pairs = [(int(a_s), int(b_s))]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="`nodes` must be 'a-b' integers")
+    try:
+        with op_db_connection() as op_conn:
+            from services.route_corrections import remove_bridges
+            deleted = remove_bridges(op_conn, rutenummer=rutenummer, pairs=pairs)
+        return {"area_code": area_code, "rutenummer": rutenummer, "deleted": deleted}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error deleting link bridges for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error deleting link bridges: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Field photos — uncoupled photo layer (sign documentation + route condition)
 # ---------------------------------------------------------------------------
