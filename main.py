@@ -1,9 +1,10 @@
 """FastAPI application main entry point."""
 import os
-from fastapi import Depends, FastAPI, HTTPException
+from urllib.parse import quote
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from pathlib import Path
 from api.routes import router
@@ -36,6 +37,27 @@ app.add_middleware(
     https_only=session_https_only(),
     same_site="lax",
 )
+
+
+# When a browser navigates directly to a server-rendered HTML endpoint (e.g.
+# a shared rutekort link) and isn't logged in, require_user raises 401 with a
+# JSON body — useless to the user. Convert that to a 302 → /auth/login with
+# the original path stashed as `next` so the OAuth callback bounces them back.
+@app.exception_handler(HTTPException)
+async def html_aware_auth_handler(request: Request, exc: HTTPException):
+    if exc.status_code == 401 and "text/html" in request.headers.get("accept", ""):
+        target = request.url.path
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        return RedirectResponse(
+            url=f"/api/v1/auth/login?next={quote(target, safe='/?&=')}",
+            status_code=302,
+        )
+    return JSONResponse(
+        {"detail": exc.detail},
+        status_code=exc.status_code,
+        headers=exc.headers or None,
+    )
 
 # CORS: in dev the Vite proxy makes the API same-origin (no CORS needed); in
 # production the frontend is served by FastAPI from the same domain. Origins
