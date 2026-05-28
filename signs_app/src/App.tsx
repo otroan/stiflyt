@@ -27,6 +27,7 @@ import RoutePanel from "./RoutePanel";
 import AreaValidationPanel from "./AreaValidationPanel";
 import GpxPanel from "./GpxPanel";
 import { notifyError } from "./notify";
+import { notifications } from "@mantine/notifications";
 
 type SidebarTab = "sites" | "rute" | "kvalitet" | "photos" | "spor" | "export" | "about";
 
@@ -148,6 +149,11 @@ export default function App() {
   // When navigating from the Kvalitet list, open the route panel directly on
   // its Validering sub-tab. Cleared after it's consumed.
   const [routeInitialSubTab, setRouteInitialSubTab] = useState<"validation" | null>(null);
+  // Bumped to force RoutePanel to re-fetch its annotations list after an
+  // external write (e.g. dropping a work marker via the map). Without this,
+  // the new marker shows on the map layer but not in the Rute→Arbeid list
+  // until the user re-focuses the route.
+  const [annotationsBumpKey, setAnnotationsBumpKey] = useState(0);
   // Escape clears route focus — backup for users who can't quickly relocate
   // the hovered popup. Only binds when a route is actually focused so we
   // don't fight with text-input Escape elsewhere.
@@ -203,27 +209,85 @@ export default function App() {
   // --- GPX tracks (actually-walked overlay) ---
   const [gpxTracks, setGpxTracks] = useState<GpxTrack[]>([]);
   const [gpxVisible, setGpxVisible] = useState(true);
+  const [gpxLoading, setGpxLoading] = useState(false);
   const refreshGpx = async () => {
+    setGpxLoading(true);
     try {
       const r = await api.listGpxTracks(areaCode);
       setGpxTracks(r.tracks);
     } catch (e) {
       notifyError(e);
+    } finally {
+      setGpxLoading(false);
     }
   };
   useEffect(() => { if (me) refreshGpx(); }, [areaCode, me]);
   const handleUploadGpx = async (files: File[]) => {
-    try {
-      for (const f of files) await api.uploadGpx(areaCode, f);
-      await refreshGpx();
-    } catch (e) {
-      notifyError(e);
+    const total = files.length;
+    const notifId = `gpx-upload-${Date.now()}`;
+    const failed: { name: string; error: string }[] = [];
+    let done = 0;
+
+    const baseTitle = total > 1 ? `Laster opp GPX (${total})` : "Laster opp GPX";
+    notifications.show({
+      id: notifId,
+      loading: true,
+      autoClose: false,
+      withCloseButton: false,
+      title: baseTitle,
+      message: `0 / ${total}`,
+    });
+
+    for (const f of files) {
+      try {
+        await api.uploadGpx(areaCode, f);
+      } catch (e) {
+        failed.push({ name: f.name, error: e instanceof Error ? e.message : String(e) });
+      }
+      done += 1;
+      notifications.update({
+        id: notifId,
+        loading: true,
+        autoClose: false,
+        withCloseButton: false,
+        title: baseTitle,
+        message: `${done} / ${total}${failed.length ? ` · ${failed.length} feilet` : ""}`,
+      });
     }
+
+    const ok = total - failed.length;
+    if (failed.length === 0) {
+      notifications.update({
+        id: notifId,
+        loading: false,
+        autoClose: 4000,
+        withCloseButton: true,
+        color: "green",
+        title: "GPX-opplasting fullført",
+        message: `${ok} fil${ok === 1 ? "" : "er"} lastet opp.`,
+      });
+    } else {
+      const preview = failed.slice(0, 8).map((x) => `• ${x.name}: ${x.error}`).join("\n");
+      const more = failed.length > 8 ? `\n…og ${failed.length - 8} til` : "";
+      notifications.update({
+        id: notifId,
+        loading: false,
+        autoClose: false,
+        withCloseButton: true,
+        color: ok > 0 ? "orange" : "red",
+        title: ok > 0 ? "GPX-opplasting fullført med feil" : "GPX-opplasting feilet",
+        message: `${ok} OK · ${failed.length} feilet:\n${preview}${more}`,
+        style: { whiteSpace: "pre-wrap" },
+      });
+      console.warn("GPX upload failures:", failed);
+    }
+
+    await refreshGpx();
   };
   const handleDeleteGpx = async (id: number) => {
     try {
       await api.deleteGpx(id);
-      await refreshGpx();
+      setGpxTracks((prev) => prev.filter((t) => t.id !== id));
     } catch (e) {
       notifyError(e);
     }
@@ -232,6 +296,7 @@ export default function App() {
   // --- Work markers (route_annotations of kind work_*) ---
   const [workMarkers, setWorkMarkers] = useState<RouteAnnotation[]>([]);
   const [workMarkersVisible, setWorkMarkersVisible] = useState(true);
+  const [hoveredAnnotationId, setHoveredAnnotationId] = useState<number | null>(null);
   // Selected work-kind for the next placement click. Set by the kind picker
   // in RoutePanel's Arbeid sub-tab; the toolbar's IconTool button defaults to
   // work_other.
@@ -366,6 +431,7 @@ export default function App() {
         setMode("browse");
         setPendingWorkKind("work_other");
         await refreshWorkMarkers();
+        setAnnotationsBumpKey((k) => k + 1);  // RoutePanel re-fetches its list
         setSidebarTab("rute");
       } catch (e) {
         notifyError(e);
@@ -553,6 +619,7 @@ export default function App() {
           onPhotosOpen={handleMapPhotosOpen}
           workMarkers={workMarkers}
           workMarkersVisible={workMarkersVisible}
+          hoveredAnnotationId={hoveredAnnotationId}
           onWorkMarkersVisibleChange={setWorkMarkersVisible}
           onWorkMarkerOpen={(annotationId) => {
             const m = workMarkers.find((w) => w.id === annotationId);
@@ -601,7 +668,13 @@ export default function App() {
           <Tabs.Tab
             value="spor"
             leftSection={<IconRoute2 size={14} />}
-            rightSection={gpxTracks.length > 0 ? <Badge size="xs" color="green" variant="light">{gpxTracks.length}</Badge> : null}
+            rightSection={
+              gpxLoading
+                ? <Loader size="xs" />
+                : gpxTracks.length > 0
+                  ? <Badge size="xs" color="blue" variant="light">{gpxTracks.length}</Badge>
+                  : null
+            }
           >
             Spor
           </Tabs.Tab>
@@ -666,7 +739,9 @@ export default function App() {
               onRouteShapeChanged={() => setAreaReloadKey((k) => k + 1)}
               initialSubTab={routeInitialSubTab}
               onInitialSubTabConsumed={() => setRouteInitialSubTab(null)}
+              refreshKey={annotationsBumpKey}
               onOpenPhotos={(photos, index) => setLightboxState({ photos, index })}
+              onHoverAnnotation={setHoveredAnnotationId}
             />
           )}
         </Tabs.Panel>
@@ -700,6 +775,7 @@ export default function App() {
           <GpxPanel
             areaCode={areaCode}
             tracks={gpxTracks}
+            loading={gpxLoading}
             onUpload={handleUploadGpx}
             onDelete={handleDeleteGpx}
           />
@@ -718,6 +794,10 @@ export default function App() {
             areaCode={areaCode}
             candidates={candidates}
             routeSummaries={routeSummaries}
+            onSelectRoute={(rn) => {
+              setFocusedRoute(rn);
+              setSidebarTab("rute");
+            }}
           />
         </Tabs.Panel>
       </Tabs>

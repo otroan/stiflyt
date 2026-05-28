@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Card, FileButton, Group, Stack, Text, Tooltip } from "@mantine/core";
+import { ActionIcon, Button, Card, FileButton, Group, Loader, Stack, Text, Tooltip } from "@mantine/core";
 import { IconTrash, IconUpload } from "@tabler/icons-react";
 import type { GpxTrack } from "./types";
 
@@ -7,9 +7,10 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString("nb-NO", { year: "numeric", month: "short", day: "numeric" });
 }
 
-export default function GpxPanel({ areaCode, tracks, onUpload, onDelete }: {
+export default function GpxPanel({ areaCode, tracks, loading, onUpload, onDelete }: {
   areaCode: string;
   tracks: GpxTrack[];
+  loading?: boolean;
   onUpload: (files: File[]) => void;
   onDelete: (id: number) => void;
 }) {
@@ -31,7 +32,14 @@ export default function GpxPanel({ areaCode, tracks, onUpload, onDelete }: {
         Flere filer kan velges samtidig.
       </Text>
 
-      {tracks.length === 0 && (
+      {loading && (
+        <Group gap={6} align="center">
+          <Loader size="xs" />
+          <Text size="xs" c="dimmed">Laster spor…</Text>
+        </Group>
+      )}
+
+      {!loading && tracks.length === 0 && (
         <Text size="xs" c="dimmed">Ingen spor lastet opp ennå.</Text>
       )}
 

@@ -12,6 +12,9 @@ interface Props {
   areaCode: string;
   candidates: CandidatesResponse | null;
   routeSummaries: Map<string, RouteSummary>;
+  /** Click handler on a row in the per-route table — typically focuses the
+   *  route and flips the sidebar to the Rute tab. */
+  onSelectRoute?: (rutenummer: string) => void;
 }
 
 interface PerRoute {
@@ -22,7 +25,7 @@ interface PerRoute {
   n_panels: number;
 }
 
-export default function AreaReport({ areaCode, candidates, routeSummaries }: Props) {
+export default function AreaReport({ areaCode, candidates, routeSummaries, onSelectRoute }: Props) {
   const [stats, setStats] = useState<AreaStatsResponse | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -49,7 +52,7 @@ export default function AreaReport({ areaCode, candidates, routeSummaries }: Pro
       <h3 style={{ marginTop: 18, marginBottom: 6, fontSize: 14 }}>
         Per rute ({aggregated.perRoute.length})
       </h3>
-      <PerRouteTable rows={aggregated.perRoute} />
+      <PerRouteTable rows={aggregated.perRoute} onSelectRoute={onSelectRoute} />
 
       {stats && (
         <div style={{ marginTop: 12, fontSize: 11, color: "#666" }}>
@@ -127,10 +130,19 @@ function PanelBreakdown({ candidates }: { candidates: CandidatesResponse | null 
   );
 }
 
-function PerRouteTable({ rows }: { rows: PerRoute[] }) {
+function PerRouteTable({ rows, onSelectRoute }: { rows: PerRoute[]; onSelectRoute?: (rn: string) => void }) {
   const [sortBy, setSortBy] = useState<"rute" | "lengde" | "skilt" | "paneler">("rute");
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) =>
+      r.rutenummer.toLowerCase().includes(q)
+      || (r.rutenavn ?? "").toLowerCase().includes(q),
+    );
+  }, [rows, query]);
   const sorted = useMemo(() => {
-    const copy = [...rows];
+    const copy = [...filtered];
     copy.sort((a, b) => {
       if (sortBy === "lengde") return (b.length_km ?? 0) - (a.length_km ?? 0);
       if (sortBy === "skilt") return b.n_sites - a.n_sites;
@@ -138,34 +150,69 @@ function PerRouteTable({ rows }: { rows: PerRoute[] }) {
       return a.rutenummer.localeCompare(b.rutenummer);
     });
     return copy;
-  }, [rows, sortBy]);
+  }, [filtered, sortBy]);
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (sorted.length > 0 && onSelectRoute) onSelectRoute(sorted[0].rutenummer);
+  };
   return (
-    <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid #eee", borderRadius: 4 }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-        <thead style={{ position: "sticky", top: 0, background: "#fafafa" }}>
-          <tr>
-            <Th sort={sortBy} k="rute" onClick={() => setSortBy("rute")}>Rute</Th>
-            <th style={thStyle}>Navn</th>
-            <Th sort={sortBy} k="lengde" onClick={() => setSortBy("lengde")} align="right">km</Th>
-            <Th sort={sortBy} k="skilt" onClick={() => setSortBy("skilt")} align="right">Skilt</Th>
-            <Th sort={sortBy} k="paneler" onClick={() => setSortBy("paneler")} align="right">Paneler</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((r) => (
-            <tr key={r.rutenummer} style={{ borderTop: "1px solid #eee" }}>
-              <td style={tdStyle}><strong>{r.rutenummer}</strong></td>
-              <td style={tdStyle}>{r.rutenavn ?? <span style={{ color: "#aaa" }}>—</span>}</td>
-              <td style={{ ...tdStyle, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                {r.length_km != null ? r.length_km.toFixed(1) : "—"}
-              </td>
-              <td style={{ ...tdStyle, textAlign: "right" }}>{r.n_sites}</td>
-              <td style={{ ...tdStyle, textAlign: "right" }}>{r.n_panels}</td>
+    <>
+      <form onSubmit={handleSubmit} style={{ marginBottom: 6 }}>
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Søk rute (f.eks. bre20 eller navn)…"
+          style={{
+            width: "100%", padding: "4px 8px", fontSize: 12,
+            border: "1px solid #ddd", borderRadius: 4, boxSizing: "border-box",
+          }}
+          autoComplete="off"
+        />
+      </form>
+      <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid #eee", borderRadius: 4 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead style={{ position: "sticky", top: 0, background: "#fafafa" }}>
+            <tr>
+              <Th sort={sortBy} k="rute" onClick={() => setSortBy("rute")}>Rute</Th>
+              <th style={thStyle}>Navn</th>
+              <Th sort={sortBy} k="lengde" onClick={() => setSortBy("lengde")} align="right">km</Th>
+              <Th sort={sortBy} k="skilt" onClick={() => setSortBy("skilt")} align="right">Skilt</Th>
+              <Th sort={sortBy} k="paneler" onClick={() => setSortBy("paneler")} align="right">Paneler</Th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {sorted.map((r) => {
+              const clickable = !!onSelectRoute;
+              return (
+                <tr
+                  key={r.rutenummer}
+                  onClick={clickable ? () => onSelectRoute!(r.rutenummer) : undefined}
+                  style={{
+                    borderTop: "1px solid #eee",
+                    cursor: clickable ? "pointer" : undefined,
+                  }}
+                  className={clickable ? "area-report-row" : undefined}
+                >
+                  <td style={tdStyle}><strong>{r.rutenummer}</strong></td>
+                  <td style={tdStyle}>{r.rutenavn ?? <span style={{ color: "#aaa" }}>—</span>}</td>
+                  <td style={{ ...tdStyle, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                    {r.length_km != null ? r.length_km.toFixed(1) : "—"}
+                  </td>
+                  <td style={{ ...tdStyle, textAlign: "right" }}>{r.n_sites}</td>
+                  <td style={{ ...tdStyle, textAlign: "right" }}>{r.n_panels}</td>
+                </tr>
+              );
+            })}
+            {sorted.length === 0 && (
+              <tr>
+                <td colSpan={5} style={{ ...tdStyle, color: "#888", textAlign: "center" }}>Ingen treff</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

@@ -181,6 +181,7 @@ export type RouteAnnotationKind =
   | "work_klipping"
   | "work_bridge"
   | "work_klopper"
+  | "work_skilt"
   | "work_other";
 
 export const ROUTE_ANNOTATION_KINDS: RouteAnnotationKind[] = [
@@ -190,6 +191,7 @@ export const ROUTE_ANNOTATION_KINDS: RouteAnnotationKind[] = [
   "work_klipping",
   "work_bridge",
   "work_klopper",
+  "work_skilt",
   "work_other",
 ];
 
@@ -200,6 +202,7 @@ export const ROUTE_ANNOTATION_KIND_LABEL_NB: Record<RouteAnnotationKind, string>
   work_klipping: "Klipping",
   work_bridge: "Bro",
   work_klopper: "Klopper",
+  work_skilt: "Skilt",
   work_other: "Annet arbeid",
 };
 
@@ -409,4 +412,8 @@ export interface ElevationProfile {
   datakilde: string | null;
   sampled_at: string | null;
   cached: boolean;
+  /** Name of the anchor at the first sampled vertex (x=0 on the chart). */
+  start_name: string | null;
+  /** Name of the anchor at the last sampled vertex (x=length on the chart). */
+  end_name: string | null;
 }

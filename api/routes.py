@@ -8,7 +8,7 @@ import base64
 from typing import Optional, Annotated, Dict, List, Any
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Depends, Response, status, Header, UploadFile, File, Form
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from dotenv import load_dotenv
 from .schemas import (
@@ -2793,6 +2793,46 @@ async def get_route_gpx_comparison(area_code: str, rutenummer: str):
         print(f"Error comparing gpx for {rutenummer}: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error comparing gpx: {e}")
+
+
+@router.get("/routes/{area_code}/{rutenummer}/kort", response_class=HTMLResponse)
+async def get_route_card(area_code: str, rutenummer: str):
+    """Per-route summary page ("rutekort"): map + elevation + Naismith +
+    GPS-fasit + photos + dagbok + work markers + validation, no JS, print-friendly.
+    Shareable URL within the OK; user prints to PDF via the browser."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        from services import route_card
+        with db_connection() as conn, op_db_connection() as op_conn:
+            data = route_card.gather(conn, op_conn, area_code, rutenummer)
+        return HTMLResponse(content=route_card.render_html(data))
+    except Exception as e:
+        print(f"Error rendering route card for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error rendering route card: {e}")
+
+
+@router.get("/routes/{area_code}/{rutenummer}/dagbok.xlsx")
+async def get_route_dagbok_xlsx(area_code: str, rutenummer: str):
+    """Diary entries for the route as a one-sheet Excel."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        from services import route_card
+        from services.route_annotations import list_for_route
+        with op_db_connection() as op_conn:
+            anns = list_for_route(op_conn, area_code, rutenummer, kinds=["diary"])
+        data = route_card.build_dagbok_xlsx(anns, area_code, rutenummer)
+        return Response(
+            content=data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=dagbok-{area_code}-{rutenummer}.xlsx"},
+        )
+    except Exception as e:
+        print(f"Error generating dagbok.xlsx for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error generating dagbok.xlsx: {e}")
 
 
 @router.get("/routes/{area_code}/{rutenummer}/elevation")

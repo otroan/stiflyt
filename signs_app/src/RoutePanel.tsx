@@ -16,6 +16,7 @@ import {
 import {
   IconAlertTriangle,
   IconArrowBackUp,
+  IconArrowsLeftRight,
   IconCheck,
   IconMountain,
   IconNotebook,
@@ -87,6 +88,13 @@ interface Props {
   onInitialSubTabConsumed?: () => void;
   /** Open the shared photo lightbox (App owns it). */
   onOpenPhotos?: (photos: FieldPhoto[], index: number) => void;
+  /** Bumped by App after an external write (e.g. dropping a work marker via the
+   *  map) so the panel re-fetches its annotations list. */
+  refreshKey?: number;
+  /** Called with an annotation id while the user hovers a card in the list, and
+   *  null on mouse-leave. App forwards this to MapView so the matching work
+   *  marker is highlighted (and panned to if offscreen). */
+  onHoverAnnotation?: (id: number | null) => void;
 }
 
 type SubTab = "diary" | "inspection" | "dugnad" | "work" | "validation" | "bilder" | "hoyde";
@@ -99,13 +107,14 @@ const SUBTAB_KINDS: Record<Exclude<SubTab, "validation" | "bilder" | "hoyde">, R
   diary: ["diary"],
   inspection: ["inspection"],
   dugnad: ["dugnad"],
-  work: ["work_klipping", "work_bridge", "work_klopper", "work_other"],
+  work: ["work_klipping", "work_bridge", "work_klopper", "work_skilt", "work_other"],
 };
 
 const WORK_KIND_OPTIONS: { value: RouteAnnotationKind; label: string }[] = [
   { value: "work_klipping", label: "Klipping" },
   { value: "work_bridge", label: "Bro" },
   { value: "work_klopper", label: "Klopper" },
+  { value: "work_skilt", label: "Skilt" },
   { value: "work_other", label: "Annet" },
 ];
 
@@ -137,6 +146,8 @@ export default function RoutePanel({
   initialSubTab,
   onInitialSubTabConsumed,
   onOpenPhotos,
+  refreshKey,
+  onHoverAnnotation,
 }: Props) {
   const [tab, setTab] = useState<SubTab>(initialSubTab ?? "diary");
 
@@ -162,7 +173,7 @@ export default function RoutePanel({
     }
   }, [areaCode, rutenummer]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh, refreshKey]);
 
   const lastByKind = useMemo(() => {
     const out: Partial<Record<RouteAnnotationKind, RouteAnnotation>> = {};
@@ -215,7 +226,19 @@ export default function RoutePanel({
             <Badge size="xs" color="red" variant="light" mt={4}>Usammenhengende rute</Badge>
           )}
         </div>
-        <Button variant="subtle" size="xs" onClick={onClose}>Lukk</Button>
+        <Group gap={4} wrap="nowrap">
+          <Button
+            component="a"
+            href={`/api/v1/routes/${areaCode}/${encodeURIComponent(rutenummer)}/kort`}
+            target="_blank"
+            rel="noopener"
+            variant="subtle"
+            size="xs"
+          >
+            Rutekort
+          </Button>
+          <Button variant="subtle" size="xs" onClick={onClose}>Lukk</Button>
+        </Group>
       </Group>
 
       <Group gap="xs" wrap="nowrap">
@@ -301,6 +324,7 @@ export default function RoutePanel({
                 onDelete={() => handleDelete(a.id)}
                 onResolveToggle={() => handleResolveToggle(a)}
                 onSaved={async () => { await refresh(); onChanged?.(); }}
+                onHover={onHoverAnnotation}
               />
             ))}
           </Stack>
@@ -330,12 +354,13 @@ function SummaryPill({ label, ann, color }: { label: string; ann: RouteAnnotatio
   );
 }
 
-function AnnotationCard({ ann, showResolve, onDelete, onResolveToggle, onSaved }: {
+function AnnotationCard({ ann, showResolve, onDelete, onResolveToggle, onSaved, onHover }: {
   ann: RouteAnnotation;
   showResolve: boolean;
   onDelete: () => void;
   onResolveToggle: () => void;
   onSaved: () => void;
+  onHover?: (id: number | null) => void;
 }) {
   const resolved = !!ann.resolved_at;
   const [editing, setEditing] = useState(false);
@@ -349,12 +374,15 @@ function AnnotationCard({ ann, showResolve, onDelete, onResolveToggle, onSaved }
       />
     );
   }
+  const hoverable = onHover && ann.lon != null && ann.lat != null;
   return (
     <Card
       withBorder
       padding="xs"
       radius="sm"
       bg={resolved ? "gray.0" : undefined}
+      onMouseEnter={hoverable ? () => onHover!(ann.id) : undefined}
+      onMouseLeave={hoverable ? () => onHover!(null) : undefined}
     >
       <Group justify="space-between" wrap="nowrap" align="flex-start">
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -1013,10 +1041,12 @@ function fmtKm(m: number | null | undefined): string {
 function ElevationTab({ areaCode, rutenummer }: { areaCode: string; rutenummer: string }) {
   const [prof, setProf] = useState<ElevationProfile | null>(null);
   const [loading, setLoading] = useState(false);
+  const [reversed, setReversed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setReversed(false);
     api.getRouteElevation(areaCode, rutenummer)
       .then((p) => { if (!cancelled) setProf(p); })
       .catch((e) => { if (!cancelled) notifyError(e); })
@@ -1027,6 +1057,9 @@ function ElevationTab({ areaCode, rutenummer }: { areaCode: string; rutenummer: 
   if (loading && !prof) return <Text size="xs" c="dimmed">Henter høydeprofil fra Kartverket…</Text>;
   if (!prof) return <Text size="xs" c="dimmed">Ingen høydedata.</Text>;
 
+  const leftName = reversed ? prof.end_name : prof.start_name;
+  const rightName = reversed ? prof.start_name : prof.end_name;
+
   return (
     <Stack gap="sm">
       <Group gap="md">
@@ -1035,7 +1068,23 @@ function ElevationTab({ areaCode, rutenummer }: { areaCode: string; rutenummer: 
         <Stat label="Høyde" value={prof.min_z != null && prof.max_z != null ? `${Math.round(prof.min_z)}–${Math.round(prof.max_z)} m` : "–"} />
         <Stat label="Tid (Naismith)" value={naismithLabel(prof.length_2d_m, prof.ascent_m) ?? "–"} />
       </Group>
-      <ElevationChart samples={prof.samples} />
+      <ElevationChart samples={prof.samples} reversed={reversed} />
+      <Group justify="space-between" wrap="nowrap" gap={6}>
+        <Text size="xs" fw={500} style={{ flex: 1, minWidth: 0 }} lineClamp={1}>
+          {leftName || "–"}
+        </Text>
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          leftSection={<IconArrowsLeftRight size={12} />}
+          onClick={() => setReversed((v) => !v)}
+        >
+          Snu
+        </Button>
+        <Text size="xs" fw={500} ta="right" style={{ flex: 1, minWidth: 0 }} lineClamp={1}>
+          {rightName || "–"}
+        </Text>
+      </Group>
       <Text size="10px" c="dimmed">
         2D {fmtKm(prof.length_2d_m)} · fall {prof.descent_m != null ? `${Math.round(prof.descent_m)} m` : "–"}
         {prof.datakilde ? ` · kilde ${prof.datakilde}` : ""}
@@ -1053,7 +1102,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ElevationChart({ samples }: { samples: [number, number | null][] }) {
+function ElevationChart({ samples, reversed }: { samples: [number, number | null][]; reversed?: boolean }) {
   const pts = samples.filter((s) => s[1] != null) as [number, number][];
   if (pts.length < 2) return <Text size="xs" c="dimmed">For få punkter for profil.</Text>;
   const W = 320, H = 90, PAD = 2;
@@ -1062,7 +1111,11 @@ function ElevationChart({ samples }: { samples: [number, number | null][] }) {
   const minX = Math.min(...xs), maxX = Math.max(...xs);
   const minZ = Math.min(...zs), maxZ = Math.max(...zs);
   const spanX = maxX - minX || 1, spanZ = maxZ - minZ || 1;
-  const sx = (x: number) => PAD + ((x - minX) / spanX) * (W - 2 * PAD);
+  const sx = (x: number) => {
+    const t = (x - minX) / spanX;
+    const tt = reversed ? 1 - t : t;
+    return PAD + tt * (W - 2 * PAD);
+  };
   const sy = (z: number) => PAD + (1 - (z - minZ) / spanZ) * (H - 2 * PAD);
   const line = pts.map((p, i) => `${i === 0 ? "M" : "L"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ");
   const area = `${line} L${sx(maxX).toFixed(1)},${(H - PAD).toFixed(1)} L${sx(minX).toFixed(1)},${(H - PAD).toFixed(1)} Z`;

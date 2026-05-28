@@ -9,6 +9,7 @@ rutenummer). The `kind` column discriminates:
 - work_klipping       — klipping/brush-clearing needed
 - work_bridge         — bridge in disrepair / needed
 - work_klopper        — klopper (planks) need replacement / new
+- work_skilt          — sign maintenance / replacement / new
 - work_other          — generic "something needs doing"
 
 `geom` is optional (Point in SRID 25833) — typically set for work_*
@@ -29,6 +30,7 @@ ALLOWED_KINDS = {
     "work_klipping",
     "work_bridge",
     "work_klopper",
+    "work_skilt",
     "work_other",
 }
 

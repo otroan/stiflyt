@@ -43,6 +43,10 @@ interface Props {
   workMarkers?: RouteAnnotation[];
   workMarkersVisible?: boolean;
   onWorkMarkersVisibleChange?: (v: boolean) => void;
+  /** When set, the matching work-marker dot is enlarged + halo-brightened, and
+   *  the map auto-pans to it if currently outside the viewport. Driven by hover
+   *  in the Arbeid list. */
+  hoveredAnnotationId?: number | null;
   /** Click handler on a work-marker — typically focuses its route + opens
    *  the Rute → Arbeid sub-tab. */
   onWorkMarkerOpen?: (annotationId: number) => void;
@@ -199,6 +203,7 @@ export default function MapView({
   workMarkersVisible,
   onWorkMarkersVisibleChange,
   onWorkMarkerOpen,
+  hoveredAnnotationId,
   loopArms,
   gpxTracks,
   gpxVisible,
@@ -335,7 +340,7 @@ export default function MapView({
           source: "routes",
           paint: {
             "line-color": "#c43d3d",
-            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.2, 14, 3.5],
+            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.8, 14, 5],
             // Opacity controlled by focused-route effect below
             "line-opacity": 0.85,
           },
@@ -387,7 +392,7 @@ export default function MapView({
           },
           paint: {
             "line-color": "#1a7fc4",
-            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.2, 14, 3.5],
+            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.8, 14, 5],
             "line-opacity": 0.85,
             "line-dasharray": [0, 2],
           },
@@ -563,7 +568,7 @@ export default function MapView({
           source: "gpx",
           layout: { "line-cap": "round", "line-join": "round" },
           paint: {
-            "line-color": "#2f9e44",
+            "line-color": "#1c7ed6",
             "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 14, 4],
             "line-opacity": 0.9,
           },
@@ -982,6 +987,7 @@ export default function MapView({
               "work_klipping", "#2e8540",
               "work_bridge", "#a05a00",
               "work_klopper", "#8c6d1f",
+              "work_skilt", "#1971c2",
               "work_other", "#7a5a18",
               "#7a5a18",
             ],
@@ -1049,6 +1055,43 @@ export default function MapView({
     };
     whenStyleReady(map, apply);
   }, [workMarkersVisible]);
+
+  // Hover-highlight from the Arbeid list: bump the matching marker's radius and
+  // halo, and ease the map over if the point is outside the current viewport.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const hoverId = hoveredAnnotationId ?? -1;
+    const apply = () => {
+      if (map.getLayer("work-markers-dot")) {
+        map.setPaintProperty("work-markers-dot", "circle-radius", [
+          "case", ["==", ["get", "id"], hoverId], 12, 8,
+        ]);
+        map.setPaintProperty("work-markers-dot", "circle-stroke-color", [
+          "case", ["==", ["get", "id"], hoverId], "#fff200", "#ffffff",
+        ]);
+        map.setPaintProperty("work-markers-dot", "circle-stroke-width", [
+          "case", ["==", ["get", "id"], hoverId], 3, 2,
+        ]);
+      }
+      if (map.getLayer("work-markers-halo")) {
+        map.setPaintProperty("work-markers-halo", "circle-radius", [
+          "case", ["==", ["get", "id"], hoverId], 22, 12,
+        ]);
+        map.setPaintProperty("work-markers-halo", "circle-opacity", [
+          "case", ["==", ["get", "id"], hoverId], 0.45, 0.15,
+        ]);
+      }
+    };
+    whenStyleReady(map, apply);
+    if (hoveredAnnotationId == null) return;
+    const m = (workMarkers ?? []).find((w) => w.id === hoveredAnnotationId);
+    if (!m || m.lon == null || m.lat == null) return;
+    const b = map.getBounds();
+    if (!b.contains([m.lon, m.lat])) {
+      map.easeTo({ center: [m.lon, m.lat], duration: 400 });
+    }
+  }, [hoveredAnnotationId, workMarkers]);
 
   // Recentre on selected site
   useEffect(() => {
@@ -1131,7 +1174,7 @@ export default function MapView({
             checked={gpxVisible !== false}
             onChange={(e) => onGpxVisibleChange?.(e.target.checked)}
           />
-          <span style={{ color: "#2f9e44" }}>🥾 GPX-spor</span>
+          <span style={{ color: "#1c7ed6" }}>🥾 GPX-spor</span>
           <span style={{ color: "#666" }}>({(gpxTracks ?? []).length})</span>
         </label>
       </div>

@@ -141,3 +141,5 @@ body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #11
 }
 
 .maplibregl-popup { max-width: 240px; }
+
+.area-report-row:hover { background: #f4f8fc; }

@@ -82,6 +82,8 @@ def build_snippet(
     route_geoms: Optional[Dict[str, Dict]] = None,
     other_sites: Optional[List[Tuple[float, float, str]]] = None,
     tile_cache: Optional[Dict] = None,
+    draw_center_marker: bool = True,
+    extra_markers: Optional[List[Tuple[float, float, str]]] = None,
 ) -> bytes:
     """Render a PNG centered on (center_lon, center_lat).
 
@@ -92,6 +94,12 @@ def build_snippet(
         other_sites: [(lon, lat, hex_color), ...] — drawn as small dots
         tile_cache: optional shared dict {(z,x,y): PIL.Image | None}; pass one to
             amortise tile fetches over a batch of snippets.
+        draw_center_marker: when False, skip the concentric blue dot at the
+            centre — useful for bbox-fitted maps (route card) where the centre
+            of the snippet is just a framing point, not a feature.
+        extra_markers: [(lon, lat, hex_color), ...] — drawn the same way as the
+            centre marker but at arbitrary positions. Used to put work-item
+            dots on the route-card overview map.
     """
     if tile_cache is None:
         tile_cache = {}
@@ -151,11 +159,26 @@ def build_snippet(
             r = 5
             draw.ellipse((sx - r, sy - r, sx + r, sy + r), fill=color, outline=(0, 0, 0, 220), width=1)
 
+    def _draw_post_marker(sx: float, sy: float, fill_rgba: Tuple[int, int, int, int] = (26, 127, 196, 255)) -> None:
+        draw.ellipse((sx - 11, sy - 11, sx + 11, sy + 11), fill=(255, 255, 255, 255))
+        draw.ellipse((sx - 8, sy - 8, sx + 8, sy + 8), fill=fill_rgba)
+        draw.ellipse((sx - 3, sy - 3, sx + 3, sy + 3), fill=(255, 255, 255, 255))
+
     # Post marker — concentric circles for clear visibility on busy terrain.
-    cx_snip, cy_snip = width_px / 2, height_px / 2
-    draw.ellipse((cx_snip - 11, cy_snip - 11, cx_snip + 11, cy_snip + 11), fill=(255, 255, 255, 255))
-    draw.ellipse((cx_snip - 8, cy_snip - 8, cx_snip + 8, cy_snip + 8), fill=(26, 127, 196, 255))
-    draw.ellipse((cx_snip - 3, cy_snip - 3, cx_snip + 3, cy_snip + 3), fill=(255, 255, 255, 255))
+    if draw_center_marker:
+        _draw_post_marker(width_px / 2, height_px / 2)
+
+    # Optional extra markers (work items, etc.). Hex string parsed to RGBA;
+    # alpha defaults to fully opaque.
+    if extra_markers:
+        for lon, lat, color in extra_markers:
+            gx, gy = _lonlat_to_global_pixel(lon, lat, zoom)
+            ex, ey = gx - origin_x, gy - origin_y
+            try:
+                r = int(color[1:3], 16); g = int(color[3:5], 16); b = int(color[5:7], 16)
+            except (ValueError, IndexError):
+                r, g, b = 232, 89, 12  # fallback orange
+            _draw_post_marker(ex, ey, (r, g, b, 255))
 
     out = io.BytesIO()
     # JPEG at q=78 shrinks the snippet ~4× vs PNG with no perceptible quality

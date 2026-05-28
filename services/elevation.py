@@ -131,6 +131,33 @@ def _row_to_api(r: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _resolve_endpoint_names(conn, rutenummer: str) -> Tuple[Optional[str], Optional[str]]:
+    """Names at the first/last vertex of the route's merged geometry — same
+    orientation _fetch_vertices uses, so they line up with the elevation
+    chart's x=0 / x=max. Matches `ops.endpoint_names.geom` to the exact
+    endpoint point (0.5 m tolerance for FP drift).
+    """
+    sql = """
+        WITH g AS (
+            SELECT ST_LineMerge(ST_Collect(geom)) AS geom
+              FROM ops.route_link_graph WHERE rutenummer = %s
+        )
+        SELECT
+          (SELECT name FROM ops.endpoint_names
+            WHERE ST_DWithin(geom, (SELECT ST_StartPoint(geom) FROM g), 0.5)
+            ORDER BY (rutenummer = %s) DESC NULLS LAST
+            LIMIT 1) AS start_name,
+          (SELECT name FROM ops.endpoint_names
+            WHERE ST_DWithin(geom, (SELECT ST_EndPoint(geom) FROM g), 0.5)
+            ORDER BY (rutenummer = %s) DESC NULLS LAST
+            LIMIT 1) AS end_name
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (rutenummer, rutenummer, rutenummer))
+        row = cur.fetchone()
+        return (row[0], row[1]) if row else (None, None)
+
+
 def get_elevation(conn, rutenummer: str, *, refresh: bool = False) -> Optional[Dict[str, Any]]:
     """Return the route's elevation profile, computing + caching on miss.
 
@@ -143,6 +170,8 @@ def get_elevation(conn, rutenummer: str, *, refresh: bool = False) -> Optional[D
         return None
     checksum = _checksum(vertices)
 
+    start_name, end_name = _resolve_endpoint_names(conn, rutenummer)
+
     if not refresh:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
@@ -153,6 +182,8 @@ def get_elevation(conn, rutenummer: str, *, refresh: bool = False) -> Optional[D
             if row:
                 out = _row_to_api(dict(row))
                 out["cached"] = True
+                out["start_name"] = start_name
+                out["end_name"] = end_name
                 return out
 
     zs, datakilde = _fetch_elevations(vertices)
@@ -184,5 +215,12 @@ def get_elevation(conn, rutenummer: str, *, refresh: bool = False) -> Optional[D
             ),
         )
     conn.commit()
-    out = {"rutenummer": rutenummer, "datakilde": datakilde, "cached": False, **profile}
+    out = {
+        "rutenummer": rutenummer,
+        "datakilde": datakilde,
+        "cached": False,
+        "start_name": start_name,
+        "end_name": end_name,
+        **profile,
+    }
     return out

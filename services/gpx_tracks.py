@@ -120,17 +120,21 @@ def insert_track(
     return _row_to_api(dict(row))
 
 
-def list_tracks(op_conn, area_code: str) -> List[Dict[str, Any]]:
+def list_tracks(op_conn, area_code: str, *, simplify_m: float = 10.0) -> List[Dict[str, Any]]:
+    # Simplify in source SRID (25833, metres) before reprojecting to WGS84 —
+    # cuts the JSON payload an order of magnitude for typical walked tracks
+    # without visible loss at map zooms. compare_to_route still queries the
+    # full-resolution geom directly.
     with op_conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
             SELECT id, area_code, name, point_count, length_m, uploaded_by, uploaded_at,
-                   ST_AsGeoJSON(ST_Transform(geom, 4326))::json AS geometry
+                   ST_AsGeoJSON(ST_Transform(ST_Simplify(geom, %s), 4326))::json AS geometry
             FROM ops.gpx_tracks
             WHERE area_code = %s
             ORDER BY uploaded_at DESC
             """,
-            (area_code,),
+            (simplify_m, area_code),
         )
         return [_row_to_api(dict(r)) for r in cur.fetchall()]
 
