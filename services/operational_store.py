@@ -1372,15 +1372,19 @@ def reject_sign_candidate(
         return dict(cur.fetchone())
 
 
-DEFAULT_DISTANCE_CORRECTION = 1.125
+DEFAULT_DISTANCE_CORRECTION = 1.05
 
 
 def get_distance_correction_factor(conn, area_code: str) -> float:
-    """Look up the per-area distance correction (×1.125 default for bre).
+    """Look up the per-area distance correction (×1.05 default).
 
     Heuristic — see [[plan-breheimen-signs-2026-05]] / README. The factor
     blends polyline-chord shortcut + 2D→3D elevation + Kartverket
     generalisation. Configurable per area via ops.distance_correction.
+
+    History: started at ×1.125 (community heuristic); lowered to ×1.05 in
+    2026-05 after GPX comparison showed measured walked-vs-mapped factors of
+    ~1.03–1.05 (see GPS-fasit card in the Validering tab).
     """
     ensure_operational_schema(conn)
     if not validate_schema_name(OP_SCHEMA):

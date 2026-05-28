@@ -7,7 +7,7 @@ the new signs_app frontend consumes. Applies the user-specified rules:
     reach the same named destination, the routes are listed but only one panel
     is emitted, using the shortest distance.
   - Distance correction: raw along-route metres are multiplied by
-    DISTANCE_CORRECTION_FACTOR (1.125 — DB lines under-measure physical reality).
+    DISTANCE_CORRECTION_FACTOR (×1.05 default — empirical from GPX validation).
   - Distance rounding: <10 km rounds DOWN to nearest 0.5 km; >=10 km rounds to
     nearest whole km.
   - Sign back: anchor name + UTM 32V coordinates. The utm library auto-selects
@@ -78,7 +78,7 @@ def correct_distance_km(distance_meters: Optional[float], factor: float = DEFAUL
     <10 km: floor to nearest 0.5 km (so 7.65 -> 7.5).
     >=10 km: round to nearest whole km (so 13.84 -> 14).
 
-    `factor` defaults to 1.125 (the historical hiking-community heuristic);
+    `factor` defaults to 1.05 (empirical from GPX walked-vs-mapped comparison);
     callers within an area lookup it from `ops.distance_correction` for that
     area first.
     """
@@ -1165,6 +1165,18 @@ def get_route_summary_for_area(conn, area_code: str, *, timings: Optional[list] 
     with phase_timer(_t, "route_geometries"):
         geometries = _route_geometries_for_rutenummers(conn, rutenummers)
 
+    # Cached elevation (only present for routes whose profile has been resolved
+    # via the Høyde tab). Surfaces ascent + 3D length so the UI can show a
+    # Naismith hiking-time estimate — only where we actually have elevation.
+    elevation_by_rn: Dict[str, Dict[str, Any]] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT rutenummer, length_3d_m, ascent_m FROM ops.route_elevation_cache WHERE rutenummer = ANY(%s)",
+            (rutenummers,),
+        )
+        for r in cur.fetchall():
+            elevation_by_rn[r[0]] = {"length_3d_m": r[1], "ascent_m": r[2]}
+
     out: List[Dict[str, Any]] = []
     for rn in rutenummers:
         ep = endpoints.get(rn) or {}
@@ -1197,6 +1209,8 @@ def get_route_summary_for_area(conn, area_code: str, *, timings: Optional[list] 
             "length_m": total_m,
             "length_km_displayed": correct_distance_km(total_m, correction_factor),
             "disconnected": is_disconnected,
+            "length_3d_m": (elevation_by_rn.get(rn) or {}).get("length_3d_m"),
+            "ascent_m": (elevation_by_rn.get(rn) or {}).get("ascent_m"),
             "route_geometry": geom.get("route_geometry"),
             "route_geometry_unmarked": geom.get("route_geometry_unmarked"),
         })

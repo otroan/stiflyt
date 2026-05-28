@@ -17,6 +17,7 @@ import {
   IconAlertTriangle,
   IconArrowBackUp,
   IconCheck,
+  IconMountain,
   IconNotebook,
   IconPencil,
   IconPhoto,
@@ -27,10 +28,13 @@ import {
   IconUsersGroup,
 } from "@tabler/icons-react";
 import { api } from "./api";
+import { naismithLabel } from "./naismith";
 import { notifyError } from "./notify";
 import {
   ROUTE_ANNOTATION_KIND_LABEL_NB,
+  type ElevationProfile,
   type FieldPhoto,
+  type GpxComparison,
   type LinkBridge,
   type LinkExclusion,
   type MetadataOverride,
@@ -85,13 +89,13 @@ interface Props {
   onOpenPhotos?: (photos: FieldPhoto[], index: number) => void;
 }
 
-type SubTab = "diary" | "inspection" | "dugnad" | "work" | "validation" | "bilder";
+type SubTab = "diary" | "inspection" | "dugnad" | "work" | "validation" | "bilder" | "hoyde";
 
 // Distinct colours for loop arms — kept clear of the focused-route blue and
 // the gold hover line so arm overlays read as their own thing.
 const ARM_COLORS = ["#e8590c", "#9c36b5", "#2b8a3e", "#c2255c", "#1098ad"];
 
-const SUBTAB_KINDS: Record<Exclude<SubTab, "validation" | "bilder">, RouteAnnotationKind[]> = {
+const SUBTAB_KINDS: Record<Exclude<SubTab, "validation" | "bilder" | "hoyde">, RouteAnnotationKind[]> = {
   diary: ["diary"],
   inspection: ["inspection"],
   dugnad: ["dugnad"],
@@ -168,7 +172,7 @@ export default function RoutePanel({
     return out;
   }, [annotations]);
 
-  const tabKinds = tab === "validation" || tab === "bilder" ? [] : SUBTAB_KINDS[tab];
+  const tabKinds = tab === "validation" || tab === "bilder" || tab === "hoyde" ? [] : SUBTAB_KINDS[tab];
   const filtered = useMemo(
     () => annotations.filter((a) => tabKinds.includes(a.kind)),
     [annotations, tabKinds],
@@ -204,6 +208,8 @@ export default function RoutePanel({
           <Text size="xs" c="dimmed">
             {rutenummer}
             {routeSummary?.length_m != null && ` · ${formatLength(routeSummary.length_m)}`}
+            {naismithLabel(routeSummary?.length_m, routeSummary?.ascent_m)
+              && ` · ⏱ ~${naismithLabel(routeSummary?.length_m, routeSummary?.ascent_m)}`}
           </Text>
           {routeSummary?.disconnected && (
             <Badge size="xs" color="red" variant="light" mt={4}>Usammenhengende rute</Badge>
@@ -232,6 +238,7 @@ export default function RoutePanel({
           <Tabs.Tab value="dugnad" leftSection={<IconUsersGroup size={14} />}>Dugnad</Tabs.Tab>
           <Tabs.Tab value="work" leftSection={<IconTool size={14} />}>Arbeid</Tabs.Tab>
           <Tabs.Tab value="bilder" leftSection={<IconPhoto size={14} />}>Bilder</Tabs.Tab>
+          <Tabs.Tab value="hoyde" leftSection={<IconMountain size={14} />}>Høyde</Tabs.Tab>
           <Tabs.Tab value="validation" leftSection={<IconAlertTriangle size={14} />}>Validering</Tabs.Tab>
         </Tabs.List>
 
@@ -246,6 +253,8 @@ export default function RoutePanel({
             />
           ) : tab === "bilder" ? (
             <PhotosTab key={rutenummer} areaCode={areaCode} rutenummer={rutenummer} onOpenPhotos={onOpenPhotos} />
+          ) : tab === "hoyde" ? (
+            <ElevationTab key={rutenummer} areaCode={areaCode} rutenummer={rutenummer} />
           ) : (
           <Stack gap="xs">
             {tab !== "work" && !adding && (
@@ -574,22 +583,25 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
   const [exclusions, setExclusions] = useState<LinkExclusion[]>([]);
   const [bridges, setBridges] = useState<LinkBridge[]>([]);
   const [override, setOverride] = useState<MetadataOverride | null>(null);
+  const [gpxCmp, setGpxCmp] = useState<GpxComparison | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [v, ex, br, mo] = await Promise.all([
+      const [v, ex, br, mo, gc] = await Promise.all([
         api.getRouteValidation(areaCode, rutenummer),
         api.listLinkExclusions(areaCode, rutenummer),
         api.listLinkBridges(areaCode, rutenummer),
         api.getMetadataOverride(areaCode, rutenummer),
+        api.getGpxComparison(areaCode, rutenummer),
       ]);
       setVal(v);
       setExclusions(ex.exclusions);
       setBridges(br.bridges);
       setOverride(mo.override);
+      setGpxCmp(gc);
     } catch (e) {
       notifyError(e);
     } finally {
@@ -824,6 +836,29 @@ function ValidationTab({ areaCode, rutenummer, onLoopArmsChange, onRouteShapeCha
         />
       )}
 
+      {gpxCmp && gpxCmp.tracks.length > 0 && (
+        <Card withBorder padding="sm" radius="md">
+          <Text fw={600} size="sm" mb={6}>GPS-fasit</Text>
+          {gpxCmp.measured_factor != null ? (
+            <Text size="xs" mb="xs">
+              Målt avstandsfaktor <b>{gpxCmp.measured_factor}×</b> mot antatt {gpxCmp.assumed_factor}× — fra {gpxCmp.n_tracks_used} spor som dekker ruta.
+            </Text>
+          ) : (
+            <Text size="xs" c="dimmed" mb="xs">For lav dekning fra sporene til å måle en faktor.</Text>
+          )}
+          <Stack gap={4}>
+            {gpxCmp.tracks.map((t) => (
+              <Group key={t.track_id} justify="space-between" wrap="nowrap">
+                <Text size="xs" lineClamp={1} style={{ flex: 1 }}>{t.name || `spor ${t.track_id}`}</Text>
+                <Text size="xs" c="dimmed">
+                  dekker {t.coverage_pct ?? "–"}% · {t.factor != null ? `${t.factor}×` : "–"}
+                </Text>
+              </Group>
+            ))}
+          </Stack>
+        </Card>
+      )}
+
       {otherIssues.length > 0 && (
         <Stack gap={4}>
           {otherIssues.map((i, idx) => (
@@ -966,5 +1001,75 @@ function PhotosTab({ areaCode, rutenummer, onOpenPhotos }: {
         ))}
       </div>
     </Stack>
+  );
+}
+
+function fmtKm(m: number | null | undefined): string {
+  if (m == null) return "–";
+  const km = m / 1000;
+  return km < 10 ? `${km.toFixed(1)} km` : `${Math.round(km)} km`;
+}
+
+function ElevationTab({ areaCode, rutenummer }: { areaCode: string; rutenummer: string }) {
+  const [prof, setProf] = useState<ElevationProfile | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.getRouteElevation(areaCode, rutenummer)
+      .then((p) => { if (!cancelled) setProf(p); })
+      .catch((e) => { if (!cancelled) notifyError(e); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [areaCode, rutenummer]);
+
+  if (loading && !prof) return <Text size="xs" c="dimmed">Henter høydeprofil fra Kartverket…</Text>;
+  if (!prof) return <Text size="xs" c="dimmed">Ingen høydedata.</Text>;
+
+  return (
+    <Stack gap="sm">
+      <Group gap="md">
+        <Stat label="Lengde (3D)" value={fmtKm(prof.length_3d_m)} />
+        <Stat label="Stigning" value={prof.ascent_m != null ? `${Math.round(prof.ascent_m)} m` : "–"} />
+        <Stat label="Høyde" value={prof.min_z != null && prof.max_z != null ? `${Math.round(prof.min_z)}–${Math.round(prof.max_z)} m` : "–"} />
+        <Stat label="Tid (Naismith)" value={naismithLabel(prof.length_2d_m, prof.ascent_m) ?? "–"} />
+      </Group>
+      <ElevationChart samples={prof.samples} />
+      <Text size="10px" c="dimmed">
+        2D {fmtKm(prof.length_2d_m)} · fall {prof.descent_m != null ? `${Math.round(prof.descent_m)} m` : "–"}
+        {prof.datakilde ? ` · kilde ${prof.datakilde}` : ""}
+      </Text>
+    </Stack>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <Text size="10px" c="dimmed" tt="uppercase">{label}</Text>
+      <Text size="sm" fw={600}>{value}</Text>
+    </div>
+  );
+}
+
+function ElevationChart({ samples }: { samples: [number, number | null][] }) {
+  const pts = samples.filter((s) => s[1] != null) as [number, number][];
+  if (pts.length < 2) return <Text size="xs" c="dimmed">For få punkter for profil.</Text>;
+  const W = 320, H = 90, PAD = 2;
+  const xs = pts.map((p) => p[0]);
+  const zs = pts.map((p) => p[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+  const spanX = maxX - minX || 1, spanZ = maxZ - minZ || 1;
+  const sx = (x: number) => PAD + ((x - minX) / spanX) * (W - 2 * PAD);
+  const sy = (z: number) => PAD + (1 - (z - minZ) / spanZ) * (H - 2 * PAD);
+  const line = pts.map((p, i) => `${i === 0 ? "M" : "L"}${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`).join(" ");
+  const area = `${line} L${sx(maxX).toFixed(1)},${(H - PAD).toFixed(1)} L${sx(minX).toFixed(1)},${(H - PAD).toFixed(1)} Z`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", display: "block" }} preserveAspectRatio="none">
+      <path d={area} fill="#a5d8ff" opacity={0.6} />
+      <path d={line} fill="none" stroke="#1971c2" strokeWidth={1.2} />
+    </svg>
   );
 }

@@ -554,6 +554,90 @@ class RouteNameSuggestionValidator(BaseValidator):
         return result
 
 
+class PanelNameDriftValidator(BaseValidator):
+    """Flags sign panels whose manual `destination_name` override no longer
+    matches the current `endpoint_names.name` for the destination anchor.
+
+    Detection rule: case-insensitive, the current anchor name must be a
+    substring of the override. Legitimate disambiguating suffixes like
+    "Hyrnavollen skogssti" / "Sota sæter over Illvatnet" pass; replacements
+    like "Hyrnavollen" → "Mørkri" (which happens after a turrutebasen refresh
+    moves the route's endpoint) fail and surface as a WARNING.
+
+    Surfaced per-route: a panel is included when its sign site sits on one of
+    the route's anchors, so the user sees it on whichever route they look at.
+    """
+
+    def get_name(self) -> str:
+        return "panel_name_drift"
+
+    def get_category(self) -> str:
+        return "metadata"
+
+    def validate(self, route_data: Dict[str, Any], conn) -> ValidationResult:
+        rutenummer = route_data.get("rutenummer")
+        result = ValidationResult(rutenummer)
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                WITH route_anchors AS (
+                    SELECT a_node AS n FROM ops.route_link_graph WHERE rutenummer = %s
+                    UNION
+                    SELECT b_node FROM ops.route_link_graph WHERE rutenummer = %s
+                )
+                SELECT s.anchor_node_id AS site_anchor,
+                       skilt.id           AS skilt_id,
+                       skilt.anchor_node_id AS dest_anchor,
+                       skilt.first_link_id,
+                       skilt.destination_name AS override_name,
+                       skilt.updated_by  AS override_updated_by,
+                       skilt.updated_at  AS override_updated_at,
+                       en.name           AS current_name,
+                       en.source_type    AS name_source,
+                       en.updated_at     AS name_updated_at
+                FROM ops.sign_sites s
+                JOIN ops.sign_site_skilt skilt ON skilt.sign_site_id = s.id
+                LEFT JOIN ops.endpoint_names en
+                       ON en.anchor_node_id = skilt.anchor_node_id
+                      AND COALESCE(en.rutenummer, '') = ''
+                WHERE skilt.destination_name IS NOT NULL
+                  AND s.anchor_node_id IN (SELECT n FROM route_anchors)
+                """,
+                (rutenummer, rutenummer),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+        for r in rows:
+            override = (r.get("override_name") or "").strip()
+            current = (r.get("current_name") or "").strip()
+            if not override or not current:
+                continue  # nothing to compare against
+            if current.lower() in override.lower():
+                continue  # legitimate suffix / disambig (e.g. "Hyrnavollen skogssti")
+            result.add_issue(ValidationIssue(
+                type="STALE_PANEL_NAME",
+                message=(
+                    f'Skiltpanel viser «{override}» men endepunktet (anker {r["dest_anchor"]}) '
+                    f'heter nå «{current}». Overstyringen kan være utdatert etter dataimport — '
+                    f'slett den eller oppdater til riktig navn.'
+                ),
+                severity=Severity.WARNING,
+                metadata={
+                    "sign_site_anchor_node_id": r["site_anchor"],
+                    "destination_anchor_node_id": r["dest_anchor"],
+                    "first_link_id": r["first_link_id"],
+                    "override_name": override,
+                    "current_name": current,
+                    "name_source": r.get("name_source"),
+                    "override_updated_by": r.get("override_updated_by"),
+                    "override_updated_at": r["override_updated_at"].isoformat() if r.get("override_updated_at") else None,
+                    "name_updated_at": r["name_updated_at"].isoformat() if r.get("name_updated_at") else None,
+                    "skilt_id": r["skilt_id"],
+                },
+            ))
+        return result
+
+
 class MissingFieldsValidator(BaseValidator):
     """Validates for missing required fields in segments."""
 

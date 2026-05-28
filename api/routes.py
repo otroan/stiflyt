@@ -2774,6 +2774,51 @@ async def get_route_photos(area_code: str, rutenummer: str, radius_m: float = 75
         raise HTTPException(status_code=500, detail=f"Error getting route photos: {e}")
 
 
+@router.get("/routes/{area_code}/{rutenummer}/gpx-comparison")
+async def get_route_gpx_comparison(area_code: str, rutenummer: str):
+    """Compare uploaded GPX tracks to this route's mapped line — the empirical
+    walked-vs-mapped distance factor (validated the move from ×1.125 to ×1.05) plus
+    per-track coverage."""
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        from services import gpx_tracks as gpx_svc
+        with db_connection() as conn:
+            result = gpx_svc.compare_to_route(conn, area_code, rutenummer)
+        with op_db_connection() as op_conn:
+            from services.sign_candidates import get_distance_correction_factor
+            result["assumed_factor"] = get_distance_correction_factor(op_conn, area_code)
+        return {"area_code": area_code, **result}
+    except Exception as e:
+        print(f"Error comparing gpx for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error comparing gpx: {e}")
+
+
+@router.get("/routes/{area_code}/{rutenummer}/elevation")
+async def get_route_elevation(area_code: str, rutenummer: str, refresh: bool = False):
+    """Elevation profile for the route from Kartverket Høydedata (cached).
+
+    Computes on a cache miss (~2.7s — samples the route against the /punkt API),
+    then serves instantly. `?refresh=1` forces a re-sample.
+    """
+    _validate_area_code(area_code)
+    _validate_rutenummer(rutenummer)
+    try:
+        with op_db_connection() as conn:
+            from services.elevation import get_elevation
+            prof = get_elevation(conn, rutenummer, refresh=refresh)
+        if prof is None:
+            raise HTTPException(status_code=404, detail="No geometry for route")
+        return {"area_code": area_code, **prof}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting elevation for {rutenummer}: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting elevation: {e}")
+
+
 @router.get("/routes/{area_code}/{rutenummer}/metadata-override")
 async def get_route_metadata_override(area_code: str, rutenummer: str):
     """Current metadata override for the route (rutenavn / vedlikeholdsansvarlig
@@ -3108,7 +3153,7 @@ async def get_sign_candidates(area_code: str, response: Response) -> Dict:
     """Auto-proposed sign sites + panels for an area (signs_app frontend).
 
     Returns every anchor in the area as a candidate sign site, with panels
-    deduped by destination name, distances corrected (×1.125) and rounded
+    deduped by destination name, distances corrected by the area's factor (×1.05 default) and rounded
     per spec (<10 km floor to 0.5 km; >=10 km nearest int), and a 32V UTM
     formatted back-text.
 

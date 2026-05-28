@@ -6,6 +6,8 @@ import type {
   FieldPhotosResponse,
   PlacenameCandidatesResponse,
   AreaValidationResponse,
+  ElevationProfile,
+  GpxComparison,
   GpxTrack,
   GpxTracksResponse,
   LinkBridgesResponse,
@@ -374,6 +376,16 @@ export const api = {
   getRoutePhotos: (area: string, rutenummer: string) =>
     jsonFetch<{ area_code: string; rutenummer: string; photos: FieldPhoto[] }>(
       `/routes/${area}/${encodeURIComponent(rutenummer)}/photos`,
+    ),
+
+  getRouteElevation: (area: string, rutenummer: string, refresh = false) =>
+    jsonFetch<ElevationProfile>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/elevation${refresh ? "?refresh=1" : ""}`,
+    ),
+
+  getGpxComparison: (area: string, rutenummer: string) =>
+    jsonFetch<GpxComparison>(
+      `/routes/${area}/${encodeURIComponent(rutenummer)}/gpx-comparison`,
     ),
 
   // --- GPX tracks (actually-walked overlay) ---

@@ -135,6 +135,81 @@ def list_tracks(op_conn, area_code: str) -> List[Dict[str, Any]]:
         return [_row_to_api(dict(r)) for r in cur.fetchall()]
 
 
+def compare_to_route(conn, area_code: str, rutenummer: str, *, corridor_m: float = 30.0) -> Dict[str, Any]:
+    """Compare uploaded GPX tracks to a route's mapped line.
+
+    For every track in the area that follows the route (within a `corridor_m`
+    corridor), measures *walked length vs mapped length over the shared span*:
+
+      walked_m       = track length inside the route's corridor
+      route_covered_m= route length inside the track's corridor (the shared span)
+      factor         = walked_m / route_covered_m  (apples-to-apples, robust to
+                       partial coverage)
+      coverage_pct   = route_covered_m / route_len_m  (how much of the route the
+                       track actually covers — factor is only trustworthy when
+                       this is high)
+
+    Tracks covering >= 30% of the route feed an aggregate `measured_factor`
+    (Σwalked / Σcovered), the empirical signal that drove the default down from
+    ×1.125 (historic) to ×1.05.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT ST_Length(ST_Collect(geom)) FROM ops.route_link_graph WHERE rutenummer = %s",
+            (rutenummer,),
+        )
+        row = cur.fetchone()
+        route_len_m = row[0] if row else None
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            WITH r AS (
+                SELECT ST_Collect(geom) AS geom FROM ops.route_link_graph WHERE rutenummer = %s
+            )
+            SELECT
+                t.id, t.name,
+                ST_Length(ST_Intersection(t.geom, ST_Buffer(r.geom, %s))) AS walked_m,
+                ST_Length(ST_Intersection(r.geom, ST_Buffer(t.geom, %s))) AS route_covered_m
+            FROM ops.gpx_tracks t, r
+            WHERE t.area_code = %s
+              AND r.geom IS NOT NULL
+              AND ST_DWithin(t.geom, r.geom, %s)
+            ORDER BY route_covered_m DESC
+            """,
+            (rutenummer, corridor_m, corridor_m, area_code, corridor_m),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    tracks: List[Dict[str, Any]] = []
+    for r in rows:
+        covered = r["route_covered_m"] or 0.0
+        walked = r["walked_m"] or 0.0
+        rlen = route_len_m or 0.0
+        tracks.append({
+            "track_id": r["id"],
+            "name": r["name"],
+            "walked_m": round(walked, 1),
+            "route_covered_m": round(covered, 1),
+            "coverage_pct": round(covered / rlen * 100, 1) if rlen else None,
+            "factor": round(walked / covered, 3) if covered > 0 else None,
+        })
+
+    used = [t for t in tracks if (t["coverage_pct"] or 0) >= 30.0 and t["route_covered_m"] > 0]
+    sum_walked = sum(t["walked_m"] for t in used)
+    sum_covered = sum(t["route_covered_m"] for t in used)
+    measured_factor = round(sum_walked / sum_covered, 3) if sum_covered > 0 else None
+
+    return {
+        "rutenummer": rutenummer,
+        "route_len_m": round(route_len_m, 1) if route_len_m else None,
+        "corridor_m": corridor_m,
+        "tracks": tracks,
+        "measured_factor": measured_factor,
+        "n_tracks_used": len(used),
+    }
+
+
 def delete_track(op_conn, track_id: int) -> bool:
     with op_conn.cursor() as cur:
         cur.execute("DELETE FROM ops.gpx_tracks WHERE id = %s", (track_id,))

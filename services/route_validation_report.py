@@ -67,6 +67,7 @@ ACTION_HINT_NB = {
     "FERRY_SUSPECT": "Marker som båtrute/fjordkryssing eller fjern feilregistrert linjestrekk.",
     "ROUTE_HAS_LOOP": "Velg hvilken arm som er den reelle ruta og ekskluder den/de andre i signs_app, eller del opp i egne rutenummer.",
     "ROUTE_DISCONNECTED": "Koble sammen de adskilte delene (små brudd er digitaliseringsfeil) eller del opp i egne rutenummer. Avstander kan ikke beregnes før ruta er sammenhengende.",
+    "STALE_PANEL_NAME": "Slett overstyringen i skiltpanelet eller oppdater navnet — sannsynligvis utdatert etter ny dataimport fra Kartverket.",
     "RUTENAVN_SUGGESTION": "(forslag — ikke en feil)",
 }
 

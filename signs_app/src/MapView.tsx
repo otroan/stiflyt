@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import { api } from "./api";
 import type { FieldPhoto, GpxTrack, RouteAnnotation, RouteListItem, RouteSummary, SignSite } from "./types";
+import { naismithLabel } from "./naismith";
 
 export type BaseLayerId = "osm" | "topo4" | "topo4graatone";
 
@@ -49,14 +50,12 @@ interface Props {
    *  colour over the focused route so the user can compare and pick which to
    *  exclude. Empty / undefined = nothing drawn. */
   loopArms?: { color: string; geometry: GeoJSON.Geometry }[];
-  /** Uploaded GPX tracks (actually-walked overlay), rendered as a green layer. */
+  /** Uploaded GPX tracks (actually-walked overlay), rendered as a green layer.
+   *  Upload/management lives in the "Spor" sidebar tab; the map only toggles
+   *  visibility. */
   gpxTracks?: GpxTrack[];
   gpxVisible?: boolean;
   onGpxVisibleChange?: (v: boolean) => void;
-  /** Upload a GPX file (from the layer panel's upload button). */
-  onUploadGpx?: (file: File) => void;
-  /** Delete a GPX track by id. */
-  onDeleteGpx?: (id: number) => void;
 }
 
 const BREHEIMEN_CENTER: [number, number] = [7.5, 61.7];
@@ -204,8 +203,6 @@ export default function MapView({
   gpxTracks,
   gpxVisible,
   onGpxVisibleChange,
-  onUploadGpx,
-  onDeleteGpx,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -1137,41 +1134,6 @@ export default function MapView({
           <span style={{ color: "#2f9e44" }}>🥾 GPX-spor</span>
           <span style={{ color: "#666" }}>({(gpxTracks ?? []).length})</span>
         </label>
-        <label
-          style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, cursor: "pointer", color: "#1a7fc4" }}
-          title="Last opp en GPX-fil"
-        >
-          <span>⬆ Last opp GPX</span>
-          <input
-            type="file"
-            accept=".gpx,application/gpx+xml,application/xml"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onUploadGpx?.(f);
-              e.target.value = "";  // allow re-uploading the same file
-            }}
-          />
-        </label>
-        {(gpxTracks ?? []).length > 0 && gpxVisible !== false && (
-          <div style={{ marginTop: 4, maxHeight: 120, overflowY: "auto" }}>
-            {(gpxTracks ?? []).map((t) => (
-              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 4, color: "#444" }}>
-                <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {t.name || `spor ${t.id}`}{t.length_km != null ? ` · ${t.length_km} km` : ""}
-                </span>
-                <span
-                  role="button"
-                  title="Slett spor"
-                  style={{ cursor: "pointer", color: "#c43d3d", padding: "0 2px" }}
-                  onClick={() => onDeleteGpx?.(t.id)}
-                >
-                  ✕
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1435,6 +1397,13 @@ function buildRoutePopupDOM(
       route.textContent = `${start} → ${end}${km ? ` · ${km}` : ""}`;
       route.style.cssText = "color:#666;font-size:11px;margin-top:2px";
       btn.appendChild(route);
+      const naismith = naismithLabel(sum.length_m, sum.ascent_m);
+      if (naismith) {
+        const time = document.createElement("div");
+        time.textContent = `⏱ ~${naismith} (Naismith)`;
+        time.style.cssText = "color:#666;font-size:11px;margin-top:1px";
+        btn.appendChild(time);
+      }
     }
     if (isFocused) {
       const tag = document.createElement("div");

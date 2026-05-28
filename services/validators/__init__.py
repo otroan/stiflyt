@@ -12,6 +12,7 @@ from .metadata import (
     DuplicateRutenummerInSegmentValidator,
     RouteNameSuggestionValidator,
     MissingFieldsValidator,
+    PanelNameDriftValidator,
 )
 from .geometry import (
     RouteGeometryValidator,
@@ -33,6 +34,7 @@ def _register_default_validators():
     registry.register(DuplicateRutenummerInSegmentValidator(), enabled=True)
     registry.register(RouteNameSuggestionValidator(), enabled=True)
     registry.register(MissingFieldsValidator(), enabled=True)
+    registry.register(PanelNameDriftValidator(), enabled=True)
 
     # Register geometry validators
     registry.register(RouteGeometryValidator(), enabled=True)
@@ -58,6 +60,7 @@ __all__ = [
     'DuplicateRutenummerInSegmentValidator',
     'RouteNameSuggestionValidator',
     'MissingFieldsValidator',
+    'PanelNameDriftValidator',
     'RouteGeometryValidator',
     'LinkConnectivityValidator',
     'SegmentGapValidator',

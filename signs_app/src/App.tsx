@@ -14,7 +14,7 @@ import {
   Text,
   Title,
 } from "@mantine/core";
-import { IconAlertTriangle, IconCamera, IconDownload, IconInfoCircle, IconMapPin, IconRoute } from "@tabler/icons-react";
+import { IconAlertTriangle, IconCamera, IconDownload, IconInfoCircle, IconMapPin, IconRoute, IconRoute2 } from "@tabler/icons-react";
 import { api } from "./api";
 import type { CandidatesResponse, FieldPhoto, GpxTrack, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
@@ -25,9 +25,10 @@ import FloatingToolbar from "./FloatingToolbar";
 import ExportTab from "./ExportTab";
 import RoutePanel from "./RoutePanel";
 import AreaValidationPanel from "./AreaValidationPanel";
+import GpxPanel from "./GpxPanel";
 import { notifyError } from "./notify";
 
-type SidebarTab = "sites" | "rute" | "kvalitet" | "photos" | "export" | "about";
+type SidebarTab = "sites" | "rute" | "kvalitet" | "photos" | "spor" | "export" | "about";
 
 const LOGIN_ERROR_MESSAGES: Record<string, string> = {
   not_allowed: "E-postadressen din står ikke i tilgangslisten. Kontakt en administrator.",
@@ -211,9 +212,9 @@ export default function App() {
     }
   };
   useEffect(() => { if (me) refreshGpx(); }, [areaCode, me]);
-  const handleUploadGpx = async (file: File) => {
+  const handleUploadGpx = async (files: File[]) => {
     try {
-      await api.uploadGpx(areaCode, file);
+      for (const f of files) await api.uploadGpx(areaCode, f);
       await refreshGpx();
     } catch (e) {
       notifyError(e);
@@ -564,8 +565,6 @@ export default function App() {
           gpxTracks={gpxTracks}
           gpxVisible={gpxVisible}
           onGpxVisibleChange={setGpxVisible}
-          onUploadGpx={handleUploadGpx}
-          onDeleteGpx={handleDeleteGpx}
         />
       </div>
 
@@ -598,6 +597,13 @@ export default function App() {
               : null}
           >
             Bilder
+          </Tabs.Tab>
+          <Tabs.Tab
+            value="spor"
+            leftSection={<IconRoute2 size={14} />}
+            rightSection={gpxTracks.length > 0 ? <Badge size="xs" color="green" variant="light">{gpxTracks.length}</Badge> : null}
+          >
+            Spor
           </Tabs.Tab>
           <Tabs.Tab
             value="export"
@@ -687,6 +693,15 @@ export default function App() {
             onClose={() => setSidebarTab("sites")}
             onChanged={refreshPhotos}
             onOpenLightbox={openLightbox}
+          />
+        </Tabs.Panel>
+
+        <Tabs.Panel value="spor" className="side-panel">
+          <GpxPanel
+            areaCode={areaCode}
+            tracks={gpxTracks}
+            onUpload={handleUploadGpx}
+            onDelete={handleDeleteGpx}
           />
         </Tabs.Panel>
 

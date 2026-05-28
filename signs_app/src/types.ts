@@ -96,6 +96,10 @@ export interface RouteSummary {
    *  endpoint pair is unreliable and along-route distances can't span the gap.
    *  See RouteDisconnectedValidator / the Validering tab. */
   disconnected?: boolean;
+  /** Cached elevation results (null until the route's profile is resolved via
+   *  the Høyde tab). Drives the Naismith hiking-time estimate. */
+  length_3d_m?: number | null;
+  ascent_m?: number | null;
   /** GeoJSON MultiLineString (WGS84) of the marked / walkable portion. */
   route_geometry?: GeoJSON.Geometry | null;
   /** GeoJSON MultiLineString of unmarked portions (boat / glacier).
@@ -369,4 +373,40 @@ export interface GpxTrack {
 export interface GpxTracksResponse {
   area_code: string;
   tracks: GpxTrack[];
+}
+
+export interface GpxComparisonTrack {
+  track_id: number;
+  name: string | null;
+  walked_m: number;
+  route_covered_m: number;
+  coverage_pct: number | null;
+  factor: number | null;
+}
+
+export interface GpxComparison {
+  area_code: string;
+  rutenummer: string;
+  route_len_m: number | null;
+  corridor_m: number;
+  tracks: GpxComparisonTrack[];
+  measured_factor: number | null;
+  n_tracks_used: number;
+  assumed_factor: number;
+}
+
+export interface ElevationProfile {
+  area_code: string;
+  rutenummer: string;
+  samples: [number, number | null][]; // [distance_along_m, elevation_m]
+  point_count: number | null;
+  length_2d_m: number | null;
+  length_3d_m: number | null;
+  ascent_m: number | null;
+  descent_m: number | null;
+  min_z: number | null;
+  max_z: number | null;
+  datakilde: string | null;
+  sampled_at: string | null;
+  cached: boolean;
 }
