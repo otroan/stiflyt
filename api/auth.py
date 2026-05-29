@@ -15,7 +15,9 @@ the frontend handles by redirecting to /api/v1/auth/login.
 """
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -125,3 +127,24 @@ def require_user(request: Request) -> Dict[str, Any]:
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="not_authenticated")
     return user
+
+
+def require_user_or_api_key(request: Request) -> Dict[str, Any]:
+    """Auth dep that accepts either a Google session OR an X-API-Key header.
+
+    Enables automation (stiflyt_mcp) to talk to the backend without going
+    through the OAuth flow. The side door only opens when STIFLYT_API_KEY
+    is set in the backend env; unset → behaves exactly like require_user.
+
+    Identity for audit fields (recorded_by / updated_by / uploaded_by) is
+    taken from the X-User header when entering via the key — mutating
+    routes read X-User independently, so just synthesizing a user dict
+    here is enough to satisfy the dependency check.
+    """
+    expected = os.environ.get("STIFLYT_API_KEY")
+    if expected:
+        provided = request.headers.get("x-api-key")
+        if provided and hmac.compare_digest(provided, expected):
+            actor = request.headers.get("x-user") or "mcp-agent"
+            return {"email": actor, "name": actor, "via": "api_key"}
+    return require_user(request)

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from pathlib import Path
 from api.routes import router
-from api.auth import router as auth_router, require_user
+from api.auth import router as auth_router, require_user_or_api_key
 from services.auth_config import session_secret, session_https_only
 from services.startup_checks import run_startup_checks
 
@@ -85,7 +85,7 @@ app.include_router(
     router,
     prefix="/api/v1",
     tags=["routes"],
-    dependencies=[Depends(require_user)],
+    dependencies=[Depends(require_user_or_api_key)],
 )
 
 # Changeset routes — internal admin surface, also gated.
@@ -94,7 +94,7 @@ app.include_router(
     changeset_router,
     prefix="/api",
     tags=["changeset"],
-    dependencies=[Depends(require_user)],
+    dependencies=[Depends(require_user_or_api_key)],
 )
 
 # Serve frontend static files
