@@ -397,6 +397,35 @@ export default function MapView({
             "line-dasharray": [0, 2],
           },
         });
+        // Mirrors of the marked layer's hover (gold) + focused (blue, wider)
+        // overlays so routes whose entire geometry is unmarked (e.g. bre8 today)
+        // still respond to hover + focus exactly like a normal route.
+        map.addLayer({
+          id: "routes-line-unmarked-hover",
+          type: "line",
+          source: "routes-unmarked",
+          filter: ["==", ["get", "rutenummer"], "__none__"],
+          layout: { "line-cap": "round" },
+          paint: {
+            "line-color": "#fac142",
+            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 3.5, 14, 7],
+            "line-opacity": 0.95,
+            "line-dasharray": [0, 2],
+          },
+        });
+        map.addLayer({
+          id: "routes-line-unmarked-focused",
+          type: "line",
+          source: "routes-unmarked",
+          filter: ["==", ["get", "rutenummer"], "__none__"],
+          layout: { "line-cap": "round" },
+          paint: {
+            "line-color": "#1a7fc4",
+            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 5, 14, 10],
+            "line-opacity": 1.0,
+            "line-dasharray": [0, 1.6],
+          },
+        });
       } else {
         (map.getSource("routes-unmarked") as maplibregl.GeoJSONSource).setData(routesUnmarkedGeoJSON);
       }
@@ -477,7 +506,7 @@ export default function MapView({
         [e.point.x - CLICK_TOLERANCE_PX, e.point.y - CLICK_TOLERANCE_PX],
         [e.point.x + CLICK_TOLERANCE_PX, e.point.y + CLICK_TOLERANCE_PX],
       ];
-      const features = map.queryRenderedFeatures(box, { layers: ["routes-line"] });
+      const features = map.queryRenderedFeatures(box, { layers: ["routes-line", "routes-line-unmarked"] });
       const seen = new Set<string>();
       const routes: string[] = [];
       for (const f of features) {
@@ -514,6 +543,16 @@ export default function MapView({
           0.18,
         ]);
         map.setFilter("routes-line-focused", ["==", ["get", "rutenummer"], focusedRoute]);
+        if (map.getLayer("routes-line-unmarked")) {
+          map.setPaintProperty("routes-line-unmarked", "line-opacity", [
+            "case",
+            ["==", ["get", "rutenummer"], focusedRoute],
+            0.95,
+            0.18,
+          ]);
+          map.setFilter("routes-line-unmarked-focused", ["==", ["get", "rutenummer"], focusedRoute]);
+          map.moveLayer("routes-line-unmarked-focused");
+        }
         // Keep the focused layer above everything else, in case a later
         // moveLayer (e.g. in the source-update effect) put it below sites.
         map.moveLayer("routes-line-focused");
@@ -521,6 +560,10 @@ export default function MapView({
       } else {
         map.setPaintProperty("routes-line", "line-opacity", 0.85);
         map.setFilter("routes-line-focused", ["==", ["get", "rutenummer"], "__none__"]);
+        if (map.getLayer("routes-line-unmarked")) {
+          map.setPaintProperty("routes-line-unmarked", "line-opacity", 0.85);
+          map.setFilter("routes-line-unmarked-focused", ["==", ["get", "rutenummer"], "__none__"]);
+        }
       }
       map.triggerRepaint();
     };
@@ -1339,6 +1382,9 @@ function attachRouteHoverHandlers(
     cancelClose();
     closeTimer = window.setTimeout(() => {
       map.setFilter("routes-line-hover", ["==", ["get", "rutenummer"], "__none__"]);
+      if (map.getLayer("routes-line-unmarked-hover")) {
+        map.setFilter("routes-line-unmarked-hover", ["==", ["get", "rutenummer"], "__none__"]);
+      }
       if (!placementActiveRef.current) map.getCanvas().style.cursor = "";
       popupRef.current?.remove();
       lastKey = "";
@@ -1354,7 +1400,7 @@ function attachRouteHoverHandlers(
         [e.point.x - CLICK_TOLERANCE_PX, e.point.y - CLICK_TOLERANCE_PX],
         [e.point.x + CLICK_TOLERANCE_PX, e.point.y + CLICK_TOLERANCE_PX],
       ],
-      { layers: ["routes-line"] },
+      { layers: ["routes-line", "routes-line-unmarked"] },
     );
     if (features.length === 0) return;
     const seen = new Set<string>();
@@ -1366,7 +1412,11 @@ function attachRouteHoverHandlers(
     }
     if (rows.length === 0) return;
     // Highlight all rutenumre under the cursor (gold).
-    map.setFilter("routes-line-hover", ["in", ["get", "rutenummer"], ["literal", rows.map((r) => r.rutenummer)]]);
+    const hoveredRouteList = ["in", ["get", "rutenummer"], ["literal", rows.map((r) => r.rutenummer)]] as unknown as maplibregl.FilterSpecification;
+    map.setFilter("routes-line-hover", hoveredRouteList);
+    if (map.getLayer("routes-line-unmarked-hover")) {
+      map.setFilter("routes-line-unmarked-hover", hoveredRouteList);
+    }
     map.getCanvas().style.cursor = "pointer";
     const key = rows.map((r) => r.rutenummer).join("|");
     if (key === lastKey) return;
@@ -1392,6 +1442,8 @@ function attachRouteHoverHandlers(
   };
   map.on("mousemove", "routes-line", onMove);
   map.on("mouseleave", "routes-line", () => scheduleClose(250));
+  map.on("mousemove", "routes-line-unmarked", onMove);
+  map.on("mouseleave", "routes-line-unmarked", () => scheduleClose(250));
 }
 
 function buildRoutePopupDOM(
