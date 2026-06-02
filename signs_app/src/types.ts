@@ -69,6 +69,29 @@ export interface PlaceSearchResponse {
   total: number;
 }
 
+/** A named, routable anchor node from /signs/area/{area}/anchors/search —
+ *  a candidate destination for a manually-added "through" sign. */
+export interface AnchorHit {
+  anchor_node_id: number;
+  name: string;
+  lon: number | null;
+  lat: number | null;
+  source?: string;
+}
+
+/** Result of /signs/area/{area}/distance — the Dijkstra walking distance to a
+ *  destination anchor over the cross-area DNT-route graph. `routes` is the
+ *  minimal continuous route sequence, e.g. ["bre1","bre3"] → "via bre1, bre3".
+ *  `distance_meters` already includes the per-area correction factor. */
+export interface ThroughDistance {
+  found: boolean;
+  from_node: number | null;
+  raw_meters?: number;
+  correction_factor?: number;
+  distance_meters: number | null;
+  routes: string[];
+}
+
 export interface SessionUser {
   email: string;
   name: string;

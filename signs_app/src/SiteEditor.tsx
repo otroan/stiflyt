@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { SignPanel, SignSite } from "./types";
+import { useRef, useState } from "react";
+import type { AnchorHit, SignPanel, SignSite, ThroughDistance } from "./types";
 import { formatKm } from "./format";
 import { api } from "./api";
 import { notifyError } from "./notify";
@@ -184,6 +184,8 @@ export default function SiteEditor({
         ))}
       </div>
 
+      <ThroughDestinationAdder site={site} areaCode={areaCode} />
+
       <div className="actions">
         {!site.is_manual && site.status !== "accepted" && site.status !== "installed" && (
           <button className="primary" onClick={doAccept} disabled={busy || site.anchor_node_id == null}>
@@ -202,6 +204,105 @@ export default function SiteEditor({
         )}
         <button onClick={onClose}>Lukk</button>
       </div>
+    </div>
+  );
+}
+
+/** Search a named destination anchor and preview the auto-computed walking
+ *  distance + the DNT routes traversed to reach it ("via bre1, bre3"). The
+ *  destination may lie beyond this route's endpoint and cross DNT-area
+ *  boundaries — the distance is a Dijkstra path over the whole DNT-route graph.
+ *  (Persisting it as a rendered blade lands in the next step.) */
+function ThroughDestinationAdder({ site, areaCode }: { site: SignSite; areaCode: string }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<AnchorHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [selected, setSelected] = useState<AnchorHit | null>(null);
+  const [dist, setDist] = useState<ThroughDistance | null>(null);
+  const [distLoading, setDistLoading] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function onQuery(v: string) {
+    setQ(v);
+    setSelected(null);
+    setDist(null);
+    if (timer.current) clearTimeout(timer.current);
+    if (v.trim().length < 2) { setResults([]); return; }
+    timer.current = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const r = await api.searchAnchors(areaCode, v.trim());
+        setResults(r.anchors);
+      } catch (e) {
+        notifyError(e);
+      } finally {
+        setSearching(false);
+      }
+    }, 250);
+  }
+
+  async function pick(a: AnchorHit) {
+    setSelected(a);
+    setResults([]);
+    setQ(a.name);
+    setDistLoading(true);
+    setDist(null);
+    try {
+      const d = await api.throughDistance(areaCode, a.anchor_node_id, {
+        fromAnchor: site.anchor_node_id ?? undefined,
+        fromLon: site.anchor_node_id == null ? site.lon : undefined,
+        fromLat: site.anchor_node_id == null ? site.lat : undefined,
+      });
+      setDist(d);
+    } catch (e) {
+      notifyError(e);
+    } finally {
+      setDistLoading(false);
+    }
+  }
+
+  return (
+    <div className="through-add" style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #eee" }}>
+      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Legg til mål (gjennomgående)</div>
+      <input
+        value={q}
+        onChange={(e) => onQuery(e.target.value)}
+        placeholder="Søk ankerpunkt, f.eks. Nørdstedalseter…"
+        style={{ width: "100%", boxSizing: "border-box", padding: "4px 6px", fontSize: 13 }}
+      />
+      {searching && <div className="empty" style={{ padding: 4 }}>Søker…</div>}
+      {results.length > 0 && (
+        <div style={{ border: "1px solid #eee", borderRadius: 4, marginTop: 4, maxHeight: 180, overflowY: "auto" }}>
+          {results.map((a) => (
+            <button
+              key={a.anchor_node_id}
+              onClick={() => pick(a)}
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "5px 8px", background: "none", border: "none", borderBottom: "1px solid #f4f4f4", cursor: "pointer", fontSize: 13 }}
+            >
+              {a.name} <span style={{ color: "#aaa" }}>#{a.anchor_node_id}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {selected && (
+        <div style={{ marginTop: 8 }}>
+          {distLoading ? (
+            <span className="empty">Beregner avstand…</span>
+          ) : dist?.found ? (
+            <div style={{ background: "#f7f9fb", borderRadius: 4, padding: "6px 8px" }}>
+              <div><strong>{selected.name}</strong> — {((dist.distance_meters ?? 0) / 1000).toFixed(1)} km</div>
+              {dist.routes.length > 0 && (
+                <div style={{ color: "#555", fontSize: 12, marginTop: 2 }}>via {dist.routes.join(", ")}</div>
+              )}
+            </div>
+          ) : (
+            <span className="empty">Fant ingen rute langs DNT-rutene til dette ankerpunktet.</span>
+          )}
+          <button className="primary" disabled title="Lagring av gjennomgående skilt kommer i neste steg" style={{ marginTop: 6 }}>
+            Legg til skilt
+          </button>
+        </div>
+      )}
     </div>
   );
 }

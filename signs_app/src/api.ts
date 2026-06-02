@@ -1,7 +1,9 @@
 import type {
+  AnchorHit,
   AreaRouteSummaryResponse,
   AreaStatsResponse,
   CandidatesResponse,
+  ThroughDistance,
   FieldPhoto,
   FieldPhotosResponse,
   PlacenameCandidatesResponse,
@@ -190,6 +192,28 @@ export const api = {
    *  box. Returns hits with WGS84 coordinates for fly-to. */
   searchPlaces: (q: string, limit = 15) =>
     jsonFetch<PlaceSearchResponse>(`/search/places?q=${encodeURIComponent(q)}&limit=${limit}`),
+
+  /** Named, routable anchor nodes in an area — destinations for a manually
+   *  added "through" sign (Dijkstra distance computed separately). */
+  searchAnchors: (area: string, q: string, limit = 15) =>
+    jsonFetch<{ anchors: AnchorHit[] }>(
+      `/signs/area/${area}/anchors/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+    ),
+
+  /** Walking distance + route sequence to a destination anchor over the
+   *  cross-area DNT-route graph. Source is `fromAnchor` (the signpost's node)
+   *  or the nearest anchor to (fromLon, fromLat) for point sites. */
+  throughDistance: (
+    area: string,
+    toAnchor: number,
+    opts: { fromAnchor?: number | null; fromLon?: number | null; fromLat?: number | null },
+  ) => {
+    const p = new URLSearchParams({ to_anchor: String(toAnchor) });
+    if (opts.fromAnchor != null) p.set("from_anchor", String(opts.fromAnchor));
+    if (opts.fromLon != null) p.set("from_lon", String(opts.fromLon));
+    if (opts.fromLat != null) p.set("from_lat", String(opts.fromLat));
+    return jsonFetch<ThroughDistance>(`/signs/area/${area}/distance?${p.toString()}`);
+  },
 
   getCandidates: (area: string) => timedJsonFetch<CandidatesResponse>(`/signs/candidates/${area}`),
 

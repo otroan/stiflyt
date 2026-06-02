@@ -3519,25 +3519,27 @@ async def search_anchors_endpoint(
     return {"anchors": anchors[:limit]}
 
 
-@router.get("/signs/sites/{sign_site_id}/distance-to/{anchor_node_id}")
-async def sign_site_distance_to_anchor(
-    sign_site_id: int,
-    anchor_node_id: int,
-    area: Annotated[str, Query(description="Områdekode (rutenummer-prefiks), f.eks. 'bre'")],
+@router.get("/signs/area/{area_code}/distance")
+async def through_distance_endpoint(
+    area_code: str,
+    to_anchor: Annotated[int, Query(description="Destinasjons-ankernode")],
+    from_anchor: Annotated[Optional[int], Query(description="Kilde-ankernode (skiltets node)")] = None,
+    from_lon: Annotated[Optional[float], Query()] = None,
+    from_lat: Annotated[Optional[float], Query()] = None,
 ):
-    """Dijkstra walking distance from a sign site to a destination anchor along
-    the area's marked routes, with the per-area correction factor applied.
-    from-node = the site's anchor_node_id, or the nearest anchor to its point."""
+    """Dijkstra walking distance to a destination anchor over the cross-area
+    DNT-route graph, with the per-area correction factor applied. Source is
+    `from_anchor` (the signpost's node) or, for point sites without an anchor,
+    the nearest anchor to (from_lon, from_lat). Returns distance + the route
+    sequence traversed (e.g. ["bre1","bre3"]) so the UI can show "via …".
+    Works for proposed signs too — no persisted sign_site_id needed."""
     with op_db_connection() as opc:
-        site = get_sign_site_by_id(opc, sign_site_id)
-        if not site:
-            raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found")
-        factor = get_distance_correction_factor(opc, area)
+        factor = get_distance_correction_factor(opc, area_code)
     with db_connection() as rc:
-        from_node = site.get("anchor_node_id") or nearest_anchor_node(rc, site.get("lon"), site.get("lat"))
-        result = shortest_path_distance(rc, area, from_node, anchor_node_id)
+        from_node = from_anchor if from_anchor is not None else nearest_anchor_node(rc, from_lon, from_lat)
+        result = shortest_path_distance(rc, area_code, from_node, to_anchor)
     if result is None:
-        return {"found": False, "from_node": from_node, "distance_meters": None}
+        return {"found": False, "from_node": from_node, "distance_meters": None, "routes": []}
     raw = result["distance_m"]
     return {
         "found": True,
