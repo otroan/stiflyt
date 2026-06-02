@@ -81,8 +81,13 @@ from services.operational_store import (
     reject_sign_candidate,
     allocate_site_code,
     delete_sign_site,
+    search_endpoint_names,
+    get_distance_correction_factor,
 )
-from services.signs import get_signs_for_route, get_signs_for_prefix, get_signs_for_bbox, build_sign_production_rows
+from services.signs import (
+    get_signs_for_route, get_signs_for_prefix, get_signs_for_bbox, build_sign_production_rows,
+    shortest_path_distance, nearest_anchor_node, search_anchor_nodes_by_navn, area_node_set,
+)
 from services.sign_candidates import get_sign_candidates_for_area, get_route_summary_for_area, get_area_stats
 from services._timing import format_server_timing
 from services import field_photos as fp_svc
@@ -3486,6 +3491,61 @@ async def patch_sign_destination_skilt(
             "distance_meters": row.get("distance_meters"),
             "updated_at": ua.isoformat() if ua is not None and hasattr(ua, "isoformat") else ua,
         },
+    }
+
+
+@router.get("/signs/area/{area_code}/anchors/search")
+async def search_anchors_endpoint(
+    area_code: str,
+    q: Annotated[str, Query(min_length=2, description="Navnesøk for ankerpunkt")],
+    limit: Annotated[int, Query(ge=1, le=50)] = 15,
+):
+    """Search named anchor nodes in an area for picking a "through"-sign
+    destination. Combines validated endpoint names (ops.endpoint_names) with
+    anchor_nodes.navn. Returns [{anchor_node_id, name, lon, lat, source}]."""
+    with op_db_connection() as opc:
+        named = search_endpoint_names(opc, q, area_prefix=area_code, limit=limit * 3)
+    with db_connection() as rc:
+        navn_hits = search_anchor_nodes_by_navn(rc, q, limit=limit * 3)
+        routable = area_node_set(rc, area_code)
+    merged: Dict[int, Dict] = {}
+    for r in named:
+        merged[r["anchor_node_id"]] = {**r, "source": "endpoint_name"}
+    for r in navn_hits:
+        merged.setdefault(r["anchor_node_id"], {**r, "source": "anchor_navn"})
+    # Only routable anchors (present in the area's link graph) can be a
+    # through-destination — drops same-name duplicates that aren't graph nodes.
+    anchors = [a for a in merged.values() if a["anchor_node_id"] in routable]
+    return {"anchors": anchors[:limit]}
+
+
+@router.get("/signs/sites/{sign_site_id}/distance-to/{anchor_node_id}")
+async def sign_site_distance_to_anchor(
+    sign_site_id: int,
+    anchor_node_id: int,
+    area: Annotated[str, Query(description="Områdekode (rutenummer-prefiks), f.eks. 'bre'")],
+):
+    """Dijkstra walking distance from a sign site to a destination anchor along
+    the area's marked routes, with the per-area correction factor applied.
+    from-node = the site's anchor_node_id, or the nearest anchor to its point."""
+    with op_db_connection() as opc:
+        site = get_sign_site_by_id(opc, sign_site_id)
+        if not site:
+            raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found")
+        factor = get_distance_correction_factor(opc, area)
+    with db_connection() as rc:
+        from_node = site.get("anchor_node_id") or nearest_anchor_node(rc, site.get("lon"), site.get("lat"))
+        result = shortest_path_distance(rc, area, from_node, anchor_node_id)
+    if result is None:
+        return {"found": False, "from_node": from_node, "distance_meters": None}
+    raw = result["distance_m"]
+    return {
+        "found": True,
+        "from_node": from_node,
+        "raw_meters": raw,
+        "correction_factor": factor,
+        "distance_meters": raw * factor,
+        "routes": result["routes"],
     }
 
 

@@ -1,6 +1,7 @@
 """Signs report computation based on topology and anchor names."""
 from __future__ import annotations
 
+import heapq
 from typing import Dict, List, Optional, Tuple, Any
 
 from psycopg.rows import dict_row
@@ -202,8 +203,217 @@ def _calculate_route_distance(
         for neighbor, link_length in route_adjacency.get(current_node, []):
             if neighbor not in visited:
                 queue.append((neighbor, current_dist + link_length))
-    
+
     return None
+
+
+def _build_edge_graph(
+    links: List[Dict[str, Any]],
+) -> Dict[int, List[Tuple[int, float, Optional[int], List[str]]]]:
+    """Adjacency that keeps edge attributes (length, link_id, rutenummer_list)
+    so a Dijkstra path can report which links/routes it traverses."""
+    adjacency: Dict[int, List[Tuple[int, float, Optional[int], List[str]]]] = {}
+    for link in links:
+        a_node = link.get("a_node")
+        b_node = link.get("b_node")
+        if a_node is None or b_node is None:
+            continue
+        try:
+            a_node = int(a_node)
+            b_node = int(b_node)
+        except (TypeError, ValueError):
+            continue
+        length = link.get("length_m")
+        if length is None:
+            length = link.get("length_meters")
+        length_val = float(length) if length is not None else 0.0
+        link_id = link.get("link_id")
+        routes = [r for r in (link.get("rutenummer_list") or []) if r]
+        adjacency.setdefault(a_node, []).append((b_node, length_val, link_id, routes))
+        adjacency.setdefault(b_node, []).append((a_node, length_val, link_id, routes))
+    return adjacency
+
+
+def shortest_path_distance(
+    conn,
+    area_prefix: str,
+    from_node: Optional[int],
+    to_node: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """Dijkstra walking path between two anchor nodes over the area's
+    *marked-route* link graph (links whose rutenummer_list starts with
+    `area_prefix`). Returns {distance_m, node_path, link_ids, routes} where
+    `routes` is the ordered distinct rutenumre traversed (so the caller can
+    show "via bre1, bre3"), or None if either node is absent or no path exists.
+    The caller applies the per-area correction factor. Used for "through" signs
+    whose destination lies beyond a single route's endpoint."""
+    if from_node is None or to_node is None:
+        return None
+    try:
+        from_node = int(from_node)
+        to_node = int(to_node)
+    except (TypeError, ValueError):
+        return None
+
+    adjacency = _build_edge_graph(_get_links_for_prefix(conn, area_prefix))
+    if from_node not in adjacency or to_node not in adjacency:
+        return None
+    if from_node == to_node:
+        return {"distance_m": 0.0, "node_path": [from_node], "link_ids": [], "routes": []}
+
+    best: Dict[int, float] = {from_node: 0.0}
+    # came_from[node] = (prev_node, link_id, routes_on_that_edge)
+    came_from: Dict[int, Tuple[int, Optional[int], List[str]]] = {}
+    pq: List[Tuple[float, int]] = [(0.0, from_node)]
+    visited: set = set()
+    found = False
+    while pq:
+        dist, node = heapq.heappop(pq)
+        if node in visited:
+            continue
+        visited.add(node)
+        if node == to_node:
+            found = True
+            break
+        for neighbor, weight, link_id, routes in adjacency.get(node, []):
+            nd = dist + weight
+            if nd < best.get(neighbor, float("inf")):
+                best[neighbor] = nd
+                came_from[neighbor] = (node, link_id, routes)
+                heapq.heappush(pq, (nd, neighbor))
+    if not found:
+        return None
+
+    # Reconstruct path from to_node back to from_node.
+    node_path: List[int] = [to_node]
+    link_ids: List[int] = []
+    edge_routes: List[List[str]] = []
+    cur = to_node
+    while cur != from_node:
+        prev, link_id, routes = came_from[cur]
+        if link_id is not None:
+            link_ids.append(link_id)
+        edge_routes.append(routes)
+        node_path.append(prev)
+        cur = prev
+    node_path.reverse()
+    link_ids.reverse()
+    edge_routes.reverse()
+
+    # Label the path with the FEWEST routes that cover it continuously. Each
+    # link is shared by many routes (hubs like Nørdstedalseter), so a flat
+    # "distinct routes" dump is noisy (bre1, jot48, bre3, bre4, bre6, …). Prefer
+    # the area's own routes and, at each step, pick the route that stays on the
+    # path for the longest consecutive run — yielding e.g. ["bre1", "bre3"].
+    def _area_routes(routes: List[str]) -> List[str]:
+        scoped = [r for r in routes if r.startswith(area_prefix)]
+        return scoped or routes  # fall back to foreign routes if no area route on this link
+    routes_in_order: List[str] = []
+    i = 0
+    n = len(edge_routes)
+    while i < n:
+        candidates = _area_routes(edge_routes[i])
+        best_route: Optional[str] = None
+        best_run = 0
+        for r in candidates:
+            run = 0
+            j = i
+            while j < n and r in edge_routes[j]:
+                run += 1
+                j += 1
+            if run > best_run:
+                best_run = run
+                best_route = r
+        if best_route is None:
+            i += 1
+            continue
+        if not routes_in_order or routes_in_order[-1] != best_route:
+            routes_in_order.append(best_route)
+        i += max(best_run, 1)
+
+    return {
+        "distance_m": best[to_node],
+        "node_path": node_path,
+        "link_ids": link_ids,
+        "routes": routes_in_order,
+    }
+
+
+def area_node_set(conn, area_prefix: str) -> set:
+    """Set of anchor node ids that appear in the area's marked-route link graph
+    — i.e. the nodes a "through" path can actually start or end at. Used to
+    filter anchor search to routable destinations."""
+    nodes: set = set()
+    for link in _get_links_for_prefix(conn, area_prefix):
+        for key in ("a_node", "b_node"):
+            v = link.get(key)
+            if v is not None:
+                try:
+                    nodes.add(int(v))
+                except (TypeError, ValueError):
+                    pass
+    return nodes
+
+
+def nearest_anchor_node(conn, lon: Optional[float], lat: Optional[float]) -> Optional[int]:
+    """node_id of the anchor node closest to a WGS84 point — the from-node
+    fallback for sign sites that have no anchor_node_id. `conn` is a
+    route-schema connection."""
+    if lon is None or lat is None:
+        return None
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+    schema_quoted = quote_identifier(ROUTE_SCHEMA)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT node_id
+            FROM {schema_quoted}.anchor_nodes
+            ORDER BY geom <-> ST_Transform(ST_SetSRID(ST_MakePoint(%s, %s), 4326), 25833)
+            LIMIT 1;
+            """,
+            (lon, lat),
+        )
+        row = cur.fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def search_anchor_nodes_by_navn(conn, query: str, limit: int = 15) -> List[Dict[str, Any]]:
+    """Anchor nodes whose `navn` matches `query` (route-schema source). Returns
+    [{anchor_node_id, name, lon, lat}]. Empty if the navn column is absent."""
+    q = (query or "").strip()
+    if len(q) < 2:
+        return []
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+    schema_quoted = quote_identifier(ROUTE_SCHEMA)
+    with conn.cursor() as check_cur:
+        check_cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = 'anchor_nodes' AND column_name = 'navn'
+            )
+            """,
+            (ROUTE_SCHEMA,),
+        )
+        if not check_cur.fetchone()[0]:
+            return []
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT node_id AS anchor_node_id,
+                   navn AS name,
+                   ST_X(ST_Transform(geom, 4326)) AS lon,
+                   ST_Y(ST_Transform(geom, 4326)) AS lat
+            FROM {schema_quoted}.anchor_nodes
+            WHERE navn ILIKE %s
+            ORDER BY navn
+            LIMIT %s;
+            """,
+            (f"%{q}%", limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 
 def _cumulative_km_along_route(

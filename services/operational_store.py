@@ -479,6 +479,54 @@ def upsert_endpoint_name(
         return dict(row) if row else {}
 
 
+def search_endpoint_names(
+    conn,
+    query: str,
+    area_prefix: Optional[str] = None,
+    limit: int = 15,
+) -> List[Dict]:
+    """Search validated endpoint names by name (ILIKE), for picking a "through"
+    sign destination. Returns distinct anchors [{anchor_node_id, name, lon,
+    lat}], optionally scoped to an area by rutenummer prefix. Anchors with
+    coordinates are preferred when the same anchor appears multiple times."""
+    ensure_operational_schema(conn)
+    q = (query or "").strip()
+    if len(q) < 2:
+        return []
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    prefix = f"{area_prefix}%" if area_prefix else None
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT anchor_node_id, name, anchor_lon AS lon, anchor_lat AS lat, rutenummer
+            FROM {schema_quoted}.endpoint_names
+            WHERE name ILIKE %s
+              AND (%s::text IS NULL OR rutenummer LIKE %s::text OR rutenummer IS NULL)
+            ORDER BY name, (anchor_lon IS NULL);
+            """,
+            (f"%{q}%", prefix, prefix),
+        )
+        rows = cur.fetchall()
+    seen: set = set()
+    out: List[Dict] = []
+    for r in rows:
+        aid = r["anchor_node_id"]
+        if aid in seen:
+            continue
+        seen.add(aid)
+        out.append({
+            "anchor_node_id": aid,
+            "name": r["name"],
+            "lon": float(r["lon"]) if r.get("lon") is not None else None,
+            "lat": float(r["lat"]) if r.get("lat") is not None else None,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 def get_endpoint_names_for_anchors(
     conn,
     anchor_node_ids: List[int],
