@@ -4,7 +4,7 @@ from urllib.parse import quote
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from pathlib import Path
 from api.routes import router
@@ -97,37 +97,17 @@ app.include_router(
     dependencies=[Depends(require_user_or_api_key)],
 )
 
-# Serve frontend static files
-frontend_path = Path(__file__).parent / "frontend"
-if frontend_path.exists():
-    # Mount static files directory for JS, CSS, etc.
-    app.mount("/static", StaticFiles(directory=str(frontend_path)), name="static")
-    # Also mount js directory directly for easier access
-    js_path = frontend_path / "js"
-    if js_path.exists():
-        app.mount("/js", StaticFiles(directory=str(js_path)), name="js")
-    # Mount images directory for easier access
-    images_path = frontend_path / "images"
-    if images_path.exists():
-        app.mount("/images", StaticFiles(directory=str(images_path)), name="images")
-
-    @app.get("/")
-    async def serve_frontend():
-        """Serve frontend index.html."""
-        index_path = frontend_path / "index.html"
-        if index_path.exists():
-            return FileResponse(str(index_path))
-        return {"message": "Stiflyt Route API", "version": "0.1.0", "docs": "/docs"}
-
-    @app.get("/routes.html")
-    async def serve_routes_page():
-        """Serve frontend routes.html."""
-        routes_path = frontend_path / "routes.html"
-        if routes_path.exists():
-            return FileResponse(str(routes_path))
-        raise HTTPException(status_code=404, detail="routes.html not found")
-
-    # debug.html route removed - debug functionality no longer used
+# The legacy vanilla frontend (formerly served at `/`, `/routes.html`, with
+# /static //js //images mounts) was retired: every working feature lives in
+# signs_app at /skilt/ (route inspection/validation, owners-by-point/route,
+# Excel export, place search), and its routes.html segment-editing UI was only
+# ever stubs ("backend API må implementeres"). Redirect the old root there.
+# Server-rendered endpoints under /api/v1 (e.g. the shareable rutekort `/kort`
+# pages) are self-contained and unaffected.
+@app.get("/")
+async def root_redirect():
+    """Send the legacy root to the signs_app."""
+    return RedirectResponse(url="/skilt/", status_code=307)
 
 # --- signs_app (Breheimen Skiltverktøy) served at /skilt/ ---
 # Built by `make signs-build` (or by scripts/deploy.sh in production). Vite
