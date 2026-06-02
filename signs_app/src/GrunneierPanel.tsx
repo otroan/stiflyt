@@ -1,5 +1,5 @@
 import { ActionIcon, Alert, Badge, Button, Card, Code, Group, Loader, SegmentedControl, Stack, Text, Title, Tooltip } from "@mantine/core";
-import { IconAlertTriangle, IconHomeDollar, IconInfoCircle, IconMapPin, IconRoute, IconUsers, IconX } from "@tabler/icons-react";
+import { IconAlertTriangle, IconFileTypeXls, IconHomeDollar, IconInfoCircle, IconMapPin, IconRoute, IconUsers, IconX } from "@tabler/icons-react";
 import type { GeometryOwnerItem, PointMatrikkelResponse } from "./types";
 
 interface Props {
@@ -20,6 +20,8 @@ interface Props {
   onClearRoutes: () => void;
   /** Hover an owner row -> spotlight its segment on the map (null on leave). */
   onHoverMatrikkel: (geometry: GeoJSON.Geometry | null) => void;
+  onExportRouteOwners: () => void;
+  exporting: boolean;
 }
 
 /** Grunneier sidebar — Phases 2 + 3.
@@ -46,6 +48,8 @@ export default function GrunneierPanel({
   onFetchRouteOwners,
   onClearRoutes,
   onHoverMatrikkel,
+  onExportRouteOwners,
+  exporting,
 }: Props) {
   return (
     <Stack gap="md" p="md">
@@ -85,6 +89,8 @@ export default function GrunneierPanel({
           onFetch={onFetchRouteOwners}
           onClear={onClearRoutes}
           onHoverMatrikkel={onHoverMatrikkel}
+          onExport={onExportRouteOwners}
+          exporting={exporting}
         />
       )}
     </Stack>
@@ -126,6 +132,8 @@ function RuterMode({
   onFetch,
   onClear,
   onHoverMatrikkel,
+  onExport,
+  exporting,
 }: {
   selectedRutenumre: string[];
   routeOwners: { items: GeometryOwnerItem[]; totalKm: number; routeCount: number; errorCount: number } | null;
@@ -134,6 +142,8 @@ function RuterMode({
   onFetch: () => void;
   onClear: () => void;
   onHoverMatrikkel: (geometry: GeoJSON.Geometry | null) => void;
+  onExport: () => void;
+  exporting: boolean;
 }) {
   const count = selectedRutenumre.length;
   return (
@@ -177,10 +187,24 @@ function RuterMode({
 
       {routeOwners && (
         <Stack gap="sm">
-          <Text size="xs" c="dimmed">
-            {routeOwners.items.length} matrikkelenheter · {routeOwners.totalKm.toFixed(2)} km
-            {routeOwners.errorCount > 0 ? ` · ${routeOwners.errorCount} rute(r) feilet` : ""}
-          </Text>
+          <Group justify="space-between" wrap="nowrap">
+            <Text size="xs" c="dimmed">
+              {routeOwners.items.length} matrikkelenheter · {routeOwners.totalKm.toFixed(2)} km
+              {routeOwners.errorCount > 0 ? ` · ${routeOwners.errorCount} rute(r) feilet` : ""}
+            </Text>
+            {routeOwners.items.length > 0 && (
+              <Button
+                size="compact-xs"
+                variant="light"
+                color="teal"
+                leftSection={<IconFileTypeXls size={14} />}
+                loading={exporting}
+                onClick={onExport}
+              >
+                Excel
+              </Button>
+            )}
+          </Group>
           {routeOwners.items.length === 0 ? (
             <Text size="sm" c="dimmed">Ingen matrikkelenheter funnet langs de valgte rutene.</Text>
           ) : (

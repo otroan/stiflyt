@@ -165,7 +165,6 @@ def get_optional_user(credentials: Optional[HTTPBasicCredentials] = Depends(HTTP
 @router.post("/owners.xlsx")
 async def download_owners_excel(
     request: ExcelReportRequest,
-    user=Depends(require_shared_login),
     _: Dict = Depends(require_feature("grunneier")),
 ):
     """
@@ -176,7 +175,9 @@ async def download_owners_excel(
     - Selected links (send link_ids and get matrikkelenhet_vector first)
     - Any custom geometry
 
-    Requires authentication.
+    Access is gated by the `grunneier` feature flag (OAuth session). The legacy
+    require_shared_login (HTTP Basic) was dropped — the signs_app OAuth client
+    never sends Basic credentials, so it always 401'd.
     """
     try:
         # Convert matrikkelenhet_vector items to dict format if needed

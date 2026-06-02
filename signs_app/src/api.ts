@@ -10,6 +10,7 @@ import type {
   GpxComparison,
   GpxTrack,
   GpxTracksResponse,
+  GeometryOwnerItem,
   GeometryOwnerResponse,
   LinkBridgesResponse,
   LinkExclusionsResponse,
@@ -144,14 +145,45 @@ export const api = {
       body: JSON.stringify({ lat, lon }),
     }),
 
-  /** Property owners along a single LineString geometry (WGS84 coordinates).
-   *  Gated server-side by the `grunneier` feature flag. Callers batch this
-   *  per selected link and aggregate the matrikkelenhet vectors client-side. */
+  /** Property owners along a single geometry (LineString or MultiLineString,
+   *  WGS84). Gated server-side by the `grunneier` feature flag. */
   geometryOwners: (geometry: GeoJSON.Geometry) =>
     jsonFetch<GeometryOwnerResponse>(`/geometry/owners`, {
       method: "POST",
       body: JSON.stringify({ geometry }),
     }),
+
+  /** Build + download an owner-list Excel from a matrikkelenhet vector. The
+   *  items come straight from geometryOwners() (they already match the server
+   *  MatrikkelenhetItem shape); the backend re-fetches owner contact info and
+   *  raises 400 if the Matrikkel API errors. Triggers a browser download. */
+  downloadOwnersExcel: async (
+    items: GeometryOwnerItem[],
+    metadata?: Record<string, unknown>,
+    title?: string,
+  ) => {
+    const res = await fetchWithAuth(`${BASE}/owners.xlsx`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-User": xUser() },
+      body: JSON.stringify({ matrikkelenhet_vector: items, metadata, title }),
+    });
+    if (!res.ok) {
+      // 400 carries a human-readable Matrikkel error summary in `detail`.
+      const text = await res.text().catch(() => "");
+      let detail = text;
+      try { detail = JSON.parse(text).detail ?? text; } catch { /* not json */ }
+      throw new Error(detail || `API ${res.status} owners.xlsx`);
+    }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    a.download = `eierliste_${date}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
+  },
 
   getCandidates: (area: string) => timedJsonFetch<CandidatesResponse>(`/signs/candidates/${area}`),
 

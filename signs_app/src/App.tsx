@@ -346,6 +346,23 @@ export default function App() {
     setRouteOwnersError(null);
   };
 
+  const [routeOwnersExporting, setRouteOwnersExporting] = useState(false);
+  const exportRouteOwners = async () => {
+    if (!routeOwners || routeOwners.items.length === 0) return;
+    setRouteOwnersExporting(true);
+    try {
+      await api.downloadOwnersExcel(
+        routeOwners.items,
+        { rutenummer: [...selectedRutenumre].join(", "), total_length_km: routeOwners.totalKm },
+        [...selectedRutenumre].join(", "),
+      );
+    } catch (e) {
+      notifyError(e, "Klarte ikke å lage Excel-rapport");
+    } finally {
+      setRouteOwnersExporting(false);
+    }
+  };
+
   const fetchRouteOwners = async () => {
     const rns = [...selectedRutenumre];
     if (rns.length === 0) return;
@@ -938,6 +955,8 @@ export default function App() {
               onFetchRouteOwners={fetchRouteOwners}
               onClearRoutes={clearRouteSelection}
               onHoverMatrikkel={setHighlightGeometry}
+              onExportRouteOwners={exportRouteOwners}
+              exporting={routeOwnersExporting}
             />
           </Tabs.Panel>
         )}
