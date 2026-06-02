@@ -14,12 +14,13 @@ import {
   Text,
   Title,
 } from "@mantine/core";
-import { IconAlertTriangle, IconCamera, IconDownload, IconInfoCircle, IconMapPin, IconRoute, IconRoute2 } from "@tabler/icons-react";
+import { IconAlertTriangle, IconCamera, IconDownload, IconHomeDollar, IconInfoCircle, IconMapPin, IconRoute, IconRoute2 } from "@tabler/icons-react";
 import { api } from "./api";
 import type { CandidatesResponse, FieldPhoto, GpxTrack, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
 import SiteEditor from "./SiteEditor";
 import AreaReport from "./AreaReport";
+import GrunneierPanel from "./GrunneierPanel";
 import PhotoPanel, { PhotoLightbox } from "./PhotoPanel";
 import FloatingToolbar from "./FloatingToolbar";
 import ExportTab from "./ExportTab";
@@ -29,7 +30,7 @@ import GpxPanel from "./GpxPanel";
 import { notifyError } from "./notify";
 import { notifications } from "@mantine/notifications";
 
-type SidebarTab = "sites" | "rute" | "kvalitet" | "photos" | "spor" | "export" | "about";
+type SidebarTab = "sites" | "rute" | "kvalitet" | "photos" | "spor" | "export" | "grunneier" | "about";
 
 const LOGIN_ERROR_MESSAGES: Record<string, string> = {
   not_allowed: "E-postadressen din står ikke i tilgangslisten. Kontakt en administrator.",
@@ -687,6 +688,11 @@ export default function App() {
           >
             Eksport
           </Tabs.Tab>
+          {me?.features?.includes("grunneier") && (
+            <Tabs.Tab value="grunneier" leftSection={<IconHomeDollar size={14} />}>
+              Grunneier
+            </Tabs.Tab>
+          )}
           <Tabs.Tab value="about" leftSection={<IconInfoCircle size={14} />}>
             Om
           </Tabs.Tab>
@@ -788,6 +794,12 @@ export default function App() {
             onClearSelection={clearPanelSelection}
           />
         </Tabs.Panel>
+
+        {me?.features?.includes("grunneier") && (
+          <Tabs.Panel value="grunneier" className="side-panel">
+            <GrunneierPanel />
+          </Tabs.Panel>
+        )}
 
         <Tabs.Panel value="about" className="side-panel">
           <AreaReport

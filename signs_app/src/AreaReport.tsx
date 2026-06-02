@@ -131,7 +131,6 @@ function PanelBreakdown({ candidates }: { candidates: CandidatesResponse | null 
 }
 
 function PerRouteTable({ rows, onSelectRoute }: { rows: PerRoute[]; onSelectRoute?: (rn: string) => void }) {
-  const [sortBy, setSortBy] = useState<"rute" | "lengde" | "skilt" | "paneler">("rute");
   const [query, setQuery] = useState("");
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -141,16 +140,10 @@ function PerRouteTable({ rows, onSelectRoute }: { rows: PerRoute[]; onSelectRout
       || (r.rutenavn ?? "").toLowerCase().includes(q),
     );
   }, [rows, query]);
-  const sorted = useMemo(() => {
-    const copy = [...filtered];
-    copy.sort((a, b) => {
-      if (sortBy === "lengde") return (b.length_km ?? 0) - (a.length_km ?? 0);
-      if (sortBy === "skilt") return b.n_sites - a.n_sites;
-      if (sortBy === "paneler") return b.n_panels - a.n_panels;
-      return a.rutenummer.localeCompare(b.rutenummer);
-    });
-    return copy;
-  }, [filtered, sortBy]);
+  const sorted = useMemo(
+    () => [...filtered].sort((a, b) => a.rutenummer.localeCompare(b.rutenummer, "nb")),
+    [filtered],
+  );
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (sorted.length > 0 && onSelectRoute) onSelectRoute(sorted[0].rutenummer);
@@ -174,11 +167,11 @@ function PerRouteTable({ rows, onSelectRoute }: { rows: PerRoute[]; onSelectRout
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead style={{ position: "sticky", top: 0, background: "#fafafa" }}>
             <tr>
-              <Th sort={sortBy} k="rute" onClick={() => setSortBy("rute")}>Rute</Th>
+              <th style={thStyle}>Rute</th>
               <th style={thStyle}>Navn</th>
-              <Th sort={sortBy} k="lengde" onClick={() => setSortBy("lengde")} align="right">km</Th>
-              <Th sort={sortBy} k="skilt" onClick={() => setSortBy("skilt")} align="right">Skilt</Th>
-              <Th sort={sortBy} k="paneler" onClick={() => setSortBy("paneler")} align="right">Paneler</Th>
+              <th style={{ ...thStyle, textAlign: "right" }}>km</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Skilt</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Paneler</th>
             </tr>
           </thead>
           <tbody>
@@ -218,32 +211,6 @@ function PerRouteTable({ rows, onSelectRoute }: { rows: PerRoute[]; onSelectRout
 
 const thStyle: React.CSSProperties = { textAlign: "left", padding: "6px 8px", fontWeight: 600, fontSize: 11, color: "#555" };
 const tdStyle: React.CSSProperties = { padding: "4px 8px" };
-
-function Th({
-  children, sort, k, onClick, align,
-}: {
-  children: React.ReactNode;
-  sort: string;
-  k: string;
-  onClick: () => void;
-  align?: "left" | "right";
-}) {
-  const active = sort === k;
-  return (
-    <th
-      onClick={onClick}
-      style={{
-        ...thStyle,
-        textAlign: align ?? "left",
-        cursor: "pointer",
-        color: active ? "#1a7fc4" : thStyle.color,
-        userSelect: "none",
-      }}
-    >
-      {children}{active ? " ↓" : ""}
-    </th>
-  );
-}
 
 interface AggResult {
   n_sites_accepted: number;
