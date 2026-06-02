@@ -65,24 +65,21 @@ make frontend
 **Or manually:**
 
 ```bash
-# Backend (serves frontend automatically)
+# Backend (serves the signs_app at /skilt/)
 export DB_USER=stiflyt_reader
 source venv/bin/activate
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
-# Frontend is available at http://localhost:8000/
+# App is available at http://localhost:8000/  (redirects to /skilt/)
 # API is available at http://localhost:8000/api/v1/routes/{rutenummer}
-
-# Alternative: Run frontend separately (in another terminal)
-cd frontend
-python3 -m http.server 8080
-# Then configure backend URL in frontend (click ⚙️ button)
+# Build the signs_app first with `make signs-build` so dist/ exists.
 ```
 
 **Makefile commands:**
 - `make help` - Show all available commands
 - `make backend` - Start FastAPI backend server (default port 8000)
-- `make frontend` - Start frontend HTTP server (default port 8080)
+- `make frontend` - Start the changeset-editor frontend (React/Vite, port 3000)
+- `make signs-build` - Build the signs_app (served by the backend at /skilt/)
 - `make install` - Install dependencies
 - `make install-dev` - Install with dev dependencies
 - `make test` - Run tests
