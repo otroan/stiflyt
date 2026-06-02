@@ -7,24 +7,28 @@ Flow:
     GET  /api/v1/auth/me       — return current user or 401
 
 Sessions are signed cookies via Starlette's SessionMiddleware (wired in main.py).
-The session stores ``{"user": {"email", "name", "picture"}}`` — no DB row needed.
+The session stores ``{"user": {"email", "name", "picture", "features"}}`` — no
+DB row needed. `features` is the sorted list of feature flags granted to this
+user (e.g. `["grunneier", "signs"]`), driven by `data/auth.yaml`.
 
 Any route under /api/v1/* that isn't this router uses the ``require_user``
 dependency to enforce a valid session; unauthenticated requests get 401, which
-the frontend handles by redirecting to /api/v1/auth/login.
+the frontend handles by redirecting to /api/v1/auth/login. Endpoints that
+require a specific feature attach ``Depends(require_feature("feature_name"))``
+in addition — those get 403 when the session lacks the feature.
 """
 from __future__ import annotations
 
 import hmac
 import logging
 import os
-from typing import Any, Dict
+from typing import Any, Callable, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse, JSONResponse
 from authlib.integrations.starlette_client import OAuthError
 
-from services.auth_config import get_oauth, is_email_allowed, oauth_redirect_uri
+from services.auth_config import features_for_email, get_oauth, is_email_allowed, oauth_redirect_uri
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +100,9 @@ async def callback(request: Request):
         "email": email,
         "name": userinfo.get("name") or email,
         "picture": userinfo.get("picture"),
+        # Sorted for deterministic shape — frontend can === compare for "did
+        # my permissions change since last load".
+        "features": sorted(features_for_email(email)),
     }
     return RedirectResponse(url=next_url, status_code=302)
 
@@ -111,6 +118,11 @@ async def me(request: Request):
     user = request.session.get("user")
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="not_authenticated")
+    # Hydrate features on the fly for sessions minted before the field
+    # existed — avoids forcing every active user to re-log after the rollout.
+    if "features" not in user:
+        user["features"] = sorted(features_for_email(user.get("email")))
+        request.session["user"] = user
     return user
 
 
@@ -127,6 +139,42 @@ def require_user(request: Request) -> Dict[str, Any]:
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="not_authenticated")
     return user
+
+
+def _session_features(user: Dict[str, Any]) -> List[str]:
+    """Pull features from the session, re-resolving from auth.yaml if the
+    session pre-dates the feature flag rollout."""
+    feats = user.get("features")
+    if feats is None:
+        feats = sorted(features_for_email(user.get("email")))
+    return feats
+
+
+def require_feature(feature: str) -> Callable[[Request], Dict[str, Any]]:
+    """FastAPI dependency factory: 403 unless the session user has `feature`.
+
+    Reads the session directly (rather than `Depends(require_user)` inside
+    it) so dependency_overrides in tests on require_user still take effect
+    when the route also lists `Depends(require_feature(...))`. The router-
+    level `Depends(require_user)` in main.py guarantees a session exists by
+    the time this runs in real requests — but we still raise 401 here as a
+    belt-and-braces so the dep is safe to use standalone.
+    """
+    def _dep(request: Request) -> Dict[str, Any]:
+        user = request.session.get("user")
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="not_authenticated",
+            )
+        if feature not in _session_features(user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"feature_required:{feature}",
+            )
+        return user
+
+    return _dep
 
 
 def require_user_or_api_key(request: Request) -> Dict[str, Any]:

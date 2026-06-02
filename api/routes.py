@@ -97,6 +97,7 @@ from services.database import db_connection, get_route_schema, get_teig_schema, 
 from services.excel_report import generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
 from services.point_matrikkel_service import get_matrikkelenhet_for_point, PointMatrikkelError
+from api.auth import require_feature
 import psycopg
 from psycopg.rows import dict_row
 
@@ -165,6 +166,7 @@ def get_optional_user(credentials: Optional[HTTPBasicCredentials] = Depends(HTTP
 async def download_owners_excel(
     request: ExcelReportRequest,
     user=Depends(require_shared_login),
+    _: Dict = Depends(require_feature("grunneier")),
 ):
     """
     Download Excel report with owners information from matrikkelenhet_vector.
@@ -224,7 +226,10 @@ async def download_owners_excel(
 
 
 @router.post("/geometry/owners", response_model=GeometryOwnerResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
-async def get_geometry_owners(request: GeometryOwnerRequest):
+async def get_geometry_owners(
+    request: GeometryOwnerRequest,
+    _: Dict = Depends(require_feature("grunneier")),
+):
     """
     Get property owners for a LineString geometry.
 
@@ -273,7 +278,8 @@ async def get_geometry_owners(request: GeometryOwnerRequest):
 @router.post("/point/matrikkelenhet", response_model=PointMatrikkelResponse, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def get_point_matrikkelenhet(
     request: PointMatrikkelRequest,
-    user: Optional[Dict] = Depends(get_optional_user)
+    user: Optional[Dict] = Depends(get_optional_user),
+    _: Dict = Depends(require_feature("grunneier")),
 ):
     """
     Get matrikkelenhet (teig polygon) for a point coordinate.

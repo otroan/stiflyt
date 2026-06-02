@@ -5,6 +5,10 @@ export interface SessionUser {
   email: string;
   name: string;
   picture: string | null;
+  /** Feature flags granted to this user (e.g. "signs", "grunneier"). Drives
+   *  conditional UI — the Grunneier tab/section only mounts when this list
+   *  contains "grunneier". Sorted server-side for deterministic equality. */
+  features: string[];
 }
 
 export interface SignPanel {

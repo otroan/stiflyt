@@ -1,12 +1,33 @@
-# Email allow-list for the signs tool.
+# Auth allow-list + per-user feature flags.
 #
-# Anyone signing in with Google must have their email listed here. Users
-# whose Google email isn't in the list get a 403 after the OAuth callback —
-# the session is never set.
+# Anyone signing in with Google must appear in this file. Their feature list
+# decides which app surfaces they can use:
+#   - "signs"     — the OK route-maintenance tool at /skilt/ (default for new
+#                   users). Grants access to every /api/v1/* endpoint that
+#                   isn't explicitly feature-gated.
+#   - "grunneier" — the landowner / matrikkel lookup tool. Required for the
+#                   /owners.xlsx, /geometry/owners, /point/matrikkelenhet
+#                   endpoints.
 #
-# Edit this file and restart the API to apply.
+# Two YAML shapes are accepted (and can co-exist):
+#
+#   allow:                     # signs-only shortcut
+#     - alice@example.com
+#
+#   users:                     # per-user feature lists
+#     - email: bob@example.com
+#       features: [signs, grunneier]
+#
+# Users with no features key default to [signs]. Empty features ([]) means
+# the user can sign in but every gated endpoint will 403 — useful for
+# revoking access without losing their session history.
+#
+# Edit this file and restart stiflyt-backend.service to apply.
 
-allow:
-  - otroan@employees.org
-  - ichiroumakino@gmail.com
-  - andrea.vestvik@gmail.com
+users:
+  - email: otroan@employees.org
+    features: [signs, grunneier]
+  - email: ichiroumakino@gmail.com
+    features: [signs]
+  - email: andrea.vestvik@gmail.com
+    features: [signs]
