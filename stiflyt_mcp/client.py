@@ -968,65 +968,8 @@ class StiflytClient:
     def get_point_matrikkelenhet(self, lat: float, lon: float) -> Any:
         return self.post("/api/v1/point/matrikkelenhet", json_body={"lat": lat, "lon": lon})
 
-    # =====================================================================
-    # Changesets
-    # =====================================================================
-
-    def list_changesets(self, limit: int = 100, offset: int = 0) -> Any:
-        return self.get("/api/changesets", params={"limit": limit, "offset": offset})
-
-    def create_changeset(
-        self,
-        title: str,
-        description: Optional[str] = None,
-        area: Optional[str] = None,
-        linked_issue_url: Optional[str] = None,
-        base_snapshot: str = "default",
-        x_user: Optional[str] = None,
-    ) -> Any:
-        body: dict = {"title": title, "base_snapshot": base_snapshot}
-        if description is not None:
-            body["description"] = description
-        if area is not None:
-            body["area"] = area
-        if linked_issue_url is not None:
-            body["linked_issue_url"] = linked_issue_url
-        return self.post("/api/changesets", json_body=body, x_user=x_user)
-
-    def get_changeset(self, changeset_id: str) -> Any:
-        return self.get(f"/api/changesets/{changeset_id}")
-
-    def add_changeset_event(self, changeset_id: str, event: dict, x_user: Optional[str] = None) -> Any:
-        return self.post(
-            f"/api/changesets/{changeset_id}/events",
-            json_body={"event": event},
-            x_user=x_user,
-        )
-
-    def get_changeset_events(self, changeset_id: str) -> Any:
-        return self.get(f"/api/changesets/{changeset_id}/events")
-
-    def validate_changeset(self, changeset_id: str) -> Any:
-        return self.post(f"/api/changesets/{changeset_id}/validate")
-
-    def get_changeset_diff_geojson(self, changeset_id: str) -> Any:
-        return self.get(f"/api/changesets/{changeset_id}/diff.geojson")
-
-    def get_changeset_effective_geojson(self, changeset_id: str) -> Any:
-        return self.get(f"/api/changesets/{changeset_id}/effective.geojson")
-
-    def get_changeset_artifact(self, changeset_id: str, filename: str) -> Any:
-        return self.get(f"/api/changesets/{changeset_id}/artifacts/{filename}")
-
-    def publish_changeset(self, changeset_id: str, x_user: Optional[str] = None) -> Any:
-        return self.post(f"/api/changesets/{changeset_id}/publish", x_user=x_user)
-
-    # =====================================================================
-    # Editor
-    # =====================================================================
-
-    def get_snap_targets(self, bbox: str) -> Any:
-        return self.get("/api/snap-targets", params={"bbox": bbox})
+    # Changeset + snap client methods were retired (workflow moves to
+    # signs_app). The changeset backend stays; the MCP no longer calls it.
 
     # =====================================================================
     # Session / health

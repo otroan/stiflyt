@@ -778,87 +778,10 @@ def create_app() -> FastMCP:
         """Matrikkelenhet (parcel) + optional owner info for a WGS84 point."""
         return _json_result(c().get_point_matrikkelenhet(lat, lon))
 
-    # =====================================================================
-    # Changesets
-    # =====================================================================
-
-    @mcp.tool()
-    def list_changesets(limit: int = 100, offset: int = 0) -> str:
-        """List all changesets."""
-        return _json_result(c().list_changesets(limit=limit, offset=offset))
-
-    @mcp.tool()
-    def create_changeset(
-        title: str,
-        description: Optional[str] = None,
-        area: Optional[str] = None,
-        linked_issue_url: Optional[str] = None,
-        base_snapshot: str = "default",
-        x_user: Optional[str] = None,
-    ) -> str:
-        """Create a new changeset."""
-        return _json_result(
-            c().create_changeset(
-                title=title,
-                description=description,
-                area=area,
-                linked_issue_url=linked_issue_url,
-                base_snapshot=base_snapshot,
-                x_user=x_user,
-            )
-        )
-
-    @mcp.tool()
-    def get_changeset(changeset_id: str) -> str:
-        """Get a changeset by ID."""
-        return _json_result(c().get_changeset(changeset_id))
-
-    @mcp.tool()
-    def add_changeset_event(changeset_id: str, event: str, x_user: Optional[str] = None) -> str:
-        """Add an event to a changeset. event: JSON object (type, target, patch/geometry/etc)."""
-        try:
-            ev = json.loads(event)
-        except json.JSONDecodeError as e:
-            return _json_result({"error": "invalid_json", "detail": str(e)})
-        return _json_result(c().add_changeset_event(changeset_id, ev, x_user=x_user))
-
-    @mcp.tool()
-    def get_changeset_events(changeset_id: str) -> str:
-        """All events for a changeset."""
-        return _json_result(c().get_changeset_events(changeset_id))
-
-    @mcp.tool()
-    def validate_changeset(changeset_id: str) -> str:
-        """Validate a changeset."""
-        return _json_result(c().validate_changeset(changeset_id))
-
-    @mcp.tool()
-    def get_changeset_diff_geojson(changeset_id: str) -> str:
-        """Diff GeoJSON for a changeset."""
-        return _json_result(c().get_changeset_diff_geojson(changeset_id))
-
-    @mcp.tool()
-    def get_changeset_effective_geojson(changeset_id: str) -> str:
-        """Effective GeoJSON (base + changes) for a changeset."""
-        return _json_result(c().get_changeset_effective_geojson(changeset_id))
-
-    @mcp.tool()
-    def get_changeset_artifact(changeset_id: str, filename: str) -> str:
-        """Download a changeset artifact (JSON only). filename must end with .json."""
-        return _json_result(c().get_changeset_artifact(changeset_id, filename))
-
-    @mcp.tool()
-    def publish_changeset(changeset_id: str, x_user: Optional[str] = None) -> str:
-        """Publish a changeset (send to review)."""
-        return _json_result(c().publish_changeset(changeset_id, x_user=x_user))
-
-    # =====================================================================
-    # Editor
-    # =====================================================================
-
-    @mcp.tool()
-    def get_snap_targets(bbox: str) -> str:
-        """Snap targets for a bounding box (min_lon,min_lat,max_lon,max_lat)."""
-        return _json_result(c().get_snap_targets(bbox))
+    # Changeset + geometry-editing (snap) tools were retired from the MCP: that
+    # workflow is moving into signs_app (changesets created there and
+    # communicated to Kartverket). The changeset backend (api/changeset.py +
+    # services/changeset) stays as the foundation for that; the MCP no longer
+    # drives it.
 
     return mcp

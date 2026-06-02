@@ -151,15 +151,9 @@ The tool surface mirrors the backend endpoints used by `signs_app`.
 ### Geometry / matrikkel
 - `get_geometry_owners`, `get_point_matrikkelenhet`
 
-### Changesets
-- `list_changesets`, `create_changeset`, `get_changeset`,
-  `add_changeset_event`, `get_changeset_events`,
-  `validate_changeset`, `get_changeset_diff_geojson`,
-  `get_changeset_effective_geojson`, `get_changeset_artifact`,
-  `publish_changeset`
-
-### Editor
-- `get_snap_targets`
+> Changeset and geometry-editing (snap) tools were retired from the MCP — that
+> workflow is moving into signs_app. The changeset backend still exists; the
+> MCP just no longer drives it.
 
 ## Testing
 
