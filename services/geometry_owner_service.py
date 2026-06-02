@@ -40,13 +40,30 @@ def get_owners_for_linestring(geometry_geojson):
     if not isinstance(geometry_geojson, dict):
         raise GeometryOwnerError("Geometry must be a GeoJSON object")
 
+    # Accept both LineString and MultiLineString. Routes are naturally
+    # MultiLineString (several disjoint segments); the downstream helpers
+    # (get_route_length, find_matrikkelenhet_intersections via ST_Intersection,
+    # calculate_offsets via ST_LineMerge) all handle MultiLineString, and
+    # PostGIS computes the per-teig intersection correctly per part. Flattening
+    # to a single LineString client-side would stitch non-contiguous parts with
+    # spurious straight jumps and corrupt both the owner match and the segment
+    # geometry, so we keep the multi-part geometry intact here.
     geom_type = geometry_geojson.get('type')
-    if geom_type != 'LineString':
-        raise GeometryOwnerError(f"Only LineString geometry is supported, got {geom_type}")
+    if geom_type not in ('LineString', 'MultiLineString'):
+        raise GeometryOwnerError(
+            f"Only LineString or MultiLineString geometry is supported, got {geom_type}"
+        )
 
     coordinates = geometry_geojson.get('coordinates')
-    if not coordinates or not isinstance(coordinates, list) or len(coordinates) < 2:
-        raise GeometryOwnerError("LineString must have at least 2 coordinates")
+    if not coordinates or not isinstance(coordinates, list):
+        raise GeometryOwnerError("Geometry must have coordinates")
+    # LineString: >= 2 positions. MultiLineString: >= 1 line, each >= 2 positions.
+    if geom_type == 'LineString':
+        if len(coordinates) < 2:
+            raise GeometryOwnerError("LineString must have at least 2 coordinates")
+    else:
+        if not any(isinstance(line, list) and len(line) >= 2 for line in coordinates):
+            raise GeometryOwnerError("MultiLineString must have at least one line with 2 coordinates")
 
     with db_connection() as conn:
         try:

@@ -346,43 +346,23 @@ export default function App() {
     setRouteOwnersError(null);
   };
 
-  // Flatten a route geometry to a single LineString — /geometry/owners only
-  // accepts LineString, and route geometry is often MultiLineString. Stitch
-  // parts end-to-end, inserting the next part's first point only when there's
-  // an actual gap so we don't duplicate a shared vertex.
-  const toLineString = (g: GeoJSON.Geometry): GeoJSON.LineString | null => {
-    if (g.type === "LineString") {
-      return g.coordinates.length >= 2 ? g : null;
-    }
-    if (g.type === "MultiLineString") {
-      const coords: GeoJSON.Position[] = [];
-      for (const part of g.coordinates) {
-        if (coords.length === 0) { coords.push(...part); continue; }
-        const last = coords[coords.length - 1];
-        const first = part[0];
-        const gap = Math.hypot(last[0] - first[0], last[1] - first[1]);
-        coords.push(...(gap > 0.0001 ? part : part.slice(1)));
-      }
-      return coords.length >= 2 ? { type: "LineString", coordinates: coords } : null;
-    }
-    return null;
-  };
-
   const fetchRouteOwners = async () => {
     const rns = [...selectedRutenumre];
     if (rns.length === 0) return;
     setRouteOwnersLoading(true);
     setRouteOwnersError(null);
     // Resolve each rutenummer to its rendered geometry (marked first, else the
-    // unmarked fallback) and flatten to a LineString.
-    const lines: GeoJSON.LineString[] = [];
+    // unmarked fallback) and send it as-is. Routes are MultiLineString; the
+    // backend handles that natively, so we must NOT flatten to a LineString —
+    // stitching disjoint parts would draw spurious straight jumps and corrupt
+    // both the owner match and the per-parcel highlight segment.
+    const geoms: GeoJSON.Geometry[] = [];
     for (const rn of rns) {
       const r = routes.find((x) => x.rutenummer === rn);
       const g = (r?.route_geometry ?? r?.route_geometry_unmarked) as GeoJSON.Geometry | null | undefined;
-      const ls = g ? toLineString(g) : null;
-      if (ls) lines.push(ls);
+      if (g && (g.type === "LineString" || g.type === "MultiLineString")) geoms.push(g);
     }
-    const results = await Promise.allSettled(lines.map((ls) => api.geometryOwners(ls)));
+    const results = await Promise.allSettled(geoms.map((g) => api.geometryOwners(g)));
     const all: GeometryOwnerItem[] = [];
     let totalM = 0;
     let errorCount = 0;
