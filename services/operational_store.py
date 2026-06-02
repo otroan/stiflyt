@@ -1186,6 +1186,41 @@ def get_sign_site_destinations_bulk(conn, sign_site_ids: List[int]) -> Dict[int,
     return out
 
 
+def add_sign_site_destination(conn, sign_site_id: int, anchor_node_id: int) -> List[Dict]:
+    """Append one manual destination anchor to a sign site (idempotent). Used by
+    the "through"-sign feature — the candidates report renders each as an extra
+    blade with a Dijkstra-computed distance + route path. Returns the new list."""
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO {schema_quoted}.sign_site_destinations (sign_site_id, anchor_node_id, display_order)
+            VALUES (%s, %s, COALESCE(
+                (SELECT MAX(display_order) + 1 FROM {schema_quoted}.sign_site_destinations WHERE sign_site_id = %s), 0))
+            ON CONFLICT (sign_site_id, anchor_node_id) DO NOTHING;
+            """,
+            (sign_site_id, anchor_node_id, sign_site_id),
+        )
+    return get_sign_site_destinations(conn, sign_site_id)
+
+
+def remove_sign_site_destination(conn, sign_site_id: int, anchor_node_id: int) -> List[Dict]:
+    """Remove one manual destination anchor from a sign site. Returns the new list."""
+    ensure_operational_schema(conn)
+    if not validate_schema_name(OP_SCHEMA):
+        raise ValueError(f"Invalid OP_SCHEMA: {OP_SCHEMA}")
+    schema_quoted = quote_identifier(OP_SCHEMA)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM {schema_quoted}.sign_site_destinations WHERE sign_site_id = %s AND anchor_node_id = %s;",
+            (sign_site_id, anchor_node_id),
+        )
+    return get_sign_site_destinations(conn, sign_site_id)
+
+
 def set_sign_site_destinations(
     conn,
     sign_site_id: int,

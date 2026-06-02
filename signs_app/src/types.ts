@@ -115,6 +115,10 @@ export interface SignPanel {
   distance_km_displayed: number | null;
   color: SignColor;
   direction?: string | null;
+  /** Manually-added "through" destination (beyond this route's endpoint, maybe
+   *  cross-area). `via_routes` is the DNT-route path to it ("via bre1, bre3"). */
+  is_manual_through?: boolean;
+  via_routes?: string[];
 }
 
 export interface ForeignRouteGroup {

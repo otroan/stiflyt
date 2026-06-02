@@ -75,6 +75,8 @@ from services.operational_store import (
     get_sign_site_by_id,
     get_sign_site_destinations,
     set_sign_site_destinations,
+    add_sign_site_destination,
+    remove_sign_site_destination,
     update_sign_site,
     patch_sign_site_skilt,
     accept_sign_candidate,
@@ -3549,6 +3551,44 @@ async def through_distance_endpoint(
         "distance_meters": raw * factor,
         "routes": result["routes"],
     }
+
+
+@router.post("/signs/sites/{sign_site_id}/manual-destination")
+async def add_manual_destination_endpoint(
+    sign_site_id: int,
+    anchor_node_id: Annotated[int, Query(description="Destinasjons-ankernode")],
+    area: Annotated[str, Query(description="Områdekode, f.eks. 'bre'")],
+):
+    """Add a named anchor as a manual "through" destination on a sign site. It's
+    persisted in ops.sign_site_destinations; the candidates report renders it as
+    an extra blade with a Dijkstra distance + route path. Returns the computed
+    distance + via for immediate display. 422 if no DNT-route path exists."""
+    with op_db_connection() as opc:
+        site = get_sign_site_by_id(opc, sign_site_id)
+        if not site:
+            raise HTTPException(status_code=404, detail=f"Sign site {sign_site_id} not found")
+        factor = get_distance_correction_factor(opc, area)
+    with db_connection() as rc:
+        from_node = site.get("anchor_node_id") or nearest_anchor_node(rc, site.get("lon"), site.get("lat"))
+        result = shortest_path_distance(rc, area, from_node, anchor_node_id)
+    if result is None:
+        raise HTTPException(status_code=422, detail="Fant ingen rute langs DNT-rutene til dette ankerpunktet.")
+    with op_db_connection() as opc:
+        add_sign_site_destination(opc, sign_site_id, anchor_node_id)
+    return {
+        "sign_site_id": sign_site_id,
+        "anchor_node_id": anchor_node_id,
+        "distance_meters": result["distance_m"] * factor,
+        "routes": result["routes"],
+    }
+
+
+@router.delete("/signs/sites/{sign_site_id}/manual-destination/{anchor_node_id}", status_code=204)
+async def delete_manual_destination_endpoint(sign_site_id: int, anchor_node_id: int):
+    """Remove a manual through-destination from a sign site."""
+    with op_db_connection() as opc:
+        remove_sign_site_destination(opc, sign_site_id, anchor_node_id)
+    return Response(status_code=204)
 
 
 @router.post("/routes/{rutenummer}/signs/sites", response_model=SignSiteResponse, status_code=status.HTTP_201_CREATED)

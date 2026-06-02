@@ -32,10 +32,12 @@ from .operational_database import op_db_connection
 from .operational_store import (
     get_sign_sites_status_by_area_anchor,
     get_sign_site_skilt_full,
+    get_sign_site_destinations_bulk,
     get_endpoint_names_for_anchors,
     get_distance_correction_factor,
     DEFAULT_DISTANCE_CORRECTION,
 )
+from .signs import shortest_path_distance, nearest_anchor_node
 from .database import validate_schema_name, quote_identifier
 from ._timing import phase_timer
 from .area_routes import area_route_filter_sql, owner_area_for_rutenummer
@@ -900,6 +902,46 @@ def _panels_from_sign(sign: Dict[str, Any], correction_factor: float) -> List[Di
     return out
 
 
+def _manual_through_panels(
+    conn,
+    from_anchor: Optional[int],
+    dest_rows: List[Dict[str, Any]],
+    existing_anchor_ids: set,
+    dest_names: Dict[int, Dict],
+    correction_factor: float,
+    label_prefix: str,
+) -> List[Dict[str, Any]]:
+    """Extra "through"-sign blades for a site's manually-added destination
+    anchors (ops.sign_site_destinations). Distance + route path are computed on
+    the fly via Dijkstra over the cross-area DNT graph, so they stay current.
+    Skips destinations already covered by a topology panel or not reachable
+    along DNT routes."""
+    out: List[Dict[str, Any]] = []
+    if from_anchor is None or not dest_rows:
+        return out
+    for d in dest_rows:
+        aid = d.get("anchor_node_id")
+        if aid is None or aid in existing_anchor_ids:
+            continue
+        result = shortest_path_distance(conn, label_prefix, from_anchor, aid)
+        if not result:
+            continue
+        name = (dest_names.get(aid) or {}).get("name") or f"Node {aid}"
+        out.append({
+            "destination_name": name,
+            "destination_anchor_node_id": aid,
+            "route_numbers": list(result["routes"]),
+            "first_link_id": None,
+            "distance_m_db": result["distance_m"],
+            "distance_km_displayed": correct_distance_km(result["distance_m"], correction_factor),
+            "color": DEFAULT_PANEL_COLOR,
+            "direction": None,
+            "via_routes": list(result["routes"]),
+            "is_manual_through": True,
+        })
+    return out
+
+
 def _route_endpoints_bulk(conn, rutenummers: List[str]) -> Dict[str, Dict[str, Any]]:
     """Fast bulk: per-route first_a_node + last_b_node + length_m for many routes.
 
@@ -1550,6 +1592,14 @@ def get_sign_candidates_for_area(conn, area_code: str, *, timings: Optional[list
             # Also fetch overrides for manual sites
             manual_site_ids = [m["id"] for m in manual_sites]
             manual_overrides = get_sign_site_skilt_full(op_conn, manual_site_ids) if manual_site_ids else {}
+            # Manual "through" destinations (extra blades to a named anchor that
+            # may be beyond this route's endpoint / in another DNT area). Only a
+            # handful of sites have any, so the per-site Dijkstra at render is
+            # cheap (the DNT graph is process-cached).
+            _all_dest_site_ids = sign_site_ids + manual_site_ids
+            destinations_by_site = get_sign_site_destinations_bulk(op_conn, _all_dest_site_ids) if _all_dest_site_ids else {}
+            _dest_anchor_ids = sorted({d["anchor_node_id"] for rows in destinations_by_site.values() for d in rows})
+            dest_names = get_endpoint_names_for_anchors(op_conn, _dest_anchor_ids) if _dest_anchor_ids else {}
     sites_out: List[Dict[str, Any]] = []
     with phase_timer(_t, "anchor_sign_panels"):
         for sign in report.get("signs", []):
@@ -1566,6 +1616,12 @@ def get_sign_candidates_for_area(conn, area_code: str, *, timings: Optional[list
                 site_code = persisted_row.get("site_code")
                 site_overrides = overrides.get(sign_site_id, []) if sign_site_id is not None else []
                 panels = _apply_panel_overrides(panels, site_overrides, correction_factor)
+                dest_rows = destinations_by_site.get(sign_site_id) if sign_site_id is not None else None
+                if dest_rows:
+                    existing = {p.get("destination_anchor_node_id") for p in panels}
+                    panels = panels + _manual_through_panels(
+                        conn, anchor_id, dest_rows, existing, dest_names, correction_factor, area_code,
+                    )
             else:
                 status = "proposed"
                 sign_site_id = sign.get("sign_site_id")
@@ -1658,6 +1714,15 @@ def get_sign_candidates_for_area(conn, area_code: str, *, timings: Optional[list
             )
             site_overrides = manual_overrides.get(m["id"], [])
             panels = _apply_panel_overrides(panels, site_overrides, correction_factor)
+            dest_rows = destinations_by_site.get(m["id"])
+            if dest_rows:
+                # Manual sites are free points (no anchor) — snap to the nearest
+                # anchor for the through-path from-node.
+                from_anchor = nearest_anchor_node(conn, lon, lat)
+                existing = {p.get("destination_anchor_node_id") for p in panels}
+                panels = panels + _manual_through_panels(
+                    conn, from_anchor, dest_rows, existing, dest_names, correction_factor, area_code,
+                )
             sites_out.append(
                 {
                     "sign_site_id": m["id"],

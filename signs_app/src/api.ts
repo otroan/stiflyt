@@ -215,6 +215,25 @@ export const api = {
     return jsonFetch<ThroughDistance>(`/signs/area/${area}/distance?${p.toString()}`);
   },
 
+  /** Add a named anchor as a manual "through" destination on a sign site
+   *  (persisted; rendered as an extra blade with Dijkstra distance + path).
+   *  Returns the computed distance + route sequence. 422 if no DNT path. */
+  addManualDestination: (siteId: number, area: string, anchorNodeId: number) =>
+    jsonFetch<{ sign_site_id: number; anchor_node_id: number; distance_meters: number; routes: string[] }>(
+      `/signs/sites/${siteId}/manual-destination?area=${encodeURIComponent(area)}&anchor_node_id=${anchorNodeId}`,
+      { method: "POST", body: "{}" },
+    ),
+
+  deleteManualDestination: async (siteId: number, anchorNodeId: number) => {
+    const res = await fetchWithAuth(`${BASE}/signs/sites/${siteId}/manual-destination/${anchorNodeId}`, {
+      method: "DELETE",
+      headers: { "X-User": xUser() },
+    });
+    if (!res.ok && res.status !== 204) {
+      throw new Error(`API ${res.status} delete manual-destination`);
+    }
+  },
+
   getCandidates: (area: string) => timedJsonFetch<CandidatesResponse>(`/signs/candidates/${area}`),
 
   getAreaRoutes: (area: string) => timedJsonFetch<AreaRouteSummaryResponse>(`/signs/area/${area}/routes`),

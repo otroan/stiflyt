@@ -100,6 +100,19 @@ export default function SiteEditor({
     }
   }
 
+  async function deleteManualPanel(panel: SignPanel) {
+    if (site.sign_site_id == null || panel.destination_anchor_node_id == null) return;
+    setBusy(true);
+    try {
+      await api.deleteManualDestination(site.sign_site_id, panel.destination_anchor_node_id);
+      onChanged();
+    } catch (e) {
+      notifyError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function patchPanel(
     panel: SignPanel,
     patch: { color?: "trehvit" | "grønn"; direction?: string | null; distance_km?: number | null; destination_name?: string | null },
@@ -179,12 +192,13 @@ export default function SiteEditor({
             selectedPanels={selectedPanels}
             onTogglePanel={onTogglePanel}
             onSave={(patch) => patchPanel(p, patch)}
+            onDelete={p.is_manual_through ? () => deleteManualPanel(p) : undefined}
             busy={busy}
           />
         ))}
       </div>
 
-      <ThroughDestinationAdder site={site} areaCode={areaCode} />
+      <ThroughDestinationAdder site={site} areaCode={areaCode} onAdded={onChanged} ensureAccepted={ensureAccepted} />
 
       <div className="actions">
         {!site.is_manual && site.status !== "accepted" && site.status !== "installed" && (
@@ -213,14 +227,38 @@ export default function SiteEditor({
  *  destination may lie beyond this route's endpoint and cross DNT-area
  *  boundaries — the distance is a Dijkstra path over the whole DNT-route graph.
  *  (Persisting it as a rendered blade lands in the next step.) */
-function ThroughDestinationAdder({ site, areaCode }: { site: SignSite; areaCode: string }) {
+function ThroughDestinationAdder({ site, areaCode, onAdded, ensureAccepted }: {
+  site: SignSite;
+  areaCode: string;
+  onAdded: () => void;
+  ensureAccepted: () => Promise<number | null>;
+}) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState<AnchorHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<AnchorHit | null>(null);
   const [dist, setDist] = useState<ThroughDistance | null>(null);
   const [distLoading, setDistLoading] = useState(false);
+  const [adding, setAdding] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  async function add() {
+    if (!selected) return;
+    setAdding(true);
+    try {
+      const sid = await ensureAccepted();
+      if (sid == null) return;
+      await api.addManualDestination(sid, areaCode, selected.anchor_node_id);
+      setSelected(null);
+      setDist(null);
+      setQ("");
+      onAdded();
+    } catch (e) {
+      notifyError(e);
+    } finally {
+      setAdding(false);
+    }
+  }
 
   function onQuery(v: string) {
     setQ(v);
@@ -298,8 +336,8 @@ function ThroughDestinationAdder({ site, areaCode }: { site: SignSite; areaCode:
           ) : (
             <span className="empty">Fant ingen rute langs DNT-rutene til dette ankerpunktet.</span>
           )}
-          <button className="primary" disabled title="Lagring av gjennomgående skilt kommer i neste steg" style={{ marginTop: 6 }}>
-            Legg til skilt
+          <button className="primary" disabled={adding || !dist?.found} onClick={add} style={{ marginTop: 6 }}>
+            {adding ? "Legger til…" : "Legg til skilt"}
           </button>
         </div>
       )}
@@ -322,10 +360,11 @@ interface PanelRowProps {
   selectedPanels: Set<string>;
   onTogglePanel: (key: string) => void;
   onSave: (patch: { color?: "trehvit" | "grønn"; direction?: string | null; distance_km?: number | null; destination_name?: string | null }) => Promise<void>;
+  onDelete?: () => void;
   busy: boolean;
 }
 
-function PanelRow({ panel, siteId, selectedPanels, onTogglePanel, onSave, busy }: PanelRowProps) {
+function PanelRow({ panel, siteId, selectedPanels, onTogglePanel, onSave, onDelete, busy }: PanelRowProps) {
   const [open, setOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState(panel.destination_name);
   const [kmDraft, setKmDraft] = useState<string>(panel.distance_km_displayed != null ? String(panel.distance_km_displayed) : "");
@@ -366,8 +405,16 @@ function PanelRow({ panel, siteId, selectedPanels, onTogglePanel, onSave, busy }
         />
       </div>
       <div>
-        <div className="dest">{panel.destination_name}</div>
-        <div className="routes">{panel.route_numbers.join(", ")}{panel.direction ? ` · ↗ ${panel.direction}` : ""}</div>
+        <div className="dest">
+          {panel.destination_name}
+          {panel.is_manual_through && (
+            <span style={{ marginLeft: 6, fontSize: 10, color: "#7c3aed", border: "1px solid #d9c8f5", borderRadius: 3, padding: "0 4px" }}>gjennomgående</span>
+          )}
+        </div>
+        <div className="routes">
+          {panel.is_manual_through ? `via ${panel.route_numbers.join(", ")}` : panel.route_numbers.join(", ")}
+          {panel.direction ? ` · ↗ ${panel.direction}` : ""}
+        </div>
       </div>
       <div className="km">{formatKm(panel)} km</div>
       <div className="color">
@@ -423,6 +470,11 @@ function PanelRow({ panel, siteId, selectedPanels, onTogglePanel, onSave, busy }
             >
               Tilbakestill
             </button>
+            {onDelete && (
+              <button className="danger" onClick={() => { onDelete(); setOpen(false); }} disabled={busy} title="Fjern dette gjennomgående skiltet">
+                Fjern
+              </button>
+            )}
             <button onClick={() => setOpen(false)}>Avbryt</button>
             <button className="primary" onClick={saveAll}>Lagre</button>
           </div>
