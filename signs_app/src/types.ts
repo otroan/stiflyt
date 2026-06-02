@@ -22,39 +22,6 @@ export interface PointMatrikkelResponse {
   teigid?: number | null;
 }
 
-/** A network link from GET /links (Phase 3, Grunneier "Lenker" mode). The
- *  endpoint returns a GeoJSON FeatureCollection; each feature's `id` is the
- *  link_id and `properties` carries the route lists + length. Geometry is a
- *  LineString or MultiLineString in WGS84. We render these as a selectable
- *  overlay; clicking one toggles it into the batch owner lookup. */
-export interface LinkRouteInfo {
-  rutenummer?: string | null;
-  rutenavn?: string | null;
-  rutetype?: string | null;
-  vedlikeholdsansvarlig?: string | null;
-}
-
-export interface LinkFeatureProps {
-  link_id?: number;
-  a_node?: number | null;
-  b_node?: number | null;
-  length_m?: number | null;
-  /** Routes this link belongs to (parallel-array-derived server-side). Used to
-   *  filter the overlay to the current area's routes rather than every route
-   *  in turrutebasen within the viewport. */
-  routes?: LinkRouteInfo[];
-}
-
-export type LinkFeature = GeoJSON.Feature<
-  GeoJSON.LineString | GeoJSON.MultiLineString,
-  LinkFeatureProps
-> & { id?: number };
-
-export interface LinkFeatureCollection {
-  type: "FeatureCollection";
-  features: LinkFeature[];
-}
-
 /** One property intersection from POST /geometry/owners. `owners` is the same
  *  server-formatted string used by PointMatrikkelResponse — "Navn, Adresse;
  *  Navn2, Adresse2". Mirrors the route-owner vector. */

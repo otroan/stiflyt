@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import { api } from "./api";
 import type { FieldPhoto, GpxTrack, RouteAnnotation, RouteListItem, RouteSummary, SignSite } from "./types";
@@ -64,17 +64,10 @@ interface Props {
   gpxTracks?: GpxTrack[];
   gpxVisible?: boolean;
   onGpxVisibleChange?: (v: boolean) => void;
-  /** Grunneier "Lenker" mode (Phase 3). When true, network links in the
-   *  viewport are loaded on pan and rendered as a clickable overlay (red =
-   *  unselected, green = selected). Selection is owned by the parent via
-   *  `selectedLinkIds`; clicking a link calls `onLinkClick` with its geometry
-   *  so the parent can batch the owner lookup. */
-  linksVisible?: boolean;
-  selectedLinkIds?: number[];
-  onLinkClick?: (linkId: number, geometry: GeoJSON.Geometry, lengthM: number) => void;
-  /** Restrict the link overlay to links belonging to these rutenumre (the
-   *  current area's routes). Undefined/empty = show all loaded links. */
-  linkRouteFilter?: Set<string>;
+  /** Rutenumre the user has picked in the Grunneier "Ruter" mode for owner
+   *  lookup. Highlighted in green over the existing route lines. Selection is
+   *  driven by the parent through onMapClick (routesAtPoint). */
+  selectedRoutes?: string[];
   /** A single geometry to spotlight (bright overlay) — driven by hovering an
    *  owner row in the Grunneier batch result. Null clears it. */
   highlightGeometry?: GeoJSON.Geometry | null;
@@ -227,10 +220,7 @@ export default function MapView({
   gpxTracks,
   gpxVisible,
   onGpxVisibleChange,
-  linksVisible,
-  selectedLinkIds,
-  onLinkClick,
-  linkRouteFilter,
+  selectedRoutes,
   highlightGeometry,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -251,43 +241,6 @@ export default function MapView({
   // ref once at map setup) read the live value instead of the stale closure.
   const placementActiveRef = useRef(!!placementActive);
   placementActiveRef.current = !!placementActive;
-  // Grunneier "Lenker" mode — refs the link click/load handlers close over.
-  const onLinkClickRef = useRef(onLinkClick);
-  onLinkClickRef.current = onLinkClick;
-  const selectedLinkIdsRef = useRef<number[]>(selectedLinkIds ?? []);
-  selectedLinkIdsRef.current = selectedLinkIds ?? [];
-  // Last bbox queried for links + the in-flight abort controller, so panning
-  // dedupes identical viewports and supersedes a slower request.
-  const linksLastBboxRef = useRef<string | null>(null);
-  const linksAbortRef = useRef<AbortController | null>(null);
-  // Raw (unfiltered) links from the last fetch, kept so we can re-apply the
-  // area-route filter without re-fetching when the filter set arrives/changes.
-  const rawLinksRef = useRef<GeoJSON.Feature[]>([]);
-  const linkRouteFilterRef = useRef<Set<string> | undefined>(linkRouteFilter);
-  linkRouteFilterRef.current = linkRouteFilter;
-
-  // Push the raw links through the current area-route filter into the source,
-  // then re-assert selection colour (new features arrive stateless). Shared by
-  // the load effect and the filter-changed effect.
-  const pushLinkData = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const src = map.getSource("grunneier-links") as maplibregl.GeoJSONSource | undefined;
-    if (!src) return;
-    const filter = linkRouteFilterRef.current;
-    const features = (!filter || filter.size === 0)
-      ? rawLinksRef.current
-      : rawLinksRef.current.filter((f) => {
-          const rs = (f.properties as { routes?: { rutenummer?: string | null }[] } | null)?.routes ?? [];
-          return rs.some((r) => r.rutenummer != null && filter.has(r.rutenummer));
-        });
-    src.setData({ type: "FeatureCollection", features });
-    map.removeFeatureState({ source: "grunneier-links" });
-    for (const id of selectedLinkIdsRef.current) {
-      map.setFeatureState({ source: "grunneier-links", id }, { selected: true });
-    }
-  }, []);
-
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const map = new maplibregl.Map({
@@ -723,154 +676,42 @@ export default function MapView({
     whenStyleReady(map, apply);
   }, [matrikkelGeoJSON, matrikkelPolygon]);
 
-  // Grunneier "Lenker" mode — load network links in the viewport on pan and
-  // render them as a clickable overlay. Selection state lives in the parent
-  // (`selectedLinkIds`) and is reflected here via MapLibre feature-state, so
-  // colour survives source reloads as the user pans. Tearing the layer down
-  // when the mode turns off keeps the links out of the way in Punkt mode.
+  // Grunneier "Ruter" mode — highlight the routes the user has picked for owner
+  // lookup. No parallel data path: we reuse the already-rendered route geometry
+  // (the "routes" + "routes-unmarked" sources) and overlay a thick green line
+  // filtered to the selected rutenumre. Selection itself runs through the
+  // normal map click → routesAtPoint flow handled by the parent.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-
-    if (!linksVisible) {
-      // Cleanup: abort any in-flight load, drop layer + source, reset bbox.
-      whenStyleReady(map, () => {
-        linksAbortRef.current?.abort();
-        linksAbortRef.current = null;
-        linksLastBboxRef.current = null;
-        if (map.getLayer("grunneier-links-line")) map.removeLayer("grunneier-links-line");
-        if (map.getSource("grunneier-links")) map.removeSource("grunneier-links");
-      });
-      return;
-    }
-
-    let cancelled = false;
-
-    const loadLinks = async () => {
-      if (cancelled) return;
-      const b = map.getBounds();
-      const bbox = `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`;
-      if (bbox === linksLastBboxRef.current) return;
-      linksLastBboxRef.current = bbox;
-      linksAbortRef.current?.abort();
-      const controller = new AbortController();
-      linksAbortRef.current = controller;
-      try {
-        const fc = await api.loadLinks(bbox, { limit: 1000, signal: controller.signal });
-        if (cancelled || controller.signal.aborted) return;
-        rawLinksRef.current = (fc.features ?? []) as unknown as GeoJSON.Feature[];
-        pushLinkData();
-      } catch (e) {
-        if ((e as Error)?.name === "AbortError") return;
-        console.warn("[signs_app] link load failed:", e);
-      }
-    };
-
-    const setup = () => {
-      if (!map.getSource("grunneier-links")) {
-        map.addSource("grunneier-links", {
-          type: "geojson",
-          data: { type: "FeatureCollection", features: [] },
-        });
-        map.addLayer({
-          id: "grunneier-links-line",
-          type: "line",
-          source: "grunneier-links",
-          layout: { "line-cap": "round", "line-join": "round" },
-          paint: {
-            "line-color": [
-              "case",
-              ["boolean", ["feature-state", "selected"], false],
-              "#27ae60",
-              "#e74c3c",
-            ],
-            "line-width": [
-              "case",
-              ["boolean", ["feature-state", "selected"], false],
-              5,
-              3,
-            ],
-            "line-opacity": [
-              "case",
-              ["boolean", ["feature-state", "selected"], false],
-              1.0,
-              0.7,
-            ],
-          },
-        });
-      }
-      if (map.getLayer("grunneier-links-line")) map.moveLayer("grunneier-links-line");
-      loadLinks();
-    };
-
-    const onMoveEnd = () => { loadLinks(); };
+    const sel = selectedRoutes ?? [];
+    const filter = ["in", ["get", "rutenummer"], ["literal", sel]] as unknown as maplibregl.FilterSpecification;
     whenStyleReady(map, () => {
-      setup();
-      map.on("moveend", onMoveEnd);
-    });
-
-    return () => {
-      cancelled = true;
-      map.off("moveend", onMoveEnd);
-    };
-  }, [linksVisible, pushLinkData]);
-
-  // Re-filter the already-loaded links when the area-route set arrives or
-  // changes — no re-fetch, just re-push the cached raw features through the
-  // new filter. (The set is empty on first paint and fills once the area
-  // routes load.)
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !linksVisible) return;
-    whenStyleReady(map, () => {
-      if (map.getSource("grunneier-links")) pushLinkData();
-    });
-  }, [linkRouteFilter, linksVisible, pushLinkData]);
-
-  // Reflect parent-owned link selection onto the rendered layer. Kept separate
-  // from the load effect so toggling a single link doesn't reload the source.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !linksVisible) return;
-    whenStyleReady(map, () => {
-      if (!map.getSource("grunneier-links")) return;
-      map.removeFeatureState({ source: "grunneier-links" });
-      for (const id of selectedLinkIds ?? []) {
-        map.setFeatureState({ source: "grunneier-links", id }, { selected: true });
+      for (const [layerId, sourceId] of [
+        ["grunneier-routes-sel", "routes"],
+        ["grunneier-routes-sel-unmarked", "routes-unmarked"],
+      ] as const) {
+        if (!map.getSource(sourceId)) continue;
+        if (!map.getLayer(layerId)) {
+          map.addLayer({
+            id: layerId,
+            type: "line",
+            source: sourceId,
+            layout: { "line-cap": "round", "line-join": "round" },
+            paint: {
+              "line-color": "#27ae60",
+              "line-width": ["interpolate", ["linear"], ["zoom"], 8, 5, 14, 9],
+              "line-opacity": 0.95,
+            },
+            filter,
+          });
+        } else {
+          map.setFilter(layerId, filter);
+        }
+        map.moveLayer(layerId);
       }
     });
-  }, [selectedLinkIds, linksVisible]);
-
-  // Click a link to toggle its selection. Bound once at map setup; reads the
-  // live callback + mode through refs. No-op during placement so feature drops
-  // aren't hijacked.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const handler = (e: maplibregl.MapMouseEvent) => {
-      if (placementActiveRef.current) return;
-      if (!onLinkClickRef.current) return;
-      const features = map.queryRenderedFeatures(e.point, { layers: ["grunneier-links-line"] });
-      if (!features.length) return;
-      const f = features[0];
-      const linkId = typeof f.id === "number" ? f.id : Number(f.id);
-      if (!Number.isFinite(linkId)) return;
-      const lengthM = Number((f.properties as { length_m?: number })?.length_m) || 0;
-      onLinkClickRef.current(linkId, f.geometry as GeoJSON.Geometry, lengthM);
-    };
-    const onEnter = () => { if (linksVisible) map.getCanvas().style.cursor = "pointer"; };
-    const onLeave = () => { if (linksVisible) map.getCanvas().style.cursor = ""; };
-    whenStyleReady(map, () => {
-      map.on("click", "grunneier-links-line", handler);
-      map.on("mouseenter", "grunneier-links-line", onEnter);
-      map.on("mouseleave", "grunneier-links-line", onLeave);
-    });
-    return () => {
-      map.off("click", "grunneier-links-line", handler);
-      map.off("mouseenter", "grunneier-links-line", onEnter);
-      map.off("mouseleave", "grunneier-links-line", onLeave);
-    };
-  }, [linksVisible]);
+  }, [selectedRoutes]);
 
   // Spotlight a single matrikkelenhet's segment — a thick bright halo drawn on
   // top of the link overlay when its owner row is hovered in the sidebar.

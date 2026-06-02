@@ -3,21 +3,21 @@ import { IconAlertTriangle, IconHomeDollar, IconInfoCircle, IconMapPin, IconRout
 import type { GeometryOwnerItem, PointMatrikkelResponse } from "./types";
 
 interface Props {
-  /** "punkt" = Phase 2 point lookup, "lenker" = Phase 3 link selection. */
-  mode: "punkt" | "lenker";
-  onModeChange: (m: "punkt" | "lenker") => void;
+  /** "punkt" = Phase 2 point lookup, "ruter" = route selection for owners. */
+  mode: "punkt" | "ruter";
+  onModeChange: (m: "punkt" | "ruter") => void;
   // Punkt mode
   result: PointMatrikkelResponse | null;
   loading: boolean;
   error: string | null;
   onClear: () => void;
-  // Lenker mode
-  selectedLinkCount: number;
-  linkOwners: { items: GeometryOwnerItem[]; totalKm: number; linkCount: number; errorCount: number } | null;
-  linkOwnersLoading: boolean;
-  linkOwnersError: string | null;
-  onFetchLinkOwners: () => void;
-  onClearLinks: () => void;
+  // Ruter mode
+  selectedRutenumre: string[];
+  routeOwners: { items: GeometryOwnerItem[]; totalKm: number; routeCount: number; errorCount: number } | null;
+  routeOwnersLoading: boolean;
+  routeOwnersError: string | null;
+  onFetchRouteOwners: () => void;
+  onClearRoutes: () => void;
   /** Hover an owner row -> spotlight its segment on the map (null on leave). */
   onHoverMatrikkel: (geometry: GeoJSON.Geometry | null) => void;
 }
@@ -27,9 +27,10 @@ interface Props {
  *  A segmented control switches between two modes:
  *    - Punkt: every map click runs api.pointMatrikkelenhet(lat, lon); the
  *      matrikkel polygon renders on the map and the owner card here (Phase 2).
- *    - Lenker: the map shows a clickable network-link overlay; clicking links
- *      accumulates a selection, and "Hent eiere" batches the owner lookup over
- *      all selected links and renders a deduplicated owner list (Phase 3).
+ *    - Ruter: the user clicks the already-rendered DNT route lines to pick
+ *      routes; "Hent eiere" runs the owner lookup over all selected routes and
+ *      renders a deduplicated owner list (Phase 3). No separate overlay — it
+ *      reuses the routes shown in the signs view.
  */
 export default function GrunneierPanel({
   mode,
@@ -38,12 +39,12 @@ export default function GrunneierPanel({
   loading,
   error,
   onClear,
-  selectedLinkCount,
-  linkOwners,
-  linkOwnersLoading,
-  linkOwnersError,
-  onFetchLinkOwners,
-  onClearLinks,
+  selectedRutenumre,
+  routeOwners,
+  routeOwnersLoading,
+  routeOwnersError,
+  onFetchRouteOwners,
+  onClearRoutes,
   onHoverMatrikkel,
 }: Props) {
   return (
@@ -64,25 +65,25 @@ export default function GrunneierPanel({
 
       <SegmentedControl
         value={mode}
-        onChange={(v) => onModeChange(v as "punkt" | "lenker")}
+        onChange={(v) => onModeChange(v as "punkt" | "ruter")}
         fullWidth
         size="xs"
         data={[
           { value: "punkt", label: "Punkt" },
-          { value: "lenker", label: "Lenker" },
+          { value: "ruter", label: "Ruter" },
         ]}
       />
 
       {mode === "punkt" ? (
         <PunktMode result={result} loading={loading} error={error} />
       ) : (
-        <LenkerMode
-          selectedLinkCount={selectedLinkCount}
-          linkOwners={linkOwners}
-          loading={linkOwnersLoading}
-          error={linkOwnersError}
-          onFetch={onFetchLinkOwners}
-          onClear={onClearLinks}
+        <RuterMode
+          selectedRutenumre={selectedRutenumre}
+          routeOwners={routeOwners}
+          loading={routeOwnersLoading}
+          error={routeOwnersError}
+          onFetch={onFetchRouteOwners}
+          onClear={onClearRoutes}
           onHoverMatrikkel={onHoverMatrikkel}
         />
       )}
@@ -117,34 +118,41 @@ function PunktMode({ result, loading, error }: { result: PointMatrikkelResponse 
   );
 }
 
-function LenkerMode({
-  selectedLinkCount,
-  linkOwners,
+function RuterMode({
+  selectedRutenumre,
+  routeOwners,
   loading,
   error,
   onFetch,
   onClear,
   onHoverMatrikkel,
 }: {
-  selectedLinkCount: number;
-  linkOwners: { items: GeometryOwnerItem[]; totalKm: number; linkCount: number; errorCount: number } | null;
+  selectedRutenumre: string[];
+  routeOwners: { items: GeometryOwnerItem[]; totalKm: number; routeCount: number; errorCount: number } | null;
   loading: boolean;
   error: string | null;
   onFetch: () => void;
   onClear: () => void;
   onHoverMatrikkel: (geometry: GeoJSON.Geometry | null) => void;
 }) {
+  const count = selectedRutenumre.length;
   return (
     <>
       <Alert icon={<IconRoute size={16} />} color="violet" variant="light" p="xs">
-        <Text size="sm">Klikk lenker på kartet for å velge dem. Valgte lenker blir grønne.</Text>
+        <Text size="sm">Klikk på rutene i kartet for å velge dem. Valgte ruter blir grønne.</Text>
       </Alert>
 
-      <Group gap="xs" justify="space-between">
-        <Badge color={selectedLinkCount > 0 ? "violet" : "gray"} variant="light">
-          {selectedLinkCount} {selectedLinkCount === 1 ? "lenke" : "lenker"} valgt
-        </Badge>
-        {selectedLinkCount > 0 && (
+      <Group gap="xs" justify="space-between" align="flex-start">
+        <Group gap={4}>
+          {count === 0 ? (
+            <Badge color="gray" variant="light">Ingen ruter valgt</Badge>
+          ) : (
+            selectedRutenumre.map((rn) => (
+              <Badge key={rn} color="violet" variant="light">{rn}</Badge>
+            ))
+          )}
+        </Group>
+        {count > 0 && (
           <Button size="compact-xs" variant="subtle" color="gray" onClick={onClear}>
             Tøm valg
           </Button>
@@ -154,11 +162,11 @@ function LenkerMode({
       <Button
         leftSection={<IconUsers size={16} />}
         color="violet"
-        disabled={selectedLinkCount === 0}
+        disabled={count === 0}
         loading={loading}
         onClick={onFetch}
       >
-        Hent eiere ({selectedLinkCount} lenker)
+        Hent eiere ({count} {count === 1 ? "rute" : "ruter"})
       </Button>
 
       {error && (
@@ -167,16 +175,16 @@ function LenkerMode({
         </Alert>
       )}
 
-      {linkOwners && (
+      {routeOwners && (
         <Stack gap="sm">
           <Text size="xs" c="dimmed">
-            {linkOwners.items.length} matrikkelenheter · {linkOwners.totalKm.toFixed(2)} km
-            {linkOwners.errorCount > 0 ? ` · ${linkOwners.errorCount} lenke(r) feilet` : ""}
+            {routeOwners.items.length} matrikkelenheter · {routeOwners.totalKm.toFixed(2)} km
+            {routeOwners.errorCount > 0 ? ` · ${routeOwners.errorCount} rute(r) feilet` : ""}
           </Text>
-          {linkOwners.items.length === 0 ? (
-            <Text size="sm" c="dimmed">Ingen matrikkelenheter funnet langs de valgte lenkene.</Text>
+          {routeOwners.items.length === 0 ? (
+            <Text size="sm" c="dimmed">Ingen matrikkelenheter funnet langs de valgte rutene.</Text>
           ) : (
-            linkOwners.items.map((it) => (
+            routeOwners.items.map((it) => (
               <OwnerRow
                 key={it.matrikkelenhet || `${it.kommunenummer}-${it.gardsnummer}/${it.bruksnummer}`}
                 it={it}

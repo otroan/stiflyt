@@ -306,45 +306,50 @@ export default function App() {
   const [matrikkelResult, setMatrikkelResult] = useState<PointMatrikkelResponse | null>(null);
   const [matrikkelLoading, setMatrikkelLoading] = useState(false);
   const [matrikkelError, setMatrikkelError] = useState<string | null>(null);
-  // --- Grunneier (owners-by-links, Phase 3) ---
+  // --- Grunneier (owners-by-route, Phase 3) ---
   // The Grunneier panel toggles between "punkt" (Phase 2 point lookup) and
-  // "lenker" mode. In Lenker mode the map shows a clickable network-link
-  // overlay; clicked links accumulate in `selectedLinks` (id -> geometry +
-  // length), and "Hent eiere" batches POST /geometry/owners per link and
-  // aggregates the matrikkelenhet vectors into a deduplicated owner list.
-  const [grunneierMode, setGrunneierMode] = useState<"punkt" | "lenker">("punkt");
-  const [selectedLinks, setSelectedLinks] = useState<Record<number, { geometry: GeoJSON.Geometry; length_m: number }>>({});
-  const selectedLinkIds = useMemo(() => Object.keys(selectedLinks).map(Number), [selectedLinks]);
-  // Rutenumre belonging to the current area (honours area_routes.yaml includes/
-  // excludes via getAreaRoutes), used to filter the link overlay down from all
-  // of turrutebasen to just this area's routes.
-  const areaRouteNumbers = useMemo(() => new Set(routeSummaries.keys()), [routeSummaries]);
-  const [linkOwners, setLinkOwners] = useState<{ items: GeometryOwnerItem[]; totalKm: number; linkCount: number; errorCount: number } | null>(null);
-  const [linkOwnersLoading, setLinkOwnersLoading] = useState(false);
-  const [linkOwnersError, setLinkOwnersError] = useState<string | null>(null);
+  // "ruter" mode. In Ruter mode the user clicks the already-rendered DNT route
+  // lines to pick routes (no separate overlay); "Hent eiere" runs POST
+  // /geometry/owners over each selected route's geometry and aggregates the
+  // matrikkelenhet vectors into a deduplicated owner list.
+  const [grunneierMode, setGrunneierMode] = useState<"punkt" | "ruter">("punkt");
+  const [selectedRutenumre, setSelectedRutenumre] = useState<Set<string>>(new Set());
+  const selectedRoutes = useMemo(() => [...selectedRutenumre], [selectedRutenumre]);
+  const [routeOwners, setRouteOwners] = useState<{ items: GeometryOwnerItem[]; totalKm: number; routeCount: number; errorCount: number } | null>(null);
+  const [routeOwnersLoading, setRouteOwnersLoading] = useState(false);
+  const [routeOwnersError, setRouteOwnersError] = useState<string | null>(null);
   // Geometry of the owner row currently hovered in the batch result — drawn as
   // a bright spotlight on the map.
   const [highlightGeometry, setHighlightGeometry] = useState<GeoJSON.Geometry | null>(null);
 
-  const handleLinkClick = (linkId: number, geometry: GeoJSON.Geometry, lengthM: number) => {
-    setSelectedLinks((prev) => {
-      const next = { ...prev };
-      if (next[linkId]) delete next[linkId];
-      else next[linkId] = { geometry, length_m: lengthM };
+  // Reset the route selection + owner result when switching area so stale
+  // rutenumre from another area don't linger in the panel.
+  useEffect(() => {
+    setSelectedRutenumre(new Set());
+    setRouteOwners(null);
+    setRouteOwnersError(null);
+    setHighlightGeometry(null);
+  }, [areaCode]);
+
+  const toggleRouteSelection = (rutenummer: string) => {
+    setSelectedRutenumre((prev) => {
+      const next = new Set(prev);
+      if (next.has(rutenummer)) next.delete(rutenummer);
+      else next.add(rutenummer);
       return next;
     });
   };
 
-  const clearLinkSelection = () => {
-    setSelectedLinks({});
-    setLinkOwners(null);
-    setLinkOwnersError(null);
+  const clearRouteSelection = () => {
+    setSelectedRutenumre(new Set());
+    setRouteOwners(null);
+    setRouteOwnersError(null);
   };
 
-  // Flatten a link geometry to a single LineString — /geometry/owners only
-  // accepts LineString, and some links are MultiLineString. Mirrors the old
-  // frontend: stitch parts end-to-end, inserting the next part's first point
-  // only when there's an actual gap so we don't duplicate a shared vertex.
+  // Flatten a route geometry to a single LineString — /geometry/owners only
+  // accepts LineString, and route geometry is often MultiLineString. Stitch
+  // parts end-to-end, inserting the next part's first point only when there's
+  // an actual gap so we don't duplicate a shared vertex.
   const toLineString = (g: GeoJSON.Geometry): GeoJSON.LineString | null => {
     if (g.type === "LineString") {
       return g.coordinates.length >= 2 ? g : null;
@@ -363,12 +368,20 @@ export default function App() {
     return null;
   };
 
-  const fetchLinkOwners = async () => {
-    const entries = Object.values(selectedLinks);
-    if (entries.length === 0) return;
-    setLinkOwnersLoading(true);
-    setLinkOwnersError(null);
-    const lines = entries.map((e) => toLineString(e.geometry)).filter((l): l is GeoJSON.LineString => l != null);
+  const fetchRouteOwners = async () => {
+    const rns = [...selectedRutenumre];
+    if (rns.length === 0) return;
+    setRouteOwnersLoading(true);
+    setRouteOwnersError(null);
+    // Resolve each rutenummer to its rendered geometry (marked first, else the
+    // unmarked fallback) and flatten to a LineString.
+    const lines: GeoJSON.LineString[] = [];
+    for (const rn of rns) {
+      const r = routes.find((x) => x.rutenummer === rn);
+      const g = (r?.route_geometry ?? r?.route_geometry_unmarked) as GeoJSON.Geometry | null | undefined;
+      const ls = g ? toLineString(g) : null;
+      if (ls) lines.push(ls);
+    }
     const results = await Promise.allSettled(lines.map((ls) => api.geometryOwners(ls)));
     const all: GeometryOwnerItem[] = [];
     let totalM = 0;
@@ -381,7 +394,7 @@ export default function App() {
         errorCount += 1;
       }
     }
-    // Deduplicate by matrikkelenhet — the same parcel is hit by adjacent links.
+    // Deduplicate by matrikkelenhet — adjacent routes hit the same parcel.
     const seen = new Map<string, GeometryOwnerItem>();
     for (const it of all) {
       const key = it.matrikkelenhet || `${it.kommunenummer}-${it.gardsnummer}/${it.bruksnummer}`;
@@ -390,10 +403,10 @@ export default function App() {
     const items = [...seen.values()].sort((a, b) =>
       (a.matrikkelenhet || "").localeCompare(b.matrikkelenhet || "", "nb", { numeric: true }),
     );
-    setLinkOwners({ items, totalKm: totalM / 1000, linkCount: entries.length, errorCount });
-    setLinkOwnersLoading(false);
+    setRouteOwners({ items, totalKm: totalM / 1000, routeCount: rns.length, errorCount });
+    setRouteOwnersLoading(false);
     if (items.length === 0 && errorCount > 0) {
-      setLinkOwnersError("Klarte ikke å hente eiere for de valgte lenkene.");
+      setRouteOwnersError("Klarte ikke å hente eiere for de valgte rutene.");
     }
   };
   // Selected work-kind for the next placement click. Set by the kind picker
@@ -502,10 +515,18 @@ export default function App() {
   }, [routes]);
 
   async function handleMapClick(lon: number, lat: number, routesAtPoint: string[]) {
+    if (sidebarTab === "grunneier" && grunneierMode === "ruter") {
+      // Grunneier "Ruter" mode — clicking a rendered route line toggles it into
+      // the owner-lookup selection. routesAtPoint is the rutenumre under the
+      // click; pick the first when several overlap. A miss (no route) is a
+      // no-op so empty-map clicks don't clear the selection.
+      if (routesAtPoint.length > 0) toggleRouteSelection(routesAtPoint[0]);
+      return;
+    }
     if (sidebarTab === "grunneier" && grunneierMode === "punkt") {
       // Grunneier "Punkt" mode owns map clicks — clicking anywhere fetches
-      // the matrikkelenhet containing the point. In "Lenker" mode the link
-      // overlay handles clicks instead (see MapView's onLinkClick).
+      // the matrikkelenhet containing the point. In "Ruter" mode the click
+      // toggles route selection instead (branch above).
       setMatrikkelLoading(true);
       setMatrikkelError(null);
       try {
@@ -730,14 +751,11 @@ export default function App() {
           sites={candidates?.sites ?? []}
           selectedIdx={selectedSiteIdx}
           onSelect={selectSiteByIdx}
-          onMapClick={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || (sidebarTab === "grunneier" && grunneierMode === "punkt")) ? handleMapClick : undefined}
+          onMapClick={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || sidebarTab === "grunneier") ? handleMapClick : undefined}
           cursor={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || (sidebarTab === "grunneier" && grunneierMode === "punkt")) ? "crosshair" : undefined}
-          placementActive={mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || (sidebarTab === "grunneier" && grunneierMode === "punkt")}
+          placementActive={mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || sidebarTab === "grunneier"}
           matrikkelPolygon={matrikkelResult?.polygon_geometry ?? null}
-          linksVisible={sidebarTab === "grunneier" && grunneierMode === "lenker"}
-          selectedLinkIds={selectedLinkIds}
-          onLinkClick={handleLinkClick}
-          linkRouteFilter={areaRouteNumbers}
+          selectedRoutes={selectedRoutes}
           highlightGeometry={highlightGeometry}
           baseLayer={baseLayer}
           focusedRoute={focusedRoute}
@@ -933,12 +951,12 @@ export default function App() {
               loading={matrikkelLoading}
               error={matrikkelError}
               onClear={() => { setMatrikkelResult(null); setMatrikkelError(null); }}
-              selectedLinkCount={selectedLinkIds.length}
-              linkOwners={linkOwners}
-              linkOwnersLoading={linkOwnersLoading}
-              linkOwnersError={linkOwnersError}
-              onFetchLinkOwners={fetchLinkOwners}
-              onClearLinks={clearLinkSelection}
+              selectedRutenumre={selectedRoutes}
+              routeOwners={routeOwners}
+              routeOwnersLoading={routeOwnersLoading}
+              routeOwnersError={routeOwnersError}
+              onFetchRouteOwners={fetchRouteOwners}
+              onClearRoutes={clearRouteSelection}
               onHoverMatrikkel={setHighlightGeometry}
             />
           </Tabs.Panel>

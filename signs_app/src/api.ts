@@ -13,7 +13,6 @@ import type {
   GeometryOwnerResponse,
   LinkBridgesResponse,
   LinkExclusionsResponse,
-  LinkFeatureCollection,
   MetadataOverrideResponse,
   PointMatrikkelResponse,
   RouteAnnotation,
@@ -144,17 +143,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ lat, lon }),
     }),
-
-  /** Network links intersecting a bbox (Grunneier "Lenker" mode, Phase 3).
-   *  bbox is "xmin,ymin,xmax,ymax" in WGS84 — the backend transforms it to
-   *  the links SRID. Pass an AbortController signal so panning supersedes an
-   *  in-flight request. Not feature-gated server-side, but only invoked when
-   *  the user holds the `grunneier` flag. */
-  loadLinks: (bbox: string, opts?: { limit?: number; signal?: AbortSignal }) =>
-    jsonFetch<LinkFeatureCollection>(
-      `/links?bbox=${encodeURIComponent(bbox)}&limit=${opts?.limit ?? 1000}`,
-      { signal: opts?.signal },
-    ),
 
   /** Property owners along a single LineString geometry (WGS84 coordinates).
    *  Gated server-side by the `grunneier` feature flag. Callers batch this
