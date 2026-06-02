@@ -16,7 +16,7 @@ import {
 } from "@mantine/core";
 import { IconAlertTriangle, IconCamera, IconDownload, IconHomeDollar, IconInfoCircle, IconMapPin, IconRoute, IconRoute2 } from "@tabler/icons-react";
 import { api } from "./api";
-import type { CandidatesResponse, FieldPhoto, GpxTrack, PointMatrikkelResponse, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
+import type { CandidatesResponse, FieldPhoto, GeometryOwnerItem, GpxTrack, PointMatrikkelResponse, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
 import SiteEditor from "./SiteEditor";
 import AreaReport from "./AreaReport";
@@ -306,6 +306,89 @@ export default function App() {
   const [matrikkelResult, setMatrikkelResult] = useState<PointMatrikkelResponse | null>(null);
   const [matrikkelLoading, setMatrikkelLoading] = useState(false);
   const [matrikkelError, setMatrikkelError] = useState<string | null>(null);
+  // --- Grunneier (owners-by-links, Phase 3) ---
+  // The Grunneier panel toggles between "punkt" (Phase 2 point lookup) and
+  // "lenker" mode. In Lenker mode the map shows a clickable network-link
+  // overlay; clicked links accumulate in `selectedLinks` (id -> geometry +
+  // length), and "Hent eiere" batches POST /geometry/owners per link and
+  // aggregates the matrikkelenhet vectors into a deduplicated owner list.
+  const [grunneierMode, setGrunneierMode] = useState<"punkt" | "lenker">("punkt");
+  const [selectedLinks, setSelectedLinks] = useState<Record<number, { geometry: GeoJSON.Geometry; length_m: number }>>({});
+  const selectedLinkIds = useMemo(() => Object.keys(selectedLinks).map(Number), [selectedLinks]);
+  const [linkOwners, setLinkOwners] = useState<{ items: GeometryOwnerItem[]; totalKm: number; linkCount: number; errorCount: number } | null>(null);
+  const [linkOwnersLoading, setLinkOwnersLoading] = useState(false);
+  const [linkOwnersError, setLinkOwnersError] = useState<string | null>(null);
+
+  const handleLinkClick = (linkId: number, geometry: GeoJSON.Geometry, lengthM: number) => {
+    setSelectedLinks((prev) => {
+      const next = { ...prev };
+      if (next[linkId]) delete next[linkId];
+      else next[linkId] = { geometry, length_m: lengthM };
+      return next;
+    });
+  };
+
+  const clearLinkSelection = () => {
+    setSelectedLinks({});
+    setLinkOwners(null);
+    setLinkOwnersError(null);
+  };
+
+  // Flatten a link geometry to a single LineString — /geometry/owners only
+  // accepts LineString, and some links are MultiLineString. Mirrors the old
+  // frontend: stitch parts end-to-end, inserting the next part's first point
+  // only when there's an actual gap so we don't duplicate a shared vertex.
+  const toLineString = (g: GeoJSON.Geometry): GeoJSON.LineString | null => {
+    if (g.type === "LineString") {
+      return g.coordinates.length >= 2 ? g : null;
+    }
+    if (g.type === "MultiLineString") {
+      const coords: GeoJSON.Position[] = [];
+      for (const part of g.coordinates) {
+        if (coords.length === 0) { coords.push(...part); continue; }
+        const last = coords[coords.length - 1];
+        const first = part[0];
+        const gap = Math.hypot(last[0] - first[0], last[1] - first[1]);
+        coords.push(...(gap > 0.0001 ? part : part.slice(1)));
+      }
+      return coords.length >= 2 ? { type: "LineString", coordinates: coords } : null;
+    }
+    return null;
+  };
+
+  const fetchLinkOwners = async () => {
+    const entries = Object.values(selectedLinks);
+    if (entries.length === 0) return;
+    setLinkOwnersLoading(true);
+    setLinkOwnersError(null);
+    const lines = entries.map((e) => toLineString(e.geometry)).filter((l): l is GeoJSON.LineString => l != null);
+    const results = await Promise.allSettled(lines.map((ls) => api.geometryOwners(ls)));
+    const all: GeometryOwnerItem[] = [];
+    let totalM = 0;
+    let errorCount = 0;
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        all.push(...(r.value.matrikkelenhet_vector || []));
+        totalM += r.value.total_length_meters || 0;
+      } else {
+        errorCount += 1;
+      }
+    }
+    // Deduplicate by matrikkelenhet — the same parcel is hit by adjacent links.
+    const seen = new Map<string, GeometryOwnerItem>();
+    for (const it of all) {
+      const key = it.matrikkelenhet || `${it.kommunenummer}-${it.gardsnummer}/${it.bruksnummer}`;
+      if (!seen.has(key)) seen.set(key, it);
+    }
+    const items = [...seen.values()].sort((a, b) =>
+      (a.matrikkelenhet || "").localeCompare(b.matrikkelenhet || "", "nb", { numeric: true }),
+    );
+    setLinkOwners({ items, totalKm: totalM / 1000, linkCount: entries.length, errorCount });
+    setLinkOwnersLoading(false);
+    if (items.length === 0 && errorCount > 0) {
+      setLinkOwnersError("Klarte ikke å hente eiere for de valgte lenkene.");
+    }
+  };
   // Selected work-kind for the next placement click. Set by the kind picker
   // in RoutePanel's Arbeid sub-tab; the toolbar's IconTool button defaults to
   // work_other.
@@ -412,10 +495,10 @@ export default function App() {
   }, [routes]);
 
   async function handleMapClick(lon: number, lat: number, routesAtPoint: string[]) {
-    if (sidebarTab === "grunneier") {
-      // Grunneier tab owns map clicks unconditionally — clicking anywhere
-      // fetches the matrikkelenhet containing the point. No mode toggle
-      // because the whole panel is in "look up owner" mode.
+    if (sidebarTab === "grunneier" && grunneierMode === "punkt") {
+      // Grunneier "Punkt" mode owns map clicks — clicking anywhere fetches
+      // the matrikkelenhet containing the point. In "Lenker" mode the link
+      // overlay handles clicks instead (see MapView's onLinkClick).
       setMatrikkelLoading(true);
       setMatrikkelError(null);
       try {
@@ -640,10 +723,13 @@ export default function App() {
           sites={candidates?.sites ?? []}
           selectedIdx={selectedSiteIdx}
           onSelect={selectSiteByIdx}
-          onMapClick={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || sidebarTab === "grunneier") ? handleMapClick : undefined}
-          cursor={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || sidebarTab === "grunneier") ? "crosshair" : undefined}
-          placementActive={mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || sidebarTab === "grunneier"}
+          onMapClick={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || (sidebarTab === "grunneier" && grunneierMode === "punkt")) ? handleMapClick : undefined}
+          cursor={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || (sidebarTab === "grunneier" && grunneierMode === "punkt")) ? "crosshair" : undefined}
+          placementActive={mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || (sidebarTab === "grunneier" && grunneierMode === "punkt")}
           matrikkelPolygon={matrikkelResult?.polygon_geometry ?? null}
+          linksVisible={sidebarTab === "grunneier" && grunneierMode === "lenker"}
+          selectedLinkIds={selectedLinkIds}
+          onLinkClick={handleLinkClick}
           baseLayer={baseLayer}
           focusedRoute={focusedRoute}
           onFocusRoute={setFocusedRoute}
@@ -832,10 +918,18 @@ export default function App() {
         {me?.features?.includes("grunneier") && (
           <Tabs.Panel value="grunneier" className="side-panel">
             <GrunneierPanel
+              mode={grunneierMode}
+              onModeChange={setGrunneierMode}
               result={matrikkelResult}
               loading={matrikkelLoading}
               error={matrikkelError}
               onClear={() => { setMatrikkelResult(null); setMatrikkelError(null); }}
+              selectedLinkCount={selectedLinkIds.length}
+              linkOwners={linkOwners}
+              linkOwnersLoading={linkOwnersLoading}
+              linkOwnersError={linkOwnersError}
+              onFetchLinkOwners={fetchLinkOwners}
+              onClearLinks={clearLinkSelection}
             />
           </Tabs.Panel>
         )}
