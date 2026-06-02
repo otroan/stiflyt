@@ -18,6 +18,8 @@ interface Props {
   linkOwnersError: string | null;
   onFetchLinkOwners: () => void;
   onClearLinks: () => void;
+  /** Hover an owner row -> spotlight its segment on the map (null on leave). */
+  onHoverMatrikkel: (geometry: GeoJSON.Geometry | null) => void;
 }
 
 /** Grunneier sidebar — Phases 2 + 3.
@@ -42,6 +44,7 @@ export default function GrunneierPanel({
   linkOwnersError,
   onFetchLinkOwners,
   onClearLinks,
+  onHoverMatrikkel,
 }: Props) {
   return (
     <Stack gap="md" p="md">
@@ -80,6 +83,7 @@ export default function GrunneierPanel({
           error={linkOwnersError}
           onFetch={onFetchLinkOwners}
           onClear={onClearLinks}
+          onHoverMatrikkel={onHoverMatrikkel}
         />
       )}
     </Stack>
@@ -120,6 +124,7 @@ function LenkerMode({
   error,
   onFetch,
   onClear,
+  onHoverMatrikkel,
 }: {
   selectedLinkCount: number;
   linkOwners: { items: GeometryOwnerItem[]; totalKm: number; linkCount: number; errorCount: number } | null;
@@ -127,6 +132,7 @@ function LenkerMode({
   error: string | null;
   onFetch: () => void;
   onClear: () => void;
+  onHoverMatrikkel: (geometry: GeoJSON.Geometry | null) => void;
 }) {
   return (
     <>
@@ -171,7 +177,11 @@ function LenkerMode({
             <Text size="sm" c="dimmed">Ingen matrikkelenheter funnet langs de valgte lenkene.</Text>
           ) : (
             linkOwners.items.map((it) => (
-              <OwnerRow key={it.matrikkelenhet || `${it.kommunenummer}-${it.gardsnummer}/${it.bruksnummer}`} it={it} />
+              <OwnerRow
+                key={it.matrikkelenhet || `${it.kommunenummer}-${it.gardsnummer}/${it.bruksnummer}`}
+                it={it}
+                onHover={onHoverMatrikkel}
+              />
             ))
           )}
         </Stack>
@@ -180,13 +190,21 @@ function LenkerMode({
   );
 }
 
-function OwnerRow({ it }: { it: GeometryOwnerItem }) {
+function OwnerRow({ it, onHover }: { it: GeometryOwnerItem; onHover: (g: GeoJSON.Geometry | null) => void }) {
   const matrikkel = it.matrikkelnummertekst || it.matrikkelenhet;
   return (
-    <Card withBorder padding="sm" radius="md">
+    <Card
+      withBorder
+      padding="sm"
+      radius="md"
+      style={{ cursor: it.geometry ? "pointer" : undefined }}
+      onMouseEnter={() => it.geometry && onHover(it.geometry)}
+      onMouseLeave={() => onHover(null)}
+    >
       <Stack gap={4}>
         <Group gap={6}>
           <Code>{matrikkel}</Code>
+          {it.bruksnavn && <Text size="sm" fw={500}>{it.bruksnavn}</Text>}
           {it.kommunenavn && <Badge size="xs" color="gray" variant="light">{it.kommunenavn}</Badge>}
         </Group>
         {it.owners ? (

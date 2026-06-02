@@ -315,9 +315,16 @@ export default function App() {
   const [grunneierMode, setGrunneierMode] = useState<"punkt" | "lenker">("punkt");
   const [selectedLinks, setSelectedLinks] = useState<Record<number, { geometry: GeoJSON.Geometry; length_m: number }>>({});
   const selectedLinkIds = useMemo(() => Object.keys(selectedLinks).map(Number), [selectedLinks]);
+  // Rutenumre belonging to the current area (honours area_routes.yaml includes/
+  // excludes via getAreaRoutes), used to filter the link overlay down from all
+  // of turrutebasen to just this area's routes.
+  const areaRouteNumbers = useMemo(() => new Set(routeSummaries.keys()), [routeSummaries]);
   const [linkOwners, setLinkOwners] = useState<{ items: GeometryOwnerItem[]; totalKm: number; linkCount: number; errorCount: number } | null>(null);
   const [linkOwnersLoading, setLinkOwnersLoading] = useState(false);
   const [linkOwnersError, setLinkOwnersError] = useState<string | null>(null);
+  // Geometry of the owner row currently hovered in the batch result — drawn as
+  // a bright spotlight on the map.
+  const [highlightGeometry, setHighlightGeometry] = useState<GeoJSON.Geometry | null>(null);
 
   const handleLinkClick = (linkId: number, geometry: GeoJSON.Geometry, lengthM: number) => {
     setSelectedLinks((prev) => {
@@ -730,6 +737,8 @@ export default function App() {
           linksVisible={sidebarTab === "grunneier" && grunneierMode === "lenker"}
           selectedLinkIds={selectedLinkIds}
           onLinkClick={handleLinkClick}
+          linkRouteFilter={areaRouteNumbers}
+          highlightGeometry={highlightGeometry}
           baseLayer={baseLayer}
           focusedRoute={focusedRoute}
           onFocusRoute={setFocusedRoute}
@@ -930,6 +939,7 @@ export default function App() {
               linkOwnersError={linkOwnersError}
               onFetchLinkOwners={fetchLinkOwners}
               onClearLinks={clearLinkSelection}
+              onHoverMatrikkel={setHighlightGeometry}
             />
           </Tabs.Panel>
         )}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import maplibregl from "maplibre-gl";
 import { api } from "./api";
 import type { FieldPhoto, GpxTrack, RouteAnnotation, RouteListItem, RouteSummary, SignSite } from "./types";
@@ -72,6 +72,12 @@ interface Props {
   linksVisible?: boolean;
   selectedLinkIds?: number[];
   onLinkClick?: (linkId: number, geometry: GeoJSON.Geometry, lengthM: number) => void;
+  /** Restrict the link overlay to links belonging to these rutenumre (the
+   *  current area's routes). Undefined/empty = show all loaded links. */
+  linkRouteFilter?: Set<string>;
+  /** A single geometry to spotlight (bright overlay) — driven by hovering an
+   *  owner row in the Grunneier batch result. Null clears it. */
+  highlightGeometry?: GeoJSON.Geometry | null;
 }
 
 const BREHEIMEN_CENTER: [number, number] = [7.5, 61.7];
@@ -224,6 +230,8 @@ export default function MapView({
   linksVisible,
   selectedLinkIds,
   onLinkClick,
+  linkRouteFilter,
+  highlightGeometry,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -252,6 +260,33 @@ export default function MapView({
   // dedupes identical viewports and supersedes a slower request.
   const linksLastBboxRef = useRef<string | null>(null);
   const linksAbortRef = useRef<AbortController | null>(null);
+  // Raw (unfiltered) links from the last fetch, kept so we can re-apply the
+  // area-route filter without re-fetching when the filter set arrives/changes.
+  const rawLinksRef = useRef<GeoJSON.Feature[]>([]);
+  const linkRouteFilterRef = useRef<Set<string> | undefined>(linkRouteFilter);
+  linkRouteFilterRef.current = linkRouteFilter;
+
+  // Push the raw links through the current area-route filter into the source,
+  // then re-assert selection colour (new features arrive stateless). Shared by
+  // the load effect and the filter-changed effect.
+  const pushLinkData = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const src = map.getSource("grunneier-links") as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    const filter = linkRouteFilterRef.current;
+    const features = (!filter || filter.size === 0)
+      ? rawLinksRef.current
+      : rawLinksRef.current.filter((f) => {
+          const rs = (f.properties as { routes?: { rutenummer?: string | null }[] } | null)?.routes ?? [];
+          return rs.some((r) => r.rutenummer != null && filter.has(r.rutenummer));
+        });
+    src.setData({ type: "FeatureCollection", features });
+    map.removeFeatureState({ source: "grunneier-links" });
+    for (const id of selectedLinkIdsRef.current) {
+      map.setFeatureState({ source: "grunneier-links", id }, { selected: true });
+    }
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -711,16 +746,6 @@ export default function MapView({
 
     let cancelled = false;
 
-    const applySelectionState = () => {
-      if (!map.getSource("grunneier-links")) return;
-      // Clear all states for the source, then re-set the currently-selected
-      // ids. Cheap relative to the link count and avoids tracking diffs.
-      map.removeFeatureState({ source: "grunneier-links" });
-      for (const id of selectedLinkIdsRef.current) {
-        map.setFeatureState({ source: "grunneier-links", id }, { selected: true });
-      }
-    };
-
     const loadLinks = async () => {
       if (cancelled) return;
       const b = map.getBounds();
@@ -733,12 +758,8 @@ export default function MapView({
       try {
         const fc = await api.loadLinks(bbox, { limit: 1000, signal: controller.signal });
         if (cancelled || controller.signal.aborted) return;
-        const src = map.getSource("grunneier-links") as maplibregl.GeoJSONSource | undefined;
-        if (src) {
-          src.setData(fc as unknown as GeoJSON.FeatureCollection);
-          // New features arrive stateless; re-apply selection colour.
-          applySelectionState();
-        }
+        rawLinksRef.current = (fc.features ?? []) as unknown as GeoJSON.Feature[];
+        pushLinkData();
       } catch (e) {
         if ((e as Error)?.name === "AbortError") return;
         console.warn("[signs_app] link load failed:", e);
@@ -792,7 +813,19 @@ export default function MapView({
       cancelled = true;
       map.off("moveend", onMoveEnd);
     };
-  }, [linksVisible]);
+  }, [linksVisible, pushLinkData]);
+
+  // Re-filter the already-loaded links when the area-route set arrives or
+  // changes — no re-fetch, just re-push the cached raw features through the
+  // new filter. (The set is empty on first paint and fills once the area
+  // routes load.)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !linksVisible) return;
+    whenStyleReady(map, () => {
+      if (map.getSource("grunneier-links")) pushLinkData();
+    });
+  }, [linkRouteFilter, linksVisible, pushLinkData]);
 
   // Reflect parent-owned link selection onto the rendered layer. Kept separate
   // from the load effect so toggling a single link doesn't reload the source.
@@ -838,6 +871,39 @@ export default function MapView({
       map.off("mouseleave", "grunneier-links-line", onLeave);
     };
   }, [linksVisible]);
+
+  // Spotlight a single matrikkelenhet's segment — a thick bright halo drawn on
+  // top of the link overlay when its owner row is hovered in the sidebar.
+  const highlightGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => ({
+    type: "FeatureCollection",
+    features: highlightGeometry
+      ? [{ type: "Feature", geometry: highlightGeometry, properties: {} }]
+      : [],
+  }), [highlightGeometry]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    whenStyleReady(map, () => {
+      if (!map.getSource("grunneier-link-highlight")) {
+        map.addSource("grunneier-link-highlight", { type: "geojson", data: highlightGeoJSON });
+        map.addLayer({
+          id: "grunneier-link-highlight-line",
+          type: "line",
+          source: "grunneier-link-highlight",
+          layout: { "line-cap": "round", "line-join": "round" },
+          paint: {
+            "line-color": "#fab005",
+            "line-width": ["interpolate", ["linear"], ["zoom"], 8, 7, 14, 14],
+            "line-opacity": 0.9,
+          },
+        });
+      } else {
+        (map.getSource("grunneier-link-highlight") as maplibregl.GeoJSONSource).setData(highlightGeoJSON);
+      }
+      if (map.getLayer("grunneier-link-highlight-line")) map.moveLayer("grunneier-link-highlight-line");
+    });
+  }, [highlightGeoJSON]);
 
   // GPX overlay — uploaded walked tracks in green over the Kartverket routes.
   useEffect(() => {

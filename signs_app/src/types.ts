@@ -27,15 +27,22 @@ export interface PointMatrikkelResponse {
  *  link_id and `properties` carries the route lists + length. Geometry is a
  *  LineString or MultiLineString in WGS84. We render these as a selectable
  *  overlay; clicking one toggles it into the batch owner lookup. */
+export interface LinkRouteInfo {
+  rutenummer?: string | null;
+  rutenavn?: string | null;
+  rutetype?: string | null;
+  vedlikeholdsansvarlig?: string | null;
+}
+
 export interface LinkFeatureProps {
   link_id?: number;
   a_node?: number | null;
   b_node?: number | null;
   length_m?: number | null;
-  rutenavn_list?: string[] | null;
-  rutenummer_list?: string[] | null;
-  rutetype_list?: string[] | null;
-  vedlikeholdsansvarlig_list?: string[] | null;
+  /** Routes this link belongs to (parallel-array-derived server-side). Used to
+   *  filter the overlay to the current area's routes rather than every route
+   *  in turrutebasen within the viewport. */
+  routes?: LinkRouteInfo[];
 }
 
 export type LinkFeature = GeoJSON.Feature<
@@ -54,13 +61,19 @@ export interface LinkFeatureCollection {
 export interface GeometryOwnerItem {
   matrikkelenhet: string;
   matrikkelnummertekst?: string | null;
+  bruksnavn?: string | null;
   kommunenummer?: number | null;
   kommunenavn?: string | null;
   gardsnummer?: number | null;
   bruksnummer?: number | null;
   festenummer?: number | null;
   offset_meters?: number | null;
+  length_km?: number | null;
   owners?: string | null;
+  /** The portion of the link line that falls inside this matrikkelenhet, in
+   *  WGS84. Used to highlight the segment on the map when its owner row is
+   *  hovered. */
+  geometry?: GeoJSON.Geometry | null;
 }
 
 export interface GeometryOwnerResponse {

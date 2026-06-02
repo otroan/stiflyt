@@ -278,7 +278,6 @@ async def get_geometry_owners(
 @router.post("/point/matrikkelenhet", response_model=PointMatrikkelResponse, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def get_point_matrikkelenhet(
     request: PointMatrikkelRequest,
-    user: Optional[Dict] = Depends(get_optional_user),
     _: Dict = Depends(require_feature("grunneier")),
 ):
     """
@@ -287,8 +286,11 @@ async def get_point_matrikkelenhet(
     Accepts a point (latitude, longitude) in WGS84 and returns the teig polygon
     that contains the point, along with matrikkelenhet information.
 
-    Owner information is only included if the user is authenticated.
-    Without authentication, only matrikkelenhet metadata is returned.
+    Owner information is always fetched: access is already gated by the
+    `grunneier` feature flag (require_feature above), which only passes for an
+    authenticated OAuth session holding the flag. (The legacy get_optional_user
+    dependency checked HTTP Basic credentials that the signs_app OAuth client
+    never sends, so owners silently came back empty — see Phase 3.)
 
     Example request:
     ```json
@@ -302,12 +304,10 @@ async def get_point_matrikkelenhet(
     - matrikkelenhet: Formatted matrikkelenhet string
     - polygon_geometry: GeoJSON Polygon geometry of the teig
     - Additional matrikkelenhet metadata (bruksnavn, kommunenummer, etc.)
-    - owners: Owner information (only if authenticated)
+    - owners: Owner information
     """
     try:
-        # Only fetch owner information if user is authenticated
-        include_owners = user is not None
-        result = get_matrikkelenhet_for_point(request.lat, request.lon, include_owners=include_owners)
+        result = get_matrikkelenhet_for_point(request.lat, request.lon, include_owners=True)
 
         if result is None:
             raise HTTPException(
