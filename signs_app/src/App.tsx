@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Avatar,
@@ -16,11 +16,12 @@ import {
 } from "@mantine/core";
 import { IconAlertTriangle, IconCamera, IconDownload, IconHomeDollar, IconInfoCircle, IconMapPin, IconRoute, IconRoute2 } from "@tabler/icons-react";
 import { api } from "./api";
-import type { CandidatesResponse, FieldPhoto, GeometryOwnerItem, GpxTrack, PointMatrikkelResponse, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
+import type { CandidatesResponse, FieldPhoto, GeometryOwnerItem, GpxTrack, PlaceSearchResult, PointMatrikkelResponse, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
 import SiteEditor from "./SiteEditor";
 import AreaReport from "./AreaReport";
 import GrunneierPanel from "./GrunneierPanel";
+import SearchBox from "./SearchBox";
 import PhotoPanel, { PhotoLightbox } from "./PhotoPanel";
 import FloatingToolbar from "./FloatingToolbar";
 import ExportTab from "./ExportTab";
@@ -321,6 +322,16 @@ export default function App() {
   // Geometry of the owner row currently hovered in the batch result — drawn as
   // a bright spotlight on the map.
   const [highlightGeometry, setHighlightGeometry] = useState<GeoJSON.Geometry | null>(null);
+
+  // --- Map place search ---
+  const [flyTo, setFlyTo] = useState<{ lon: number; lat: number; nonce: number } | null>(null);
+  const flyNonceRef = useRef(0);
+  const handleSearchSelect = (r: PlaceSearchResult) => {
+    flyNonceRef.current += 1;
+    setFlyTo({ lon: r.lon, lat: r.lat, nonce: flyNonceRef.current });
+    // For a route hit, also focus it so the matching line stands out.
+    if (r.type === "rute" && r.rutenummer) setFocusedRoute(r.rutenummer);
+  };
 
   // Reset the route selection + owner result when switching area so stale
   // rutenumre from another area don't linger in the panel.
@@ -693,6 +704,7 @@ export default function App() {
           allowDeselect={false}
           w={240}
         />
+        <SearchBox onSelect={handleSearchSelect} />
         <div style={{ flex: 1 }} />
         {statLabel && (
           <Text size="xs" c="white" opacity={0.85} style={{ whiteSpace: "nowrap" }}>
@@ -754,6 +766,7 @@ export default function App() {
           matrikkelPolygon={matrikkelResult?.polygon_geometry ?? null}
           selectedRoutes={selectedRoutes}
           highlightGeometry={highlightGeometry}
+          flyTo={flyTo}
           baseLayer={baseLayer}
           focusedRoute={focusedRoute}
           onFocusRoute={setFocusedRoute}

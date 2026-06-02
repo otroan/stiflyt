@@ -15,6 +15,7 @@ import type {
   LinkBridgesResponse,
   LinkExclusionsResponse,
   MetadataOverrideResponse,
+  PlaceSearchResponse,
   PointMatrikkelResponse,
   RouteAnnotation,
   RouteAnnotationsResponse,
@@ -184,6 +185,11 @@ export const api = {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
   },
+
+  /** Combined place search (rutepunkt + stedsnavn + rute) for the map search
+   *  box. Returns hits with WGS84 coordinates for fly-to. */
+  searchPlaces: (q: string, limit = 15) =>
+    jsonFetch<PlaceSearchResponse>(`/search/places?q=${encodeURIComponent(q)}&limit=${limit}`),
 
   getCandidates: (area: string) => timedJsonFetch<CandidatesResponse>(`/signs/candidates/${area}`),
 

@@ -71,6 +71,9 @@ interface Props {
   /** A single geometry to spotlight (bright overlay) — driven by hovering an
    *  owner row in the Grunneier batch result. Null clears it. */
   highlightGeometry?: GeoJSON.Geometry | null;
+  /** Fly the map to a coordinate + drop a search pin. `nonce` bumps on every
+   *  pick so selecting the same place again re-flies. Null = no pin. */
+  flyTo?: { lon: number; lat: number; nonce: number } | null;
 }
 
 const BREHEIMEN_CENTER: [number, number] = [7.5, 61.7];
@@ -222,6 +225,7 @@ export default function MapView({
   onGpxVisibleChange,
   selectedRoutes,
   highlightGeometry,
+  flyTo,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -745,6 +749,48 @@ export default function MapView({
       if (map.getLayer("grunneier-link-highlight-line")) map.moveLayer("grunneier-link-highlight-line");
     });
   }, [highlightGeoJSON]);
+
+  // Search box fly-to — recentre the map on a picked place and drop a pin.
+  // Keyed on `nonce` so picking the same hit twice still flies.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !flyTo) return;
+    const pinGeoJSON: GeoJSON.FeatureCollection = {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [flyTo.lon, flyTo.lat] }, properties: {} }],
+    };
+    whenStyleReady(map, () => {
+      if (!map.getSource("search-pin")) {
+        map.addSource("search-pin", { type: "geojson", data: pinGeoJSON });
+        map.addLayer({
+          id: "search-pin-halo",
+          type: "circle",
+          source: "search-pin",
+          paint: {
+            "circle-radius": 12,
+            "circle-color": "#fa5252",
+            "circle-opacity": 0.25,
+          },
+        });
+        map.addLayer({
+          id: "search-pin-dot",
+          type: "circle",
+          source: "search-pin",
+          paint: {
+            "circle-radius": 5,
+            "circle-color": "#fa5252",
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 2,
+          },
+        });
+      } else {
+        (map.getSource("search-pin") as maplibregl.GeoJSONSource).setData(pinGeoJSON);
+      }
+      if (map.getLayer("search-pin-halo")) map.moveLayer("search-pin-halo");
+      if (map.getLayer("search-pin-dot")) map.moveLayer("search-pin-dot");
+      map.flyTo({ center: [flyTo.lon, flyTo.lat], zoom: Math.max(map.getZoom(), 13), duration: 800 });
+    });
+  }, [flyTo]);
 
   // GPX overlay — uploaded walked tracks in green over the Kartverket routes.
   useEffect(() => {

@@ -51,6 +51,24 @@ export interface GeometryOwnerResponse {
   error_summary?: string | null;
 }
 
+/** A hit from GET /search/places — combined search over ruteinfopunkt
+ *  (rutepunkt), stedsnavn and ruter. `lon`/`lat` are WGS84 for map fly-to;
+ *  `rutenummer` is set on `rute` hits so we can also focus the route. */
+export interface PlaceSearchResult {
+  id: string;
+  type: "ruteinfopunkt" | "stedsnavn" | "rute";
+  title: string;
+  subtitle?: string | null;
+  lon: number;
+  lat: number;
+  rutenummer?: string | null;
+}
+
+export interface PlaceSearchResponse {
+  results: PlaceSearchResult[];
+  total: number;
+}
+
 export interface SessionUser {
   email: string;
   name: string;
