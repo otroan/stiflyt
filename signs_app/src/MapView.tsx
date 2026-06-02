@@ -50,6 +50,10 @@ interface Props {
   /** Click handler on a work-marker — typically focuses its route + opens
    *  the Rute → Arbeid sub-tab. */
   onWorkMarkerOpen?: (annotationId: number) => void;
+  /** GeoJSON Polygon of the matrikkelenhet currently being inspected in the
+   *  Grunneier tab. Rendered as a semi-transparent purple fill with a darker
+   *  outline; auto-fits the map to the polygon's bounds when it changes. */
+  matrikkelPolygon?: GeoJSON.Polygon | null;
   /** Loop arms to highlight (Validering tab). Each arm is drawn in its own
    *  colour over the focused route so the user can compare and pick which to
    *  exclude. Empty / undefined = nothing drawn. */
@@ -204,6 +208,7 @@ export default function MapView({
   onWorkMarkersVisibleChange,
   onWorkMarkerOpen,
   hoveredAnnotationId,
+  matrikkelPolygon,
   loopArms,
   gpxTracks,
   gpxVisible,
@@ -597,6 +602,71 @@ export default function MapView({
     };
     whenStyleReady(map, apply);
   }, [loopArmsGeoJSON]);
+
+  // Matrikkelenhet polygon — purple semi-transparent fill + darker outline.
+  // Fed by the Grunneier tab; null clears both layers and removes the source.
+  // Bounds-fit on first appearance + any time the polygon changes to a new
+  // matrikkelenhet (so a click outside the current viewport still recentres).
+  const matrikkelGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => ({
+    type: "FeatureCollection",
+    features: matrikkelPolygon
+      ? [{ type: "Feature", geometry: matrikkelPolygon, properties: {} }]
+      : [],
+  }), [matrikkelPolygon]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      if (!map.getSource("matrikkel-polygon")) {
+        map.addSource("matrikkel-polygon", { type: "geojson", data: matrikkelGeoJSON });
+        map.addLayer({
+          id: "matrikkel-polygon-fill",
+          type: "fill",
+          source: "matrikkel-polygon",
+          paint: {
+            "fill-color": "#7c3aed",
+            "fill-opacity": 0.18,
+          },
+        });
+        map.addLayer({
+          id: "matrikkel-polygon-line",
+          type: "line",
+          source: "matrikkel-polygon",
+          paint: {
+            "line-color": "#6d28d9",
+            "line-width": 2.5,
+            "line-opacity": 0.9,
+          },
+        });
+      } else {
+        (map.getSource("matrikkel-polygon") as maplibregl.GeoJSONSource).setData(matrikkelGeoJSON);
+      }
+      if (map.getLayer("matrikkel-polygon-fill")) map.moveLayer("matrikkel-polygon-fill");
+      if (map.getLayer("matrikkel-polygon-line")) map.moveLayer("matrikkel-polygon-line");
+      // Fit when a polygon is present and not already in view. Cheap bbox
+      // from the polygon's outer ring.
+      if (matrikkelPolygon && matrikkelPolygon.coordinates?.[0]) {
+        const ring = matrikkelPolygon.coordinates[0];
+        let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+        for (const [lon, lat] of ring) {
+          if (lon < minLon) minLon = lon;
+          if (lon > maxLon) maxLon = lon;
+          if (lat < minLat) minLat = lat;
+          if (lat > maxLat) maxLat = lat;
+        }
+        if (Number.isFinite(minLon)) {
+          const b = map.getBounds();
+          const inside =
+            b.contains([minLon, minLat]) && b.contains([maxLon, maxLat]);
+          if (!inside) {
+            map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: 80, maxZoom: 16, duration: 400 });
+          }
+        }
+      }
+    };
+    whenStyleReady(map, apply);
+  }, [matrikkelGeoJSON, matrikkelPolygon]);
 
   // GPX overlay — uploaded walked tracks in green over the Kartverket routes.
   useEffect(() => {

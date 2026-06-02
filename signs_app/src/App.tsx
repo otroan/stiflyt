@@ -16,7 +16,7 @@ import {
 } from "@mantine/core";
 import { IconAlertTriangle, IconCamera, IconDownload, IconHomeDollar, IconInfoCircle, IconMapPin, IconRoute, IconRoute2 } from "@tabler/icons-react";
 import { api } from "./api";
-import type { CandidatesResponse, FieldPhoto, GpxTrack, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
+import type { CandidatesResponse, FieldPhoto, GpxTrack, PointMatrikkelResponse, RouteAnnotation, RouteListItem, RouteSummary, SessionUser, SignSite } from "./types";
 import MapView, { type BaseLayerId } from "./MapView";
 import SiteEditor from "./SiteEditor";
 import AreaReport from "./AreaReport";
@@ -298,6 +298,14 @@ export default function App() {
   const [workMarkers, setWorkMarkers] = useState<RouteAnnotation[]>([]);
   const [workMarkersVisible, setWorkMarkersVisible] = useState(true);
   const [hoveredAnnotationId, setHoveredAnnotationId] = useState<number | null>(null);
+
+  // --- Grunneier (matrikkelenhet by point) ---
+  // Map click while sidebarTab === "grunneier" runs api.pointMatrikkelenhet(lat,lon);
+  // the response polygon is drawn on the map and the details/owners render in
+  // the Grunneier sidebar panel. Loading flag drives a Loader on the panel.
+  const [matrikkelResult, setMatrikkelResult] = useState<PointMatrikkelResponse | null>(null);
+  const [matrikkelLoading, setMatrikkelLoading] = useState(false);
+  const [matrikkelError, setMatrikkelError] = useState<string | null>(null);
   // Selected work-kind for the next placement click. Set by the kind picker
   // in RoutePanel's Arbeid sub-tab; the toolbar's IconTool button defaults to
   // work_other.
@@ -404,6 +412,31 @@ export default function App() {
   }, [routes]);
 
   async function handleMapClick(lon: number, lat: number, routesAtPoint: string[]) {
+    if (sidebarTab === "grunneier") {
+      // Grunneier tab owns map clicks unconditionally — clicking anywhere
+      // fetches the matrikkelenhet containing the point. No mode toggle
+      // because the whole panel is in "look up owner" mode.
+      setMatrikkelLoading(true);
+      setMatrikkelError(null);
+      try {
+        const r = await api.pointMatrikkelenhet(lat, lon);
+        setMatrikkelResult(r);
+      } catch (e) {
+        // 404 from the backend means "no matrikkelenhet at this point"
+        // (sea, glacier, etc.) — distinct from a network/auth error.
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("404")) {
+          setMatrikkelResult(null);
+          setMatrikkelError("Ingen matrikkelenhet på dette punktet.");
+        } else {
+          notifyError(e);
+          setMatrikkelError(msg);
+        }
+      } finally {
+        setMatrikkelLoading(false);
+      }
+      return;
+    }
     if (mode === "place-photo") {
       // Geotag the picked-pending photo at the clicked position, then exit.
       if (pendingPlacementId == null) { setMode("browse"); return; }
@@ -607,9 +640,10 @@ export default function App() {
           sites={candidates?.sites ?? []}
           selectedIdx={selectedSiteIdx}
           onSelect={selectSiteByIdx}
-          onMapClick={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker") ? handleMapClick : undefined}
-          cursor={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker") ? "crosshair" : undefined}
-          placementActive={mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker"}
+          onMapClick={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || sidebarTab === "grunneier") ? handleMapClick : undefined}
+          cursor={(mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || sidebarTab === "grunneier") ? "crosshair" : undefined}
+          placementActive={mode === "add-manual" || mode === "place-photo" || mode === "place-work-marker" || sidebarTab === "grunneier"}
+          matrikkelPolygon={matrikkelResult?.polygon_geometry ?? null}
           baseLayer={baseLayer}
           focusedRoute={focusedRoute}
           onFocusRoute={setFocusedRoute}
@@ -797,7 +831,12 @@ export default function App() {
 
         {me?.features?.includes("grunneier") && (
           <Tabs.Panel value="grunneier" className="side-panel">
-            <GrunneierPanel />
+            <GrunneierPanel
+              result={matrikkelResult}
+              loading={matrikkelLoading}
+              error={matrikkelError}
+              onClear={() => { setMatrikkelResult(null); setMatrikkelError(null); }}
+            />
           </Tabs.Panel>
         )}
 

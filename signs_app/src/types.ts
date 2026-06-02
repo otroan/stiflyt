@@ -1,6 +1,27 @@
 export type SignColor = "trehvit" | "grønn";
 export type SignStatus = "proposed" | "accepted" | "rejected" | "installed";
 
+/** One matrikkelenhet (cadastral unit) returned by POST /point/matrikkelenhet.
+ *  `polygon_geometry` is GeoJSON Polygon in WGS84 — rendered as the highlight
+ *  layer in the Grunneier tab. `owners` is a server-formatted multi-line
+ *  string (one line per ejer); rendered as `<pre>` to preserve newlines. */
+export interface PointMatrikkelResponse {
+  matrikkelenhet: string;
+  matrikkelnummertekst?: string | null;
+  bruksnavn?: string | null;
+  kommunenummer?: number | null;
+  kommunenavn?: string | null;
+  arealmerknadtekst?: string | null;
+  lagretberegnetareal?: number | null;
+  gardsnummer?: number | null;
+  bruksnummer?: number | null;
+  festenummer?: number | null;
+  polygon_geometry: GeoJSON.Polygon;
+  owners?: string | null;
+  owner_error?: string | null;
+  teigid?: number | null;
+}
+
 export interface SessionUser {
   email: string;
   name: string;

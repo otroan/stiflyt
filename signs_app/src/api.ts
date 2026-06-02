@@ -13,6 +13,7 @@ import type {
   LinkBridgesResponse,
   LinkExclusionsResponse,
   MetadataOverrideResponse,
+  PointMatrikkelResponse,
   RouteAnnotation,
   RouteAnnotationsResponse,
   RouteValidationResponse,
@@ -129,6 +130,18 @@ export const api = {
     didRedirectOn401 = false;
     window.location.href = import.meta.env.BASE_URL;
   },
+
+  /** Look up the matrikkelenhet (cadastral unit) containing (lat, lon) plus
+   *  its current owners. Gated server-side by the `grunneier` feature flag
+   *  — caller should only invoke this when the user has it. 404 from the
+   *  endpoint surfaces as a thrown Error with the path; the caller catches
+   *  to show "ingen matrikkelenhet funnet på dette punktet" instead of a
+   *  generic toast. */
+  pointMatrikkelenhet: (lat: number, lon: number) =>
+    jsonFetch<PointMatrikkelResponse>(`/point/matrikkelenhet`, {
+      method: "POST",
+      body: JSON.stringify({ lat, lon }),
+    }),
 
   getCandidates: (area: string) => timedJsonFetch<CandidatesResponse>(`/signs/candidates/${area}`),
 
