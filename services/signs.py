@@ -236,17 +236,17 @@ def _build_edge_graph(
 
 def shortest_path_distance(
     conn,
-    area_prefix: str,
+    label_prefix: str,
     from_node: Optional[int],
     to_node: Optional[int],
 ) -> Optional[Dict[str, Any]]:
-    """Dijkstra walking path between two anchor nodes over the area's
-    *marked-route* link graph (links whose rutenummer_list starts with
-    `area_prefix`). Returns {distance_m, node_path, link_ids, routes} where
-    `routes` is the ordered distinct rutenumre traversed (so the caller can
-    show "via bre1, bre3"), or None if either node is absent or no path exists.
-    The caller applies the per-area correction factor. Used for "through" signs
-    whose destination lies beyond a single route's endpoint."""
+    """Dijkstra walking path between two anchor nodes over the whole DNT-route
+    graph (every DNT area — so a through-sign can cross area boundaries, e.g. a
+    bre spur into Jotunheimen). Returns {distance_m, node_path, link_ids,
+    routes} where `routes` is the minimal continuous route labelling (so the
+    caller can show "via bre1, bre3"), or None if either node is absent or no
+    path exists. `label_prefix` only biases the labelling toward that area's
+    routes. The caller applies the per-area correction factor."""
     if from_node is None or to_node is None:
         return None
     try:
@@ -255,7 +255,7 @@ def shortest_path_distance(
     except (TypeError, ValueError):
         return None
 
-    adjacency = _build_edge_graph(_get_links_for_prefix(conn, area_prefix))
+    adjacency = dnt_route_graph(conn)
     if from_node not in adjacency or to_node not in adjacency:
         return None
     if from_node == to_node:
@@ -306,8 +306,8 @@ def shortest_path_distance(
     # the area's own routes and, at each step, pick the route that stays on the
     # path for the longest consecutive run — yielding e.g. ["bre1", "bre3"].
     def _area_routes(routes: List[str]) -> List[str]:
-        scoped = [r for r in routes if r.startswith(area_prefix)]
-        return scoped or routes  # fall back to foreign routes if no area route on this link
+        scoped = [r for r in routes if r.startswith(label_prefix)]
+        return scoped or routes  # fall back to foreign routes (other DNT area) if none here
     routes_in_order: List[str] = []
     i = 0
     n = len(edge_routes)
@@ -339,20 +339,49 @@ def shortest_path_distance(
     }
 
 
-def area_node_set(conn, area_prefix: str) -> set:
-    """Set of anchor node ids that appear in the area's marked-route link graph
-    — i.e. the nodes a "through" path can actually start or end at. Used to
-    filter anchor search to routable destinations."""
-    nodes: set = set()
-    for link in _get_links_for_prefix(conn, area_prefix):
-        for key in ("a_node", "b_node"):
-            v = link.get(key)
-            if v is not None:
-                try:
-                    nodes.add(int(v))
-                except (TypeError, ValueError):
-                    pass
-    return nodes
+# The DNT-route graph, cached for the process lifetime. "DNT route" = any link
+# whose vedlikeholdsansvarlig names DNT (word-boundary, so "DNTD" doesn't match)
+# — the authoritative test, more robust than the 3-letter prefix and excluding
+# the numeric non-DNT routes that bloat turrutebasen (~17k DNT links vs ~49k).
+# Built once (~1 s) and reused so the per-keystroke anchor search and the
+# distance computation don't reload it each call. The graph spans EVERY DNT area
+# so through-signs cross area boundaries freely (e.g. a bre spur into
+# Jotunheimen); only the label preference is area-scoped. Route data is static
+# between deploys; call dnt_route_graph(conn, refresh=True) after a re-import.
+_DNT_GRAPH_CACHE: Optional[Dict[int, List[Tuple[int, float, Optional[int], List[str]]]]] = None
+
+
+def _get_dnt_links(conn) -> List[Dict[str, Any]]:
+    if not validate_schema_name(ROUTE_SCHEMA):
+        raise ValueError(f"Invalid ROUTE_SCHEMA: {ROUTE_SCHEMA}")
+    schema_quoted = quote_identifier(ROUTE_SCHEMA)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            rf"""
+            SELECT link_id, a_node, b_node, length_m, rutenummer_list
+            FROM {schema_quoted}.links_with_routes
+            WHERE EXISTS (
+                SELECT 1 FROM unnest(vedlikeholdsansvarlig_list) v
+                WHERE v ~ '\yDNT\y'
+            );
+            """
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def dnt_route_graph(conn, refresh: bool = False):
+    """Cached edge-graph over all DNT-route links (every DNT area). Spans area
+    boundaries so cross-area through-signs work."""
+    global _DNT_GRAPH_CACHE
+    if _DNT_GRAPH_CACHE is None or refresh:
+        _DNT_GRAPH_CACHE = _build_edge_graph(_get_dnt_links(conn))
+    return _DNT_GRAPH_CACHE
+
+
+def routable_node_set(conn) -> set:
+    """Anchor node ids present in the DNT-route graph — the nodes a through-path
+    can start or end at. Used to filter anchor search to routable destinations."""
+    return set(dnt_route_graph(conn).keys())
 
 
 def nearest_anchor_node(conn, lon: Optional[float], lat: Optional[float]) -> Optional[int]:

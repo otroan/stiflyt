@@ -86,7 +86,7 @@ from services.operational_store import (
 )
 from services.signs import (
     get_signs_for_route, get_signs_for_prefix, get_signs_for_bbox, build_sign_production_rows,
-    shortest_path_distance, nearest_anchor_node, search_anchor_nodes_by_navn, area_node_set,
+    shortest_path_distance, nearest_anchor_node, search_anchor_nodes_by_navn, routable_node_set,
 )
 from services.sign_candidates import get_sign_candidates_for_area, get_route_summary_for_area, get_area_stats
 from services._timing import format_server_timing
@@ -3507,7 +3507,7 @@ async def search_anchors_endpoint(
         named = search_endpoint_names(opc, q, area_prefix=area_code, limit=limit * 3)
     with db_connection() as rc:
         navn_hits = search_anchor_nodes_by_navn(rc, q, limit=limit * 3)
-        routable = area_node_set(rc, area_code)
+        routable = routable_node_set(rc)
     merged: Dict[int, Dict] = {}
     for r in named:
         merged[r["anchor_node_id"]] = {**r, "source": "endpoint_name"}
