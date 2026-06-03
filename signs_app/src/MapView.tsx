@@ -81,6 +81,10 @@ interface Props {
   /** kulturminneid hovered in the sidebar list — its polygon/point is
    *  highlighted on the map. */
   hoveredKulturminneId?: string | null;
+  /** Add a MapLibre GeolocateControl (blue user dot + tap-to-centre/follow).
+   *  Used by the touch-first field app. iOS needs the user to tap it (the
+   *  permission prompt must be gesture-triggered), so we don't auto-activate. */
+  geolocate?: boolean;
 }
 
 const BREHEIMEN_CENTER: [number, number] = [7.5, 61.7];
@@ -235,6 +239,7 @@ export default function MapView({
   flyTo,
   kulturminner,
   hoveredKulturminneId,
+  geolocate,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -268,6 +273,17 @@ export default function MapView({
     mapRef.current = map;
     map.addControl(new maplibregl.NavigationControl({}), "top-right");
     map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");
+    if (geolocate) {
+      map.addControl(
+        new maplibregl.GeolocateControl({
+          positionOptions: { enableHighAccuracy: true },
+          trackUserLocation: true,
+          showUserLocation: true,
+          showAccuracyCircle: true,
+        }),
+        "top-right",
+      );
+    }
     hoverPopupRef.current = new maplibregl.Popup({
       closeButton: false,
       closeOnClick: false,
