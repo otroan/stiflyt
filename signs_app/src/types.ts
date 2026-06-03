@@ -69,6 +69,31 @@ export interface PlaceSearchResponse {
   total: number;
 }
 
+/** A cultural-heritage monument (Riksantikvaren Askeladden) near a route, from
+ *  GET /routes/{rutenummer}/kulturminner. `link` opens it in Kulturminnesøk. */
+export interface Kulturminne {
+  kulturminneid: string | null;
+  navn: string | null;
+  kategori: string | null;
+  art: string | null;
+  datering: string | null;
+  vernetype: string | null;
+  link: string | null;
+  distance_m: number | null;
+  lon: number | null;
+  lat: number | null;
+  geometry?: GeoJSON.Geometry | null;
+}
+
+export interface RouteKulturminnerResponse {
+  rutenummer: string;
+  radius_m: number;
+  /** False when the kulturminner dataset hasn't been imported into the DB. */
+  available: boolean;
+  count: number;
+  kulturminner: Kulturminne[];
+}
+
 /** A named, routable anchor node from /signs/area/{area}/anchors/search —
  *  a candidate destination for a manually-added "through" sign. */
 export interface AnchorHit {

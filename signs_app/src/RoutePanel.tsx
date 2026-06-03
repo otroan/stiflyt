@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActionIcon,
+  Alert,
   Badge,
   Button,
   Card,
+  Collapse,
   Group,
   Stack,
   Text,
@@ -43,7 +45,56 @@ import {
   type RouteAnnotationKind,
   type RouteSummary,
   type RouteValidationResponse,
+  type RouteKulturminnerResponse,
 } from "./types";
+
+/** Riksantikvaren cultural-heritage proximity warning for the focused route:
+ *  monuments within 50 m of the trail, with distance + Kulturminnesøk links.
+ *  Renders nothing when the dataset isn't imported or none are nearby. */
+function KulturminnerWarning({ rutenummer }: { rutenummer: string }) {
+  const [data, setData] = useState<RouteKulturminnerResponse | null>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setOpen(false);
+    api.getRouteKulturminner(rutenummer)
+      .then((r) => { if (!cancelled) setData(r); })
+      .catch(() => { /* non-critical; warning just won't show */ });
+    return () => { cancelled = true; };
+  }, [rutenummer]);
+
+  if (!data || !data.available || data.count === 0) return null;
+  return (
+    <Alert color="orange" variant="light" icon={<IconAlertTriangle size={16} />} p="xs">
+      <Group justify="space-between" wrap="nowrap">
+        <Text size="sm" fw={500}>
+          {data.count} kulturminne{data.count > 1 ? "r" : ""} innen {Math.round(data.radius_m)} m
+        </Text>
+        <Button size="compact-xs" variant="subtle" color="orange" onClick={() => setOpen((o) => !o)}>
+          {open ? "Skjul" : "Vis"}
+        </Button>
+      </Group>
+      <Collapse in={open}>
+        <Stack gap={4} mt={6}>
+          {data.kulturminner.map((k, i) => (
+            <Text key={k.kulturminneid ?? i} size="xs">
+              <strong>{k.navn || "Uten navn"}</strong>
+              {k.distance_m != null && <span style={{ color: "#666" }}> · {k.distance_m} m</span>}
+              {k.kategori && <span style={{ color: "#888" }}> · {k.kategori}</span>}
+              {k.link && (
+                <>
+                  {" · "}
+                  <a href={k.link} target="_blank" rel="noopener">Kulturminnesøk ↗</a>
+                </>
+              )}
+            </Text>
+          ))}
+        </Stack>
+      </Collapse>
+    </Alert>
+  );
+}
 
 // Metadata issues resolved by setting a canonical route value (vs. those that
 // need a Kartverket row deletion, which the override can't fix).
@@ -253,6 +304,8 @@ export default function RoutePanel({
           color="green"
         />
       </Group>
+
+      <KulturminnerWarning rutenummer={rutenummer} />
 
       <Tabs value={tab} onChange={(v) => v && setTab(v as SubTab)} variant="default" keepMounted={false}>
         <Tabs.List>

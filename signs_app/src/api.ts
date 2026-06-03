@@ -19,6 +19,7 @@ import type {
   MetadataOverrideResponse,
   PlaceSearchResponse,
   PointMatrikkelResponse,
+  RouteKulturminnerResponse,
   RouteAnnotation,
   RouteAnnotationsResponse,
   RouteValidationResponse,
@@ -233,6 +234,12 @@ export const api = {
       throw new Error(`API ${res.status} delete manual-destination`);
     }
   },
+
+  /** Cultural-heritage monuments within `radius` m of a route (50 m warning). */
+  getRouteKulturminner: (rutenummer: string, radius = 50) =>
+    jsonFetch<RouteKulturminnerResponse>(
+      `/routes/${encodeURIComponent(rutenummer)}/kulturminner?radius=${radius}`,
+    ),
 
   getCandidates: (area: string) => timedJsonFetch<CandidatesResponse>(`/signs/candidates/${area}`),
 

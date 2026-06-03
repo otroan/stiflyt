@@ -103,6 +103,7 @@ from collections import defaultdict
 from services.database import db_connection, get_route_schema, get_teig_schema, quote_identifier, ROUTE_SCHEMA
 from services.excel_report import generate_owners_excel_from_data
 from services.geometry_owner_service import get_owners_for_linestring, GeometryOwnerError
+from services.kulturminne_service import get_kulturminner_near_route, KulturminneError
 from services.point_matrikkel_service import get_matrikkelenhet_for_point, PointMatrikkelError
 from api.auth import require_feature
 import psycopg
@@ -3494,6 +3495,20 @@ async def patch_sign_destination_skilt(
             "updated_at": ua.isoformat() if ua is not None and hasattr(ua, "isoformat") else ua,
         },
     }
+
+
+@router.get("/routes/{rutenummer}/kulturminner")
+async def get_route_kulturminner(
+    rutenummer: str,
+    radius: Annotated[float, Query(ge=0, le=5000, description="Proximity radius in metres")] = 50.0,
+):
+    """Cultural-heritage monuments (Riksantikvaren) within `radius` metres of a
+    route's marked link network — drives the signs_app 50 m proximity warning.
+    `available` is false when the kulturminner dataset hasn't been imported."""
+    try:
+        return get_kulturminner_near_route(rutenummer, radius_m=radius)
+    except KulturminneError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/signs/area/{area_code}/anchors/search")
