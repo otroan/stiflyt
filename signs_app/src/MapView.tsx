@@ -873,10 +873,15 @@ export default function MapView({
           { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string
         ));
         const onKmClick = (e: maplibregl.MapMouseEvent) => {
-          const f = map.queryRenderedFeatures(e.point, {
+          const feats = map.queryRenderedFeatures(e.point, {
             layers: ["kulturminner-fill", "kulturminner-point"],
-          })[0];
-          if (!f) return;
+          });
+          if (!feats.length) return;
+          // Sikringssone (protection zone) polygons enclose the monument, so a
+          // click lands on the zone on top. Prefer the enkeltminne (the actual
+          // monument, which carries navn/kategori/…) when both are under the
+          // cursor; fall back to the zone only when nothing else is there.
+          const f = feats.find((ff) => (ff.properties || {}).kind === "enkeltminne") || feats[0];
           const p = (f.properties || {}) as Record<string, string | number | undefined>;
           const title = (p.navn as string) || (p.kind === "sikringssone" ? "Sikringssone" : "Kulturminne");
           const rows: string[] = [];
