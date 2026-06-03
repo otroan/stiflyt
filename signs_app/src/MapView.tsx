@@ -78,6 +78,9 @@ interface Props {
    *  points/areas + sikringssone polygons within 50 m. Each feature has a
    *  `kind` property. Null clears the layer. */
   kulturminner?: GeoJSON.FeatureCollection | null;
+  /** kulturminneid hovered in the sidebar list — its polygon/point is
+   *  highlighted on the map. */
+  hoveredKulturminneId?: string | null;
 }
 
 const BREHEIMEN_CENTER: [number, number] = [7.5, 61.7];
@@ -231,6 +234,7 @@ export default function MapView({
   highlightGeometry,
   flyTo,
   kulturminner,
+  hoveredKulturminneId,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -837,30 +841,88 @@ export default function MapView({
             "circle-stroke-width": 1.5,
           },
         });
+        // Highlight layers (driven by sidebar hover) — filtered to one
+        // kulturminneid, bright yellow over the brown base.
+        map.addLayer({
+          id: "kulturminner-highlight-fill",
+          type: "fill",
+          source: "kulturminner",
+          filter: ["==", ["get", "kulturminneid"], "__none__"],
+          paint: { "fill-color": "#fab005", "fill-opacity": 0.45 },
+        });
+        map.addLayer({
+          id: "kulturminner-highlight-line",
+          type: "line",
+          source: "kulturminner",
+          filter: ["==", ["get", "kulturminneid"], "__none__"],
+          paint: { "line-color": "#f08c00", "line-width": 3 },
+        });
+        map.addLayer({
+          id: "kulturminner-highlight-point",
+          type: "circle",
+          source: "kulturminner",
+          filter: ["==", ["get", "kulturminneid"], "__none__"],
+          paint: {
+            "circle-radius": 8,
+            "circle-color": "#fab005",
+            "circle-stroke-color": "#f08c00",
+            "circle-stroke-width": 2,
+          },
+        });
+        const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (c) => (
+          { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string
+        ));
         const onKmClick = (e: maplibregl.MapMouseEvent) => {
           const f = map.queryRenderedFeatures(e.point, {
             layers: ["kulturminner-fill", "kulturminner-point"],
           })[0];
           if (!f) return;
-          const p = (f.properties || {}) as { navn?: string; kind?: string; link?: string; distance_m?: number };
-          const title = p.navn || (p.kind === "sikringssone" ? "Sikringssone" : "Kulturminne");
-          const dist = p.distance_m != null ? ` · ${p.distance_m} m` : "";
-          const link = p.link ? `<br/><a href="${p.link}" target="_blank" rel="noopener">Kulturminnesøk ↗</a>` : "";
-          new maplibregl.Popup({ closeButton: true })
+          const p = (f.properties || {}) as Record<string, string | number | undefined>;
+          const title = (p.navn as string) || (p.kind === "sikringssone" ? "Sikringssone" : "Kulturminne");
+          const rows: string[] = [];
+          if (p.kategori) rows.push(`Kategori: ${escapeHtml(String(p.kategori))}`);
+          if (p.art) rows.push(`Art: ${escapeHtml(String(p.art))}`);
+          if (p.datering && String(p.datering) !== "000") rows.push(`Datering: ${escapeHtml(String(p.datering))}`);
+          if (p.vernetype) rows.push(`Vern: ${escapeHtml(String(p.vernetype))}`);
+          if (p.distance_m != null) rows.push(`${p.distance_m} m fra ruta`);
+          const meta = rows.length ? `<div style="color:#555;margin-top:2px">${rows.join("<br/>")}</div>` : "";
+          const link = p.link ? `<div style="margin-top:4px"><a href="${escapeHtml(String(p.link))}" target="_blank" rel="noopener">Kulturminnesøk ↗</a></div>` : "";
+          new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
             .setLngLat(e.lngLat)
-            .setHTML(`<div style="font-size:12px"><strong>${title}</strong>${dist}${link}</div>`)
+            .setHTML(`<div style="font-size:12px"><strong>${escapeHtml(title)}</strong>${meta}${link}</div>`)
             .addTo(map);
         };
         map.on("click", "kulturminner-fill", onKmClick);
         map.on("click", "kulturminner-point", onKmClick);
+        for (const lid of ["kulturminner-fill", "kulturminner-point"]) {
+          map.on("mouseenter", lid, () => { map.getCanvas().style.cursor = "pointer"; });
+          map.on("mouseleave", lid, () => { map.getCanvas().style.cursor = ""; });
+        }
       } else {
         (map.getSource("kulturminner") as maplibregl.GeoJSONSource).setData(kulturminnerGeoJSON);
       }
-      for (const lid of ["kulturminner-fill", "kulturminner-outline", "kulturminner-point"]) {
+      for (const lid of [
+        "kulturminner-fill", "kulturminner-outline", "kulturminner-point",
+        "kulturminner-highlight-fill", "kulturminner-highlight-line", "kulturminner-highlight-point",
+      ]) {
         if (map.getLayer(lid)) map.moveLayer(lid);
       }
     });
   }, [kulturminnerGeoJSON]);
+
+  // Highlight the kulturminne hovered in the sidebar list (filter the highlight
+  // layers to its kulturminneid; "__none__" hides them).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    whenStyleReady(map, () => {
+      const id = hoveredKulturminneId ?? "__none__";
+      const filter = ["==", ["get", "kulturminneid"], id] as unknown as maplibregl.FilterSpecification;
+      for (const lid of ["kulturminner-highlight-fill", "kulturminner-highlight-line", "kulturminner-highlight-point"]) {
+        if (map.getLayer(lid)) map.setFilter(lid, filter);
+      }
+    });
+  }, [hoveredKulturminneId]);
 
   // GPX overlay — uploaded walked tracks in green over the Kartverket routes.
   useEffect(() => {

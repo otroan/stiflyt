@@ -188,6 +188,9 @@ export default function App() {
   // Cultural-heritage (kulturminner) overlay for the focused route: enkeltminne
   // points/areas + sikringssone polygons within 50 m, as one FeatureCollection.
   const [kulturminnerFC, setKulturminnerFC] = useState<GeoJSON.FeatureCollection | null>(null);
+  // kulturminneid currently hovered in the RoutePanel list — highlights its
+  // polygon/point on the map.
+  const [hoveredKulturminneId, setHoveredKulturminneId] = useState<string | null>(null);
   useEffect(() => {
     if (!focusedRoute) { setKulturminnerFC(null); return; }
     let cancelled = false;
@@ -199,13 +202,20 @@ export default function App() {
         for (const k of r.kulturminner) {
           if (k.geometry) features.push({
             type: "Feature", geometry: k.geometry,
-            properties: { kind: "enkeltminne", navn: k.navn, kategori: k.kategori, link: k.link, distance_m: k.distance_m },
+            properties: {
+              kind: "enkeltminne", kulturminneid: k.kulturminneid, navn: k.navn,
+              kategori: k.kategori, art: k.art, datering: k.datering,
+              vernetype: k.vernetype, link: k.link, distance_m: k.distance_m,
+            },
           });
         }
         for (const s of r.sikringssoner) {
           if (s.geometry) features.push({
             type: "Feature", geometry: s.geometry,
-            properties: { kind: "sikringssone", navn: "Sikringssone", link: s.link, distance_m: s.distance_m },
+            properties: {
+              kind: "sikringssone", kulturminneid: s.kulturminneid, navn: "Sikringssone",
+              link: s.link, distance_m: s.distance_m,
+            },
           });
         }
         setKulturminnerFC({ type: "FeatureCollection", features });
@@ -797,6 +807,7 @@ export default function App() {
           highlightGeometry={highlightGeometry}
           flyTo={flyTo}
           kulturminner={kulturminnerFC}
+          hoveredKulturminneId={hoveredKulturminneId}
           baseLayer={baseLayer}
           focusedRoute={focusedRoute}
           onFocusRoute={setFocusedRoute}
@@ -935,6 +946,7 @@ export default function App() {
               refreshKey={annotationsBumpKey}
               onOpenPhotos={(photos, index) => setLightboxState({ photos, index })}
               onHoverAnnotation={setHoveredAnnotationId}
+              onHoverKulturminne={setHoveredKulturminneId}
             />
           )}
         </Tabs.Panel>

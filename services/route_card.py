@@ -56,7 +56,7 @@ def gather(conn, op_conn, area_code: str, rutenummer: str) -> Dict[str, Any]:
         "start_name": None, "end_name": None,
         "measured_factor": None, "assumed_factor": None, "n_tracks_used": 0,
         "photos": [], "diary": [], "inspections": [], "dugnads": [],
-        "work_markers": [], "validation": None,
+        "work_markers": [], "validation": None, "kulturminner": [],
     }
 
     # rutenavn + geometry via fotruteinfo + route_link_graph
@@ -108,6 +108,13 @@ def gather(conn, op_conn, area_code: str, rutenummer: str) -> Dict[str, Any]:
     # photos near route
     from . import field_photos as fp_svc
     out["photos"] = fp_svc.list_photos_near_route(conn, area_code, rutenummer)
+
+    # cultural-heritage monuments within 50 m (Riksantikvaren)
+    try:
+        from .kulturminne_service import get_kulturminner_near_route
+        out["kulturminner"] = get_kulturminner_near_route(rutenummer, radius_m=50).get("kulturminner", [])
+    except Exception as e:
+        print(f"[route_card] kulturminner lookup failed for {rutenummer}: {e}")
 
     # annotations: split by kind
     from . import route_annotations as ann_svc
@@ -494,6 +501,22 @@ def render_html(data: Dict[str, Any]) -> str:
         print(f"[route_card] overview map failed: {e}")
         overview_map_html = ""
 
+    km_items = data.get("kulturminner") or []
+    if km_items:
+        rows = []
+        for k in km_items:
+            navn = _esc(k.get("navn") or "Uten navn")
+            dist = f' · {k["distance_m"]} m' if k.get("distance_m") is not None else ""
+            kat = f' · {_esc(str(k["kategori"]))}' if k.get("kategori") else ""
+            link = f' · <a href="{_esc(str(k["link"]))}" target="_blank" rel="noopener">Kulturminnesøk ↗</a>' if k.get("link") else ""
+            rows.append(f'<div class="entry"><strong>{navn}</strong>{dist}{kat}{link}</div>')
+        kulturminner_html = (
+            f'<div class="muted">{len(km_items)} kulturminne(r) innen 50 m — vis hensyn ved arbeid.</div>'
+            + "".join(rows)
+        )
+    else:
+        kulturminner_html = '<div class="muted">Ingen kulturminner innen 50 m.</div>'
+
     photos = data["photos"][:8]
     photos_html = (
         '<div class="thumbs">'
@@ -534,6 +557,9 @@ def render_html(data: Dict[str, Any]) -> str:
 
 <h2>Validering</h2>
 {val_lines}
+
+<h2>Kulturminner</h2>
+{kulturminner_html}
 
 <h2>Bilder</h2>
 {photos_html}

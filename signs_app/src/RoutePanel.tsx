@@ -51,7 +51,7 @@ import {
 /** Riksantikvaren cultural-heritage proximity warning for the focused route:
  *  monuments within 50 m of the trail, with distance + Kulturminnesøk links.
  *  Renders nothing when the dataset isn't imported or none are nearby. */
-function KulturminnerWarning({ rutenummer }: { rutenummer: string }) {
+function KulturminnerWarning({ rutenummer, onHover }: { rutenummer: string; onHover?: (id: string | null) => void }) {
   const [data, setData] = useState<RouteKulturminnerResponse | null>(null);
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -61,8 +61,8 @@ function KulturminnerWarning({ rutenummer }: { rutenummer: string }) {
     api.getRouteKulturminner(rutenummer)
       .then((r) => { if (!cancelled) setData(r); })
       .catch(() => { /* non-critical; warning just won't show */ });
-    return () => { cancelled = true; };
-  }, [rutenummer]);
+    return () => { cancelled = true; onHover?.(null); };
+  }, [rutenummer, onHover]);
 
   if (!data || !data.available || data.count === 0) return null;
   return (
@@ -78,7 +78,13 @@ function KulturminnerWarning({ rutenummer }: { rutenummer: string }) {
       <Collapse in={open}>
         <Stack gap={4} mt={6}>
           {data.kulturminner.map((k, i) => (
-            <Text key={k.kulturminneid ?? i} size="xs">
+            <Text
+              key={k.kulturminneid ?? i}
+              size="xs"
+              style={{ cursor: k.geometry ? "pointer" : undefined }}
+              onMouseEnter={() => onHover?.(k.kulturminneid)}
+              onMouseLeave={() => onHover?.(null)}
+            >
               <strong>{k.navn || "Uten navn"}</strong>
               {k.distance_m != null && <span style={{ color: "#666" }}> · {k.distance_m} m</span>}
               {k.kategori && <span style={{ color: "#888" }}> · {k.kategori}</span>}
@@ -146,6 +152,9 @@ interface Props {
    *  null on mouse-leave. App forwards this to MapView so the matching work
    *  marker is highlighted (and panned to if offscreen). */
   onHoverAnnotation?: (id: number | null) => void;
+  /** Called with a kulturminneid while hovering a row in the kulturminner
+   *  warning list (null on leave), so App can highlight its polygon on the map. */
+  onHoverKulturminne?: (id: string | null) => void;
 }
 
 type SubTab = "diary" | "inspection" | "dugnad" | "work" | "validation" | "bilder" | "hoyde";
@@ -199,6 +208,7 @@ export default function RoutePanel({
   onOpenPhotos,
   refreshKey,
   onHoverAnnotation,
+  onHoverKulturminne,
 }: Props) {
   const [tab, setTab] = useState<SubTab>(initialSubTab ?? "diary");
 
@@ -305,7 +315,7 @@ export default function RoutePanel({
         />
       </Group>
 
-      <KulturminnerWarning rutenummer={rutenummer} />
+      <KulturminnerWarning rutenummer={rutenummer} onHover={onHoverKulturminne} />
 
       <Tabs value={tab} onChange={(v) => v && setTab(v as SubTab)} variant="default" keepMounted={false}>
         <Tabs.List>
