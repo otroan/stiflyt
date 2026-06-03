@@ -97,35 +97,27 @@ app.include_router(
     dependencies=[Depends(require_user_or_api_key)],
 )
 
-# The legacy vanilla frontend (formerly served at `/`, `/routes.html`, with
-# /static //js //images mounts) was retired: every working feature lives in
-# signs_app at /skilt/ (route inspection/validation, owners-by-point/route,
-# Excel export, place search), and its routes.html segment-editing UI was only
-# ever stubs ("backend API må implementeres"). Redirect the old root there.
-# Server-rendered endpoints under /api/v1 (e.g. the shareable rutekort `/kort`
-# pages) are self-contained and unaffected.
-@app.get("/")
-async def root_redirect():
-    """Send the legacy root to the signs_app."""
-    return RedirectResponse(url="/skilt/", status_code=307)
-
-# --- signs_app (Breheimen Skiltverktøy) served at /skilt/ ---
-# Built by `make signs-build` (or by scripts/deploy.sh in production). Vite
-# is configured with base=/skilt/, so the asset URLs in the built index.html
-# already start with /skilt/... StaticFiles(html=True) serves the index for
-# /skilt/ and the files under it. The app uses in-memory state for navigation,
-# so no SPA-fallback route is needed.
-signs_dist = Path(__file__).parent / "signs_app" / "dist"
-if signs_dist.exists():
-    app.mount(
-        "/skilt",
-        StaticFiles(directory=str(signs_dist), html=True),
-        name="signs_app",
-    )
-
-
 @app.get("/health")
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+# --- signs_app (Breheimen Skiltverktøy) served at the site root ---
+# Built by `make signs-build` (or scripts/deploy.sh). Vite base is "/", so the
+# built asset URLs are /assets/...  StaticFiles(html=True) serves index.html at
+# "/" (the desktop app) and the touch-first field app at /field.html.
+#
+# Mounted LAST and at "/" because that's a catch-all: the /api/v1/*, /api/* and
+# /health routes registered above are matched first, and everything else falls
+# through to the SPA's static files. The app uses in-memory navigation, so no
+# SPA deep-link fallback is needed. (This replaces the retired vanilla frontend
+# and the earlier /skilt/ mount + "/" → /skilt redirect.)
+signs_dist = Path(__file__).parent / "signs_app" / "dist"
+if signs_dist.exists():
+    app.mount(
+        "/",
+        StaticFiles(directory=str(signs_dist), html=True),
+        name="signs_app",
+    )
 

@@ -1,9 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-export default defineConfig(({ command }) => ({
-  // Prod build is served by FastAPI under /skilt/; dev keeps the default /.
-  base: command === "build" ? "/skilt/" : "/",
+export default defineConfig(() => ({
+  // Served by FastAPI at the site root ("/") in both prod and dev.
+  base: "/",
   plugins: [react()],
   // Two entry points: the desktop app (index.html) and a separate touch-first
   // field app for phones (field.html → /skilt/field.html). The desktop app is
