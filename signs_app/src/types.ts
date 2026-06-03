@@ -92,6 +92,9 @@ export interface RouteKulturminnerResponse {
   available: boolean;
   count: number;
   kulturminner: Kulturminne[];
+  /** Legally-protected zone polygons (sikringssone) near the route. Same shape
+   *  as Kulturminne but only id/distance/geometry are populated. */
+  sikringssoner: Kulturminne[];
 }
 
 /** A named, routable anchor node from /signs/area/{area}/anchors/search —

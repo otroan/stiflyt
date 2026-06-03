@@ -74,6 +74,10 @@ interface Props {
   /** Fly the map to a coordinate + drop a search pin. `nonce` bumps on every
    *  pick so selecting the same place again re-flies. Null = no pin. */
   flyTo?: { lon: number; lat: number; nonce: number } | null;
+  /** Cultural-heritage overlay for the focused route (Phase H): enkeltminne
+   *  points/areas + sikringssone polygons within 50 m. Each feature has a
+   *  `kind` property. Null clears the layer. */
+  kulturminner?: GeoJSON.FeatureCollection | null;
 }
 
 const BREHEIMEN_CENTER: [number, number] = [7.5, 61.7];
@@ -226,6 +230,7 @@ export default function MapView({
   selectedRoutes,
   highlightGeometry,
   flyTo,
+  kulturminner,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -791,6 +796,71 @@ export default function MapView({
       map.flyTo({ center: [flyTo.lon, flyTo.lat], zoom: Math.max(map.getZoom(), 13), duration: 800 });
     });
   }, [flyTo]);
+
+  // Kulturminner overlay (Phase H) — cultural-heritage near the focused route:
+  // sikringssone + enkeltminne polygons as a brown fill+outline, point
+  // enkeltminner as brown dots. Clicking a feature shows its name + a
+  // Kulturminnesøk link. Fed by App from /routes/{rutenummer}/kulturminner.
+  const kulturminnerGeoJSON = useMemo<GeoJSON.FeatureCollection>(() => (
+    kulturminner && kulturminner.features ? kulturminner : { type: "FeatureCollection", features: [] }
+  ), [kulturminner]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    whenStyleReady(map, () => {
+      if (!map.getSource("kulturminner")) {
+        map.addSource("kulturminner", { type: "geojson", data: kulturminnerGeoJSON });
+        map.addLayer({
+          id: "kulturminner-fill",
+          type: "fill",
+          source: "kulturminner",
+          filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+          paint: { "fill-color": "#8a5a2b", "fill-opacity": 0.22 },
+        });
+        map.addLayer({
+          id: "kulturminner-outline",
+          type: "line",
+          source: "kulturminner",
+          filter: ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+          paint: { "line-color": "#8a5a2b", "line-width": 2, "line-opacity": 0.9 },
+        });
+        map.addLayer({
+          id: "kulturminner-point",
+          type: "circle",
+          source: "kulturminner",
+          filter: ["in", ["geometry-type"], ["literal", ["Point", "MultiPoint"]]],
+          paint: {
+            "circle-radius": 5,
+            "circle-color": "#8a5a2b",
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 1.5,
+          },
+        });
+        const onKmClick = (e: maplibregl.MapMouseEvent) => {
+          const f = map.queryRenderedFeatures(e.point, {
+            layers: ["kulturminner-fill", "kulturminner-point"],
+          })[0];
+          if (!f) return;
+          const p = (f.properties || {}) as { navn?: string; kind?: string; link?: string; distance_m?: number };
+          const title = p.navn || (p.kind === "sikringssone" ? "Sikringssone" : "Kulturminne");
+          const dist = p.distance_m != null ? ` · ${p.distance_m} m` : "";
+          const link = p.link ? `<br/><a href="${p.link}" target="_blank" rel="noopener">Kulturminnesøk ↗</a>` : "";
+          new maplibregl.Popup({ closeButton: true })
+            .setLngLat(e.lngLat)
+            .setHTML(`<div style="font-size:12px"><strong>${title}</strong>${dist}${link}</div>`)
+            .addTo(map);
+        };
+        map.on("click", "kulturminner-fill", onKmClick);
+        map.on("click", "kulturminner-point", onKmClick);
+      } else {
+        (map.getSource("kulturminner") as maplibregl.GeoJSONSource).setData(kulturminnerGeoJSON);
+      }
+      for (const lid of ["kulturminner-fill", "kulturminner-outline", "kulturminner-point"]) {
+        if (map.getLayer(lid)) map.moveLayer(lid);
+      }
+    });
+  }, [kulturminnerGeoJSON]);
 
   // GPX overlay — uploaded walked tracks in green over the Kartverket routes.
   useEffect(() => {

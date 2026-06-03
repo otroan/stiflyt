@@ -185,6 +185,35 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedRoute]);
 
+  // Cultural-heritage (kulturminner) overlay for the focused route: enkeltminne
+  // points/areas + sikringssone polygons within 50 m, as one FeatureCollection.
+  const [kulturminnerFC, setKulturminnerFC] = useState<GeoJSON.FeatureCollection | null>(null);
+  useEffect(() => {
+    if (!focusedRoute) { setKulturminnerFC(null); return; }
+    let cancelled = false;
+    api.getRouteKulturminner(focusedRoute)
+      .then((r) => {
+        if (cancelled) return;
+        if (!r.available) { setKulturminnerFC(null); return; }
+        const features: GeoJSON.Feature[] = [];
+        for (const k of r.kulturminner) {
+          if (k.geometry) features.push({
+            type: "Feature", geometry: k.geometry,
+            properties: { kind: "enkeltminne", navn: k.navn, kategori: k.kategori, link: k.link, distance_m: k.distance_m },
+          });
+        }
+        for (const s of r.sikringssoner) {
+          if (s.geometry) features.push({
+            type: "Feature", geometry: s.geometry,
+            properties: { kind: "sikringssone", navn: "Sikringssone", link: s.link, distance_m: s.distance_m },
+          });
+        }
+        setKulturminnerFC({ type: "FeatureCollection", features });
+      })
+      .catch(() => { if (!cancelled) setKulturminnerFC(null); });
+    return () => { cancelled = true; };
+  }, [focusedRoute]);
+
   // --- Field photos state ---
   const [photos, setPhotos] = useState<FieldPhoto[]>([]);
   const [photosVisible, setPhotosVisible] = useState(true);
@@ -767,6 +796,7 @@ export default function App() {
           selectedRoutes={selectedRoutes}
           highlightGeometry={highlightGeometry}
           flyTo={flyTo}
+          kulturminner={kulturminnerFC}
           baseLayer={baseLayer}
           focusedRoute={focusedRoute}
           onFocusRoute={setFocusedRoute}
