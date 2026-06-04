@@ -171,6 +171,35 @@ function whenStyleReady(map: maplibregl.Map, fn: () => void): void {
 
 const CLICK_TOLERANCE_PX = 6;
 
+// Hit tolerance for the unified click handler. A box this many px around the
+// tap is queried, so small markers are easy to hit — especially on touch,
+// where a fingertip is far bigger than a sign dot.
+const COARSE_POINTER =
+  typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
+const PICK_TOLERANCE_PX = COARSE_POINTER ? 16 : 8;
+
+function escapeKmHtml(s: string): string {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
+}
+
+/** Popup for a clicked kulturminne feature (enkeltminne or sikringssone). */
+function showKulturminnePopup(map: maplibregl.Map, f: maplibregl.MapGeoJSONFeature, lngLat: maplibregl.LngLatLike) {
+  const p = (f.properties || {}) as Record<string, string | number | undefined>;
+  const title = (p.navn as string) || (p.kind === "sikringssone" ? "Sikringssone" : "Kulturminne");
+  const rows: string[] = [];
+  if (p.kategori) rows.push(`Kategori: ${escapeKmHtml(String(p.kategori))}`);
+  if (p.art) rows.push(`Art: ${escapeKmHtml(String(p.art))}`);
+  if (p.datering && String(p.datering) !== "000") rows.push(`Datering: ${escapeKmHtml(String(p.datering))}`);
+  if (p.vernetype) rows.push(`Vern: ${escapeKmHtml(String(p.vernetype))}`);
+  if (p.distance_m != null) rows.push(`${p.distance_m} m fra ruta`);
+  const meta = rows.length ? `<div style="color:#555;margin-top:2px">${rows.join("<br/>")}</div>` : "";
+  const link = p.link ? `<div style="margin-top:4px"><a href="${escapeKmHtml(String(p.link))}" target="_blank" rel="noopener">Kulturminnesøk ↗</a></div>` : "";
+  new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
+    .setLngLat(lngLat)
+    .setHTML(`<div style="font-size:12px"><strong>${escapeKmHtml(title)}</strong>${meta}${link}</div>`)
+    .addTo(map);
+}
+
 // Photo-marker sizing. The thumbs the API returns are 200×200, so icon-size
 // 0.13 → ~26 px on screen — small enough to leave room around the sign-site
 // dots underneath, large enough that you can still read the thumbnail.
@@ -495,20 +524,10 @@ export default function MapView({
             "circle-stroke-width": ["case", ["==", ["get", "is_manual"], true], 2.5, 1],
           },
         });
-        map.on("click", "sites-circle", (e) => {
-          // Placement modes own every click so the user can drop a feature
-          // anywhere; selecting a marker would steal the click and switch
-          // the sidebar tab mid-placement.
-          if (placementActiveRef.current) return;
-          // Single-marker click: select directly. For overlapping markers the
-          // user picks via the hover popup buttons instead.
-          const features = map.queryRenderedFeatures(e.point, { layers: ["sites-circle"] });
-          if (features.length === 1) {
-            const idx = (features[0].properties as { idx?: number })?.idx;
-            if (typeof idx === "number") onSelectRef.current(idx);
-          }
-          // If >1, the hover popup is already showing the list; do nothing.
-        });
+        // Click selection is handled centrally by the unified click handler
+        // (priority: sign > work-marker > photo > kulturminne > route), so a
+        // sign always wins over an overlapping photo/route and the hit target
+        // is generous. Hover (desktop) still shows the per-marker popup.
         attachSiteHoverHandlers(map, hoverPopupRef, onSelectRef, placementActiveRef);
       } else {
         (map.getSource("sites") as maplibregl.GeoJSONSource).setData(sitesGeoJSON);
@@ -885,36 +904,8 @@ export default function MapView({
             "circle-stroke-width": 2,
           },
         });
-        const escapeHtml = (s: string) => s.replace(/[&<>"]/g, (c) => (
-          { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string
-        ));
-        const onKmClick = (e: maplibregl.MapMouseEvent) => {
-          const feats = map.queryRenderedFeatures(e.point, {
-            layers: ["kulturminner-fill", "kulturminner-point"],
-          });
-          if (!feats.length) return;
-          // Sikringssone (protection zone) polygons enclose the monument, so a
-          // click lands on the zone on top. Prefer the enkeltminne (the actual
-          // monument, which carries navn/kategori/…) when both are under the
-          // cursor; fall back to the zone only when nothing else is there.
-          const f = feats.find((ff) => (ff.properties || {}).kind === "enkeltminne") || feats[0];
-          const p = (f.properties || {}) as Record<string, string | number | undefined>;
-          const title = (p.navn as string) || (p.kind === "sikringssone" ? "Sikringssone" : "Kulturminne");
-          const rows: string[] = [];
-          if (p.kategori) rows.push(`Kategori: ${escapeHtml(String(p.kategori))}`);
-          if (p.art) rows.push(`Art: ${escapeHtml(String(p.art))}`);
-          if (p.datering && String(p.datering) !== "000") rows.push(`Datering: ${escapeHtml(String(p.datering))}`);
-          if (p.vernetype) rows.push(`Vern: ${escapeHtml(String(p.vernetype))}`);
-          if (p.distance_m != null) rows.push(`${p.distance_m} m fra ruta`);
-          const meta = rows.length ? `<div style="color:#555;margin-top:2px">${rows.join("<br/>")}</div>` : "";
-          const link = p.link ? `<div style="margin-top:4px"><a href="${escapeHtml(String(p.link))}" target="_blank" rel="noopener">Kulturminnesøk ↗</a></div>` : "";
-          new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
-            .setLngLat(e.lngLat)
-            .setHTML(`<div style="font-size:12px"><strong>${escapeHtml(title)}</strong>${meta}${link}</div>`)
-            .addTo(map);
-        };
-        map.on("click", "kulturminner-fill", onKmClick);
-        map.on("click", "kulturminner-point", onKmClick);
+        // Click is handled centrally (unified click handler) so a sign always
+        // wins over an enclosing kulturminne polygon; hover shows the pointer.
         for (const lid of ["kulturminner-fill", "kulturminner-point"]) {
           map.on("mouseenter", lid, () => { map.getCanvas().style.cursor = "pointer"; });
           map.on("mouseleave", lid, () => { map.getCanvas().style.cursor = ""; });
@@ -928,6 +919,10 @@ export default function MapView({
       ]) {
         if (map.getLayer(lid)) map.moveLayer(lid);
       }
+      // Keep sign markers above the kulturminne polygons so they stay visible
+      // and on top (clicks are prioritised regardless, but this keeps the dots
+      // from being hidden under a fill).
+      if (map.getLayer("sites-circle")) map.moveLayer("sites-circle");
     });
   }, [kulturminnerGeoJSON]);
 
@@ -1148,36 +1143,8 @@ export default function MapView({
           },
         });
 
-        map.on("click", "photos-single", (e) => {
-          if (placementActiveRef.current) return;
-          const f = e.features?.[0];
-          const id = f && (f.properties as { id?: number })?.id;
-          if (typeof id === "number") {
-            e.originalEvent?.stopPropagation?.();
-            onPhotosOpenRef.current?.([id]);
-          }
-        });
-        map.on("click", "photos-cluster-icon", (e) => {
-          if (placementActiveRef.current) return;
-          const f = e.features?.[0];
-          const clusterId = f && (f.properties as { cluster_id?: number })?.cluster_id;
-          if (clusterId == null) return;
-          const source = map.getSource("photos-src") as maplibregl.GeoJSONSource;
-          // Pull every leaf at once — cluster paging in the lightbox is the
-          // whole point. Infinity is the documented "all of them" sentinel.
-          source.getClusterLeaves(clusterId, Infinity, 0).then((leaves) => {
-            const ids: number[] = [];
-            for (const lf of leaves) {
-              const lid = (lf.properties as { id?: number })?.id;
-              if (typeof lid === "number") ids.push(lid);
-            }
-            if (ids.length > 0) {
-              e.originalEvent?.stopPropagation?.();
-              onPhotosOpenRef.current?.(ids);
-            }
-          }).catch(() => { /* cluster ids can briefly go stale during data swaps */ });
-        });
-
+        // Click handled centrally (unified click handler) — photos defer to an
+        // overlapping sign/work-marker. Hover keeps the pointer cursor.
         for (const lid of ["photos-cluster-icon", "photos-single"]) {
           map.on("mouseenter", lid, () => {
             if (placementActiveRef.current) return;
@@ -1405,15 +1372,7 @@ export default function MapView({
           },
           paint: { "text-color": "#ffffff" },
         });
-        map.on("click", "work-markers-dot", (e) => {
-          if (placementActiveRef.current) return;
-          const f = e.features?.[0];
-          const id = f && (f.properties as { id?: number })?.id;
-          if (typeof id === "number") {
-            e.originalEvent?.stopPropagation?.();
-            onWorkMarkerOpenRef.current?.(id);
-          }
-        });
+        // Click handled centrally (unified click handler). Hover → pointer.
         map.on("mouseenter", "work-markers-dot", () => {
           // Don't override the crosshair while placement is active.
           if (placementActiveRef.current) return;
@@ -1527,6 +1486,79 @@ export default function MapView({
       pendingFitRef.current = false;
     }
   }, [routesGeoJSON, sitesGeoJSON]);
+
+  // Unified, prioritised click handler. Replaces the per-layer click handlers
+  // so overlapping features resolve deterministically: a sign always beats an
+  // adjacent photo/route, the hit target is generous (a tolerance box, larger
+  // on touch), and selection is consistent on desktop + mobile. Placement /
+  // grunneier modes set `placementActive`, where the dedicated onMapClick
+  // handler owns the click instead, so this one bails.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const handler = (e: maplibregl.MapMouseEvent) => {
+      if (placementActiveRef.current) return;
+      const t = PICK_TOLERANCE_PX;
+      const box: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [e.point.x - t, e.point.y - t],
+        [e.point.x + t, e.point.y + t],
+      ];
+      const q = (ids: string[]) => {
+        const present = ids.filter((id) => map.getLayer(id));
+        return present.length ? map.queryRenderedFeatures(box, { layers: present }) : [];
+      };
+
+      // 1. Sign sites — highest priority.
+      const signs = q(["sites-circle"]);
+      if (signs.length) {
+        const idx = (signs[0].properties as { idx?: number })?.idx;
+        if (typeof idx === "number") { onSelectRef.current(idx); return; }
+      }
+      // 2. Work markers.
+      const wm = q(["work-markers-dot"]);
+      if (wm.length) {
+        const id = (wm[0].properties as { id?: number })?.id;
+        if (typeof id === "number") { onWorkMarkerOpenRef.current?.(id); return; }
+      }
+      // 3. Photos (single, then cluster).
+      const ps = q(["photos-single"]);
+      if (ps.length) {
+        const id = (ps[0].properties as { id?: number })?.id;
+        if (typeof id === "number") { onPhotosOpenRef.current?.([id]); return; }
+      }
+      const pc = q(["photos-cluster-icon"]);
+      if (pc.length) {
+        const cid = (pc[0].properties as { cluster_id?: number })?.cluster_id;
+        if (cid != null) {
+          (map.getSource("photos-src") as maplibregl.GeoJSONSource)
+            .getClusterLeaves(cid, Infinity, 0)
+            .then((leaves) => {
+              const ids = leaves
+                .map((lf) => (lf.properties as { id?: number })?.id)
+                .filter((x): x is number => typeof x === "number");
+              if (ids.length) onPhotosOpenRef.current?.(ids);
+            })
+            .catch(() => { /* cluster ids can go stale during data swaps */ });
+          return;
+        }
+      }
+      // 4. Kulturminne — prefer enkeltminne over its enclosing sikringssone.
+      const km = q(["kulturminner-fill", "kulturminner-point"]);
+      if (km.length) {
+        const f = km.find((ff) => (ff.properties || {}).kind === "enkeltminne") || km[0];
+        showKulturminnePopup(map, f, e.lngLat);
+        return;
+      }
+      // 5. Route line — focus it (toggle). Lowest priority.
+      const routes = q(["routes-line", "routes-line-unmarked"]);
+      if (routes.length) {
+        const rn = (routes[0].properties as { rutenummer?: string })?.rutenummer;
+        if (rn) onFocusRouteRef.current(focusedRouteRef.current === rn ? null : rn);
+      }
+    };
+    map.on("click", handler);
+    return () => { map.off("click", handler); };
+  }, []);
 
   return (
     <div style={{ position: "absolute", inset: 0 }}>
