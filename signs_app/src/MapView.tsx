@@ -200,6 +200,31 @@ function showKulturminnePopup(map: maplibregl.Map, f: maplibregl.MapGeoJSONFeatu
     .addTo(map);
 }
 
+/** Disambiguation chooser: a popup listing the features under a click so the
+ *  user picks one (used when ≥2 things are within the tap box). Rows use
+ *  textContent, so labels need no escaping. */
+function buildFeatureChooserDOM(items: { icon: string; label: string; onClick: () => void }[]): HTMLElement {
+  const root = document.createElement("div");
+  root.style.minWidth = "190px";
+  const hdr = document.createElement("div");
+  hdr.textContent = "Hva her?";
+  hdr.style.cssText = "font-size:10px;color:#888;text-transform:uppercase;margin-bottom:4px";
+  root.appendChild(hdr);
+  for (const it of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `${it.icon}  ${it.label}`;
+    btn.style.cssText = [
+      "display:block", "width:100%", "text-align:left", "padding:9px 10px",
+      "margin-bottom:4px", "border:1px solid #e2e2e2", "background:#fff",
+      "border-radius:4px", "cursor:pointer", "font-size:13px", "line-height:1.3",
+    ].join(";");
+    btn.addEventListener("click", it.onClick);
+    root.appendChild(btn);
+  }
+  return root;
+}
+
 // Photo-marker sizing. The thumbs the API returns are 200×200, so icon-size
 // 0.13 → ~26 px on screen — small enough to leave room around the sign-site
 // dots underneath, large enough that you can still read the thumbnail.
@@ -1508,53 +1533,82 @@ export default function MapView({
         return present.length ? map.queryRenderedFeatures(box, { layers: present }) : [];
       };
 
-      // 1. Sign sites — highest priority.
-      const signs = q(["sites-circle"]);
-      if (signs.length) {
-        const idx = (signs[0].properties as { idx?: number })?.idx;
-        if (typeof idx === "number") { onSelectRef.current(idx); return; }
+      // Collect every distinct feature under the tap, in priority order, each
+      // with the action it would trigger. One match runs directly; ≥2 show a
+      // "Hva her?" chooser so the user disambiguates (esp. on touch / dense
+      // clusters). Priority: sign > work-marker > photo > kulturminne > route.
+      const cands: { icon: string; label: string; run: () => void }[] = [];
+
+      const seenSign = new Set<number>();
+      for (const f of q(["sites-circle"])) {
+        const p = f.properties as { idx?: number; name?: string; site_code?: string };
+        if (typeof p?.idx !== "number" || seenSign.has(p.idx)) continue;
+        seenSign.add(p.idx);
+        const idx = p.idx;
+        const label = (p.name || "Skilt") + (p.site_code ? ` (${p.site_code})` : "");
+        cands.push({ icon: "📍", label, run: () => onSelectRef.current(idx) });
       }
-      // 2. Work markers.
-      const wm = q(["work-markers-dot"]);
-      if (wm.length) {
-        const id = (wm[0].properties as { id?: number })?.id;
-        if (typeof id === "number") { onWorkMarkerOpenRef.current?.(id); return; }
+
+      const seenWm = new Set<number>();
+      for (const f of q(["work-markers-dot"])) {
+        const p = f.properties as { id?: number };
+        if (typeof p?.id !== "number" || seenWm.has(p.id)) continue;
+        seenWm.add(p.id);
+        const id = p.id;
+        cands.push({ icon: "🛠", label: "Arbeidsmarkør", run: () => onWorkMarkerOpenRef.current?.(id) });
       }
-      // 3. Photos (single, then cluster).
-      const ps = q(["photos-single"]);
-      if (ps.length) {
-        const id = (ps[0].properties as { id?: number })?.id;
-        if (typeof id === "number") { onPhotosOpenRef.current?.([id]); return; }
+
+      const singleIds: number[] = [];
+      for (const f of q(["photos-single"])) {
+        const id = (f.properties as { id?: number })?.id;
+        if (typeof id === "number" && !singleIds.includes(id)) singleIds.push(id);
       }
-      const pc = q(["photos-cluster-icon"]);
-      if (pc.length) {
-        const cid = (pc[0].properties as { cluster_id?: number })?.cluster_id;
-        if (cid != null) {
+      if (singleIds.length) {
+        cands.push({ icon: "📷", label: `${singleIds.length} bilde${singleIds.length === 1 ? "" : "r"}`, run: () => onPhotosOpenRef.current?.(singleIds) });
+      }
+      const seenCluster = new Set<number>();
+      for (const f of q(["photos-cluster-icon"])) {
+        const p = f.properties as { cluster_id?: number; point_count?: number };
+        if (p?.cluster_id == null || seenCluster.has(p.cluster_id)) continue;
+        seenCluster.add(p.cluster_id);
+        const cid = p.cluster_id;
+        cands.push({ icon: "📷", label: `${p.point_count ?? ""} bilder`.trim(), run: () => {
           (map.getSource("photos-src") as maplibregl.GeoJSONSource)
             .getClusterLeaves(cid, Infinity, 0)
             .then((leaves) => {
-              const ids = leaves
-                .map((lf) => (lf.properties as { id?: number })?.id)
-                .filter((x): x is number => typeof x === "number");
+              const ids = leaves.map((lf) => (lf.properties as { id?: number })?.id).filter((x): x is number => typeof x === "number");
               if (ids.length) onPhotosOpenRef.current?.(ids);
             })
             .catch(() => { /* cluster ids can go stale during data swaps */ });
-          return;
-        }
+        } });
       }
-      // 4. Kulturminne — prefer enkeltminne over its enclosing sikringssone.
-      const km = q(["kulturminner-fill", "kulturminner-point"]);
-      if (km.length) {
-        const f = km.find((ff) => (ff.properties || {}).kind === "enkeltminne") || km[0];
-        showKulturminnePopup(map, f, e.lngLat);
-        return;
+
+      const seenKm = new Set<string>();
+      for (const f of q(["kulturminner-fill", "kulturminner-point"])) {
+        const p = f.properties as { kulturminneid?: string; navn?: string; kind?: string };
+        const kid = p?.kulturminneid ?? String(f.id);
+        if (seenKm.has(kid)) continue;
+        seenKm.add(kid);
+        const label = p.navn || (p.kind === "sikringssone" ? "Sikringssone" : "Kulturminne");
+        cands.push({ icon: "🏛", label, run: () => showKulturminnePopup(map, f, e.lngLat) });
       }
-      // 5. Route line — focus it (toggle). Lowest priority.
-      const routes = q(["routes-line", "routes-line-unmarked"]);
-      if (routes.length) {
-        const rn = (routes[0].properties as { rutenummer?: string })?.rutenummer;
-        if (rn) onFocusRouteRef.current(focusedRouteRef.current === rn ? null : rn);
+
+      const seenRoute = new Set<string>();
+      for (const f of q(["routes-line", "routes-line-unmarked"])) {
+        const rn = (f.properties as { rutenummer?: string })?.rutenummer;
+        if (!rn || seenRoute.has(rn)) continue;
+        seenRoute.add(rn);
+        cands.push({ icon: "🥾", label: rn, run: () => onFocusRouteRef.current(focusedRouteRef.current === rn ? null : rn) });
       }
+
+      if (cands.length === 0) return;
+      if (cands.length === 1) { cands[0].run(); return; }
+      // ≥2 under the tap — let the user choose.
+      const popup = new maplibregl.Popup({ closeButton: true, maxWidth: "260px" });
+      const dom = buildFeatureChooserDOM(
+        cands.map((c) => ({ icon: c.icon, label: c.label, onClick: () => { popup.remove(); c.run(); } })),
+      );
+      popup.setLngLat(e.lngLat).setDOMContent(dom).addTo(map);
     };
     map.on("click", handler);
     return () => { map.off("click", handler); };
