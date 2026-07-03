@@ -43,13 +43,23 @@ export default function PhotoPanel({
   // a plain boolean flickers as the pointer crosses child boundaries. Only
   // clearing the highlight when the counter returns to 0 keeps it stable.
   const dragDepth = useRef(0);
+  // Shared upload queue + drain state. Dropping/picking files several times in
+  // a row must ACCUMULATE into one progress bar rather than starting rival
+  // uploads that race over the same progress state. Refs (not state) because
+  // the drain loop mutates these synchronously and can't wait for re-renders.
+  const queueRef = useRef<File[]>([]);
+  const drainingRef = useRef(false);
+  const statsRef = useRef({ total: 0, done: 0, skipped: 0, failures: [] as { name: string; message: string }[] });
 
   const filteredPlaced = useMemo(() => {
     if (!tagFilter) return placed;
     return placed.filter((p) => p.tags.includes(tagFilter));
   }, [placed, tagFilter]);
 
-  async function onFiles(files: FileList | null) {
+  // Add files to the queue and make sure a drain is running. Safe to call
+  // repeatedly (multiple drops, or a drop mid-upload) — everything folds into
+  // the same cumulative progress and the same final summary.
+  function enqueueFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
     // Filter out non-images (directory uploads pick up .DS_Store, sidecars,
     // and whatever else lives next to the photos).
@@ -60,50 +70,63 @@ export default function PhotoPanel({
       notifyError(skipped > 0 ? `Ingen bilder funnet (${skipped} filer hoppet over)` : "Ingen filer valgt");
       return;
     }
+    const s = statsRef.current;
+    s.total += images.length;
+    s.skipped += skipped;
+    queueRef.current.push(...images);
     setUploading(true);
-    setUploadProgress({ done: 0, total: images.length, skipped });
-    let done = 0;
-    // Collect every failure (name + reason) so the summary can name the bad
-    // files instead of showing one opaque "opplasting feilet".
-    const failures: { name: string; message: string }[] = [];
+    setUploadProgress({ done: s.done, total: s.total, skipped: s.skipped });
+    if (!drainingRef.current) void drainQueue();
+  }
+
+  async function drainQueue() {
+    drainingRef.current = true;
     // Modest concurrency: 4 in flight at a time keeps backend memory + Pillow
     // decoding under control while still parallelising the slow path (HEIC
-    // decode + JPEG thumb).
+    // decode + JPEG thumb). Workers pull from the shared queue via shift(), so
+    // files enqueued mid-drain are picked up by whichever worker frees up.
     const CONCURRENCY = 4;
-    let idx = 0;
     async function worker() {
-      while (idx < images.length) {
-        const myIdx = idx++;
-        const file = images[myIdx];
+      for (;;) {
+        const file = queueRef.current.shift();
+        if (!file) return;
+        const s = statsRef.current;
         try {
           await api.uploadPhoto(areaCode, file);
         } catch (e) {
-          failures.push({ name: file.name, message: (e as Error)?.message ?? String(e) });
+          s.failures.push({ name: file.name, message: (e as Error)?.message ?? String(e) });
         }
-        done += 1;
-        setUploadProgress({ done, total: images.length, skipped });
+        s.done += 1;
+        setUploadProgress({ done: s.done, total: s.total, skipped: s.skipped });
       }
     }
-    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+    // Loop guards the race where files are enqueued after every worker has
+    // exited on an empty queue but before we flip drainingRef back off.
+    while (queueRef.current.length > 0) {
+      await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+    }
+    drainingRef.current = false;
+
+    const s = statsRef.current;
+    const { total, failures } = s;
+    // Reset before the toasts so a fresh drop starts clean.
+    statsRef.current = { total: 0, done: 0, skipped: 0, failures: [] };
     setUploading(false);
     setUploadProgress(null);
     onChanged();
-    const ok = images.length - failures.length;
+
+    const ok = total - failures.length;
     if (failures.length > 0) {
       // Name up to 3 failed files, then "…og N til"; append the first reason so
       // the cause is visible without digging into the network tab.
       const names = failures.slice(0, 3).map((f) => f.name);
       if (failures.length > 3) names.push(`…og ${failures.length - 3} til`);
-      const detail = failures[0].message;
       notifyError(
-        `${failures.length} av ${images.length} bilder feilet: ${names.join(", ")}\n${detail}`,
+        `${failures.length} av ${total} bilder feilet: ${names.join(", ")}\n${failures[0].message}`,
         ok > 0 ? `Opplasting delvis feilet (${ok} lastet opp)` : "Opplasting feilet",
       );
     } else {
-      notifySuccess(
-        `${ok} bild${ok === 1 ? "e" : "er"} lastet opp`,
-        "Opplasting fullført",
-      );
+      notifySuccess(`${ok} bild${ok === 1 ? "e" : "er"} lastet opp`, "Opplasting fullført");
     }
   }
 
@@ -129,8 +152,8 @@ export default function PhotoPanel({
     e.preventDefault();
     dragDepth.current = 0;
     setDragOver(false);
-    if (uploading) return;
-    onFiles(e.dataTransfer.files);
+    // No uploading-guard: a drop mid-upload appends to the queue.
+    enqueueFiles(e.dataTransfer.files);
   }
 
   return (
@@ -169,7 +192,7 @@ export default function PhotoPanel({
           accept="image/heic,image/heif,image/jpeg,image/png,.heic,.heif,.jpg,.jpeg,.png"
           multiple
           style={{ display: "none" }}
-          onChange={(e) => { onFiles(e.target.files); if (fileInputRef.current) fileInputRef.current.value = ""; }}
+          onChange={(e) => { enqueueFiles(e.target.files); if (fileInputRef.current) fileInputRef.current.value = ""; }}
         />
         <input
           ref={dirInputRef}
@@ -180,7 +203,7 @@ export default function PhotoPanel({
           {...({ webkitdirectory: "", directory: "" } as any)}
           multiple
           style={{ display: "none" }}
-          onChange={(e) => { onFiles(e.target.files); if (dirInputRef.current) dirInputRef.current.value = ""; }}
+          onChange={(e) => { enqueueFiles(e.target.files); if (dirInputRef.current) dirInputRef.current.value = ""; }}
         />
         <button
           className="primary"
