@@ -600,26 +600,56 @@ export const api = {
     }>(`/photos/thumbnails?area=${area}${q}`);
   },
 
-  uploadPhoto: async (
+  uploadPhoto: (
     area: string,
     file: File,
     payload?: { caption?: string; tags?: string[] },
+    // Called with the upload fraction (0..1) as bytes go out. fetch() exposes
+    // no upload-progress events, so we use XMLHttpRequest to drive a progress
+    // bar that actually moves — important on slow field connections where a
+    // single large HEIC can take many seconds.
+    onProgress?: (fraction: number) => void,
   ): Promise<FieldPhoto> => {
     const form = new FormData();
     form.append("area", area);
     form.append("file", file);
     if (payload?.caption) form.append("caption", payload.caption);
     for (const t of payload?.tags ?? []) form.append("tags", t);
-    const res = await fetchWithAuth(`${BASE}/photos`, {
-      method: "POST",
-      headers: { "X-User": xUser() },
-      body: form,
+
+    return new Promise<FieldPhoto>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${BASE}/photos`);
+      // Session is cookie-based; XHR sends same-origin cookies automatically.
+      // Only the identity header needs setting.
+      xhr.setRequestHeader("X-User", xUser());
+      xhr.upload.onprogress = (e) => {
+        if (onProgress && e.lengthComputable) onProgress(e.loaded / e.total);
+      };
+      xhr.onload = () => {
+        if (xhr.status === 401) {
+          handleMaybeAuth(new Response(null, { status: 401 }));
+          reject(new UnauthenticatedError());
+          return;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText) as FieldPhoto);
+          } catch (e) {
+            reject(new Error(`Ugyldig svar fra server: ${(e as Error).message}`));
+          }
+        } else {
+          reject(new Error(`API ${xhr.status} upload: ${xhr.responseText || xhr.statusText}`));
+        }
+      };
+      // Network-level failure. The most common real cause when dragging from
+      // Apple Photos (rather than Finder) is that the File points at an
+      // iCloud-optimised original the browser can never read — surface a hint.
+      xhr.onerror = () => reject(new Error(
+        `Kunne ikke lese/laste opp «${file.name}» — prøv å dra fra Finder, ikke Bilder-appen.`,
+      ));
+      xhr.onabort = () => reject(new Error("Opplasting avbrutt"));
+      xhr.send(form);
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`API ${res.status} upload: ${text}`);
-    }
-    return res.json();
   },
 
   patchPhoto: (

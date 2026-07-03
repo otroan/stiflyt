@@ -36,7 +36,10 @@ export default function PhotoPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dirInputRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number; skipped: number } | null>(null);
+  // `frac` is byte-aware overall progress (0..1): completed files plus the
+  // partial bytes of files currently in flight, divided by total. `done` is the
+  // whole-file count shown as "N/total".
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number; skipped: number; frac: number } | null>(null);
   const [tagFilter, setTagFilter] = useState<FieldPhotoTag | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // Ref-counted drag depth: dragenter/dragleave fire per descendant element, so
@@ -49,7 +52,9 @@ export default function PhotoPanel({
   // the drain loop mutates these synchronously and can't wait for re-renders.
   const queueRef = useRef<File[]>([]);
   const drainingRef = useRef(false);
-  const statsRef = useRef({ total: 0, done: 0, skipped: 0, failures: [] as { name: string; message: string }[] });
+  // `units` is a running float: each file contributes up to 1.0 as its bytes
+  // upload, so `units / total` is the smooth overall fraction.
+  const statsRef = useRef({ total: 0, done: 0, skipped: 0, units: 0, failures: [] as { name: string; message: string }[] });
 
   const filteredPlaced = useMemo(() => {
     if (!tagFilter) return placed;
@@ -75,7 +80,7 @@ export default function PhotoPanel({
     s.skipped += skipped;
     queueRef.current.push(...images);
     setUploading(true);
-    setUploadProgress({ done: s.done, total: s.total, skipped: s.skipped });
+    setUploadProgress({ done: s.done, total: s.total, skipped: s.skipped, frac: s.total ? s.units / s.total : 0 });
     if (!drainingRef.current) void drainQueue();
   }
 
@@ -91,13 +96,27 @@ export default function PhotoPanel({
         const file = queueRef.current.shift();
         if (!file) return;
         const s = statsRef.current;
+        // Track this file's last-reported fraction so each progress event adds
+        // only the delta to the shared `units` accumulator.
+        let lastFrac = 0;
+        const emit = () => setUploadProgress({
+          done: s.done, total: s.total, skipped: s.skipped,
+          frac: s.total ? Math.min(1, s.units / s.total) : 0,
+        });
         try {
-          await api.uploadPhoto(areaCode, file);
+          await api.uploadPhoto(areaCode, file, undefined, (frac) => {
+            s.units += frac - lastFrac;
+            lastFrac = frac;
+            emit();
+          });
         } catch (e) {
           s.failures.push({ name: file.name, message: (e as Error)?.message ?? String(e) });
         }
+        // Ensure the file counts as a whole unit whether it succeeded, failed,
+        // or reported no progress events at all.
+        s.units += 1 - lastFrac;
         s.done += 1;
-        setUploadProgress({ done: s.done, total: s.total, skipped: s.skipped });
+        emit();
       }
     }
     // Loop guards the race where files are enqueued after every worker has
@@ -110,7 +129,7 @@ export default function PhotoPanel({
     const s = statsRef.current;
     const { total, failures } = s;
     // Reset before the toasts so a fresh drop starts clean.
-    statsRef.current = { total: 0, done: 0, skipped: 0, failures: [] };
+    statsRef.current = { total: 0, done: 0, skipped: 0, units: 0, failures: [] };
     setUploading(false);
     setUploadProgress(null);
     onChanged();
@@ -227,12 +246,12 @@ export default function PhotoPanel({
           <div style={{ display: "flex", fontSize: 11, color: "#666" }}>
             <span>Laster opp {uploadProgress.done}/{uploadProgress.total}…</span>
             <span style={{ flex: 1 }} />
-            <span>{Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%</span>
+            <span>{Math.round(uploadProgress.frac * 100)}%</span>
           </div>
           <div style={{ height: 6, borderRadius: 3, background: "#e5e5e5", overflow: "hidden" }}>
             <div style={{
               height: "100%", borderRadius: 3, background: "#1a7fc4",
-              width: `${(uploadProgress.done / Math.max(1, uploadProgress.total)) * 100}%`,
+              width: `${Math.round(uploadProgress.frac * 100)}%`,
               transition: "width 0.2s ease",
             }} />
           </div>
