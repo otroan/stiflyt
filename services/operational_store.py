@@ -187,7 +187,7 @@ def ensure_operational_schema(conn) -> None:
                 geom GEOMETRY(Point, 25833) NOT NULL,
                 anchor_node_id INTEGER NULL,
                 name TEXT NULL,
-                back_text TEXT NULL DEFAULT 'Stier er ryddet og merket av DNT Oslo og Omegn',
+                back_text TEXT NULL,
                 send_to_name TEXT NULL,
                 send_to_address TEXT NULL,
                 updated_by TEXT NULL,

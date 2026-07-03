@@ -21,7 +21,7 @@ _SIGN_EXPORT_YAML = os.path.join(
     "sign_export.yaml",
 )
 
-_FALLBACK_TEMPLATE = "Stier er ryddet og merket av DNT Oslo og Omegn"
+_FALLBACK_TEMPLATE = "{name}\nUTM 32V {easting} {northing}"
 
 
 def _load_template() -> str:
