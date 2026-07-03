@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "./api";
-import { notifyError } from "./notify";
+import { notifyError, notifySuccess } from "./notify";
 import { FIELD_PHOTO_TAGS, type FieldPhoto, type FieldPhotoTag } from "./types";
 
 interface Props {
@@ -63,7 +63,9 @@ export default function PhotoPanel({
     setUploading(true);
     setUploadProgress({ done: 0, total: images.length, skipped });
     let done = 0;
-    let firstError: string | null = null;
+    // Collect every failure (name + reason) so the summary can name the bad
+    // files instead of showing one opaque "opplasting feilet".
+    const failures: { name: string; message: string }[] = [];
     // Modest concurrency: 4 in flight at a time keeps backend memory + Pillow
     // decoding under control while still parallelising the slow path (HEIC
     // decode + JPEG thumb).
@@ -72,10 +74,11 @@ export default function PhotoPanel({
     async function worker() {
       while (idx < images.length) {
         const myIdx = idx++;
+        const file = images[myIdx];
         try {
-          await api.uploadPhoto(areaCode, images[myIdx]);
+          await api.uploadPhoto(areaCode, file);
         } catch (e) {
-          if (!firstError) firstError = (e as Error)?.message ?? String(e);
+          failures.push({ name: file.name, message: (e as Error)?.message ?? String(e) });
         }
         done += 1;
         setUploadProgress({ done, total: images.length, skipped });
@@ -84,8 +87,24 @@ export default function PhotoPanel({
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
     setUploading(false);
     setUploadProgress(null);
-    if (firstError) notifyError(firstError, "Opplasting feilet");
     onChanged();
+    const ok = images.length - failures.length;
+    if (failures.length > 0) {
+      // Name up to 3 failed files, then "…og N til"; append the first reason so
+      // the cause is visible without digging into the network tab.
+      const names = failures.slice(0, 3).map((f) => f.name);
+      if (failures.length > 3) names.push(`…og ${failures.length - 3} til`);
+      const detail = failures[0].message;
+      notifyError(
+        `${failures.length} av ${images.length} bilder feilet: ${names.join(", ")}\n${detail}`,
+        ok > 0 ? `Opplasting delvis feilet (${ok} lastet opp)` : "Opplasting feilet",
+      );
+    } else {
+      notifySuccess(
+        `${ok} bild${ok === 1 ? "e" : "er"} lastet opp`,
+        "Opplasting fullført",
+      );
+    }
   }
 
   function onDragEnter(e: React.DragEvent) {
@@ -180,9 +199,25 @@ export default function PhotoPanel({
           + Mappe
         </button>
       </div>
-      {uploadProgress && uploadProgress.skipped > 0 && (
-        <div style={{ fontSize: 11, color: "#666" }}>
-          {uploadProgress.skipped} fil{uploadProgress.skipped === 1 ? "" : "er"} hoppet over (ikke bilde)
+      {uploadProgress && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <div style={{ display: "flex", fontSize: 11, color: "#666" }}>
+            <span>Laster opp {uploadProgress.done}/{uploadProgress.total}…</span>
+            <span style={{ flex: 1 }} />
+            <span>{Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%</span>
+          </div>
+          <div style={{ height: 6, borderRadius: 3, background: "#e5e5e5", overflow: "hidden" }}>
+            <div style={{
+              height: "100%", borderRadius: 3, background: "#1a7fc4",
+              width: `${(uploadProgress.done / Math.max(1, uploadProgress.total)) * 100}%`,
+              transition: "width 0.2s ease",
+            }} />
+          </div>
+          {uploadProgress.skipped > 0 && (
+            <div style={{ fontSize: 11, color: "#666" }}>
+              {uploadProgress.skipped} fil{uploadProgress.skipped === 1 ? "" : "er"} hoppet over (ikke bilde)
+            </div>
+          )}
         </div>
       )}
 
