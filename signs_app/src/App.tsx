@@ -91,6 +91,28 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     return params.get("login_error");
   });
+  // Global drag-and-drop guard. Without preventing the default on dragover +
+  // drop at the window level, a file dropped anywhere *outside* an explicit
+  // drop zone makes the browser navigate to the dropped file:// URL — which on
+  // Safari replaces the whole SPA with a "Safari Can't Open the Page" error and
+  // kills any in-flight uploads. Drop zones (PhotoPanel) still get their own
+  // onDrop; this is the safety net for near-miss drops.
+  useEffect(() => {
+    const prevent = (e: DragEvent) => {
+      // Only intercept file drags so we don't interfere with any in-app
+      // element/text dragging.
+      if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files")) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("dragover", prevent);
+    window.addEventListener("drop", prevent);
+    return () => {
+      window.removeEventListener("dragover", prevent);
+      window.removeEventListener("drop", prevent);
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     api.getMe()
