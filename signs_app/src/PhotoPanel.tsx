@@ -38,6 +38,11 @@ export default function PhotoPanel({
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number; skipped: number } | null>(null);
   const [tagFilter, setTagFilter] = useState<FieldPhotoTag | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  // Ref-counted drag depth: dragenter/dragleave fire per descendant element, so
+  // a plain boolean flickers as the pointer crosses child boundaries. Only
+  // clearing the highlight when the counter returns to 0 keeps it stable.
+  const dragDepth = useRef(0);
 
   const filteredPlaced = useMemo(() => {
     if (!tagFilter) return placed;
@@ -83,8 +88,55 @@ export default function PhotoPanel({
     onChanged();
   }
 
+  function onDragEnter(e: React.DragEvent) {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setDragOver(true);
+  }
+  function onDragOver(e: React.DragEvent) {
+    if (!hasFiles(e.dataTransfer)) return;
+    // preventDefault on dragover is what actually stops the browser from
+    // navigating to the file:// URL on drop.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }
+  function onDragLeave(e: React.DragEvent) {
+    if (!hasFiles(e.dataTransfer)) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragOver(false);
+  }
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragOver(false);
+    if (uploading) return;
+    onFiles(e.dataTransfer.files);
+  }
+
   return (
-    <div className="site-card" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div
+      className="site-card"
+      style={{
+        display: "flex", flexDirection: "column", gap: 8, position: "relative",
+        outline: dragOver ? "2px dashed #1a7fc4" : undefined,
+        outlineOffset: dragOver ? -4 : undefined,
+      }}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {dragOver && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 5, borderRadius: 6,
+          background: "rgba(26,127,196,0.08)", pointerEvents: "none",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 14, fontWeight: 600, color: "#1a7fc4",
+        }}>
+          Slipp bildene her for å laste opp
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <h3 style={{ margin: 0 }}>Bilder</h3>
         <div style={{ flex: 1 }} />
@@ -247,6 +299,13 @@ function PendingTray({
       </div>
     </div>
   );
+}
+
+/** True when a drag carries files (as opposed to dragging text/links/a photo
+ *  marker around inside the app). Lets us ignore non-file drags entirely. */
+function hasFiles(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  return Array.from(dt.types || []).includes("Files");
 }
 
 const IMAGE_EXT_RE = /\.(heic|heif|jpe?g|png)$/i;
