@@ -99,17 +99,22 @@ export default function App() {
   // onDrop; this is the safety net for near-miss drops.
   useEffect(() => {
     const prevent = (e: DragEvent) => {
-      // Only intercept file drags so we don't interfere with any in-app
-      // element/text dragging.
-      if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files")) {
-        e.preventDefault();
-      }
+      // Allow native drop into editable fields (text drag into a textarea);
+      // block the browser default (navigate to the dropped file/URL) for
+      // everything else. We intentionally do NOT gate on dataTransfer.types:
+      // drags from the Apple Photos app arrive as promised-file / URL items
+      // (not "Files"), and those are exactly the ones that navigated the tab
+      // to a file:// URL. Capture phase so this fires before any element that
+      // might stopPropagation, and so it can't be bypassed by a near-miss drop.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
     };
-    window.addEventListener("dragover", prevent);
-    window.addEventListener("drop", prevent);
+    window.addEventListener("dragover", prevent, true);
+    window.addEventListener("drop", prevent, true);
     return () => {
-      window.removeEventListener("dragover", prevent);
-      window.removeEventListener("drop", prevent);
+      window.removeEventListener("dragover", prevent, true);
+      window.removeEventListener("drop", prevent, true);
     };
   }, []);
 
